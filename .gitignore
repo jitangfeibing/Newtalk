@@ -1,0 +1,35 @@
+# IDE
+.idea/
+.vscode/
+
+# Legacy reference: never commit to Newtalk
+xiaozhi-esp32-server-main/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Runtime output
+logs/
+tmp/
+audio_output/
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+config.local.yaml
+secrets/
+
+# OS
+.DS_Store
+Thumbs.db
+
