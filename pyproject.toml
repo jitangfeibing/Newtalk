@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "newtalk"
+version = "0.1.0"
+description = "Web-first multimodal companion runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110,<1",
+    "python-dotenv>=1,<2",
+    "uvicorn[standard]>=0.29,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx2>=2,<3",
+    "pytest>=8,<10",
+    "websockets>=14,<18",
+]
+
+[project.scripts]
+newtalk = "newtalk.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: starts the real application server and uses network sockets",
+]

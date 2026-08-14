@@ -1,0 +1,246 @@
+:root {
+    --paper: #f2efe5;
+    --ink: #18201d;
+    --muted: #68716c;
+    --signal: #e7542f;
+    --line: #b8b9ae;
+    --panel: rgba(255, 255, 255, 0.56);
+    --online: #18865d;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    min-height: 100vh;
+    margin: 0;
+    color: var(--ink);
+    font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
+    background:
+        linear-gradient(90deg, rgba(24, 32, 29, 0.055) 1px, transparent 1px) 0 0 / 42px 42px,
+        linear-gradient(rgba(24, 32, 29, 0.055) 1px, transparent 1px) 0 0 / 42px 42px,
+        radial-gradient(circle at 85% 8%, rgba(231, 84, 47, 0.18), transparent 30%),
+        var(--paper);
+}
+
+button,
+code,
+pre {
+    font: inherit;
+}
+
+.shell {
+    width: min(1120px, calc(100% - 40px));
+    margin: 0 auto;
+    padding: 32px 0 56px;
+}
+
+.masthead,
+.console-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.masthead {
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 18px;
+}
+
+.eyebrow,
+.label {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+}
+
+h1,
+h2 {
+    margin: 0;
+    letter-spacing: -0.045em;
+}
+
+h1 {
+    font-size: clamp(1.5rem, 4vw, 2.6rem);
+    font-weight: 650;
+}
+
+.status {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 0.82rem;
+    letter-spacing: 0.08em;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+}
+
+.status[data-state="connecting"] .status-dot,
+.status[data-state="closing"] .status-dot {
+    background: #d59524;
+    animation: pulse 0.9s ease-in-out infinite alternate;
+}
+
+.status[data-state="online"] .status-dot {
+    background: var(--online);
+    box-shadow: 0 0 0 5px rgba(24, 134, 93, 0.12);
+}
+
+.status[data-state="error"] .status-dot {
+    background: var(--signal);
+}
+
+.hero {
+    display: grid;
+    grid-template-columns: minmax(80px, 0.25fr) minmax(0, 1fr);
+    gap: 24px;
+    padding: clamp(54px, 9vw, 110px) 0;
+}
+
+.hero-index {
+    margin: 8px 0 0;
+    color: var(--signal);
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.hero h2 {
+    max-width: 800px;
+    font-family: Georgia, "STSong", serif;
+    font-size: clamp(3rem, 9vw, 7.4rem);
+    font-weight: 400;
+    line-height: 0.93;
+}
+
+.hero-copy {
+    max-width: 610px;
+    margin: 34px 0 0;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.85;
+}
+
+.console-panel {
+    overflow: hidden;
+    border: 1px solid var(--ink);
+    background: var(--panel);
+    backdrop-filter: blur(18px);
+}
+
+.console-toolbar {
+    padding: 18px;
+    border-bottom: 1px solid var(--line);
+}
+
+.console-toolbar code {
+    font-family: Consolas, monospace;
+    font-size: 0.86rem;
+}
+
+.actions {
+    display: flex;
+    gap: 10px;
+}
+
+.button {
+    min-width: 104px;
+    border: 1px solid var(--ink);
+    padding: 11px 16px;
+    color: var(--paper);
+    background: var(--ink);
+    cursor: pointer;
+}
+
+.button.secondary {
+    color: var(--ink);
+    background: transparent;
+}
+
+.button:disabled {
+    cursor: not-allowed;
+    opacity: 0.38;
+}
+
+.event-log {
+    min-height: 220px;
+    max-height: 420px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+}
+
+.event-log:empty::before {
+    display: block;
+    padding: 42px 18px;
+    color: var(--muted);
+    content: "等待协议事件...";
+}
+
+.event-log li {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 14px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--line);
+}
+
+.event-direction {
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+}
+
+.event-direction.incoming {
+    color: var(--online);
+}
+
+.event-direction.outgoing {
+    color: var(--signal);
+}
+
+.event-log pre {
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    font-family: Consolas, monospace;
+    font-size: 0.8rem;
+    line-height: 1.55;
+}
+
+@keyframes pulse {
+    to { opacity: 0.35; }
+}
+
+@media (max-width: 680px) {
+    .shell {
+        width: min(100% - 24px, 1120px);
+        padding-top: 18px;
+    }
+
+    .hero {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 60px 0;
+    }
+
+    .console-toolbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .actions,
+    .button {
+        width: 100%;
+    }
+}

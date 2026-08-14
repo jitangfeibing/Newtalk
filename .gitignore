@@ -15,6 +15,9 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+*.egg-info/
+build/
+dist/
 
 # Runtime output
 logs/
@@ -32,4 +35,3 @@ secrets/
 # OS
 .DS_Store
 Thumbs.db
-

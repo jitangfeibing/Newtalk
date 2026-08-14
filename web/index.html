@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Newtalk Signal Console</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <main class="shell">
+        <header class="masthead">
+            <div>
+                <p class="eyebrow">NEWTALK / PART 01</p>
+                <h1>Signal Console</h1>
+            </div>
+            <div class="status" data-state="offline" id="connectionStatus">
+                <span class="status-dot"></span>
+                <span id="statusLabel">离线</span>
+            </div>
+        </header>
+
+        <section class="hero">
+            <p class="hero-index">01</p>
+            <div>
+                <h2>先确认连接，<br>再开始对话。</h2>
+                <p class="hero-copy">
+                    当前骨架只验证 Web、Health Check 与 WebSocket 生命周期，
+                    不包含 LLM、ASR、TTS、Vision 或 Memory。
+                </p>
+            </div>
+        </section>
+
+        <section class="console-panel">
+            <div class="console-toolbar">
+                <div>
+                    <span class="label">ENDPOINT</span>
+                    <code id="endpoint">等待页面初始化</code>
+                </div>
+                <div class="actions">
+                    <button type="button" class="button secondary" id="pingButton" disabled>发送 Ping</button>
+                    <button type="button" class="button" id="connectionButton">连接</button>
+                </div>
+            </div>
+            <ol class="event-log" id="eventLog" aria-live="polite"></ol>
+        </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+</body>
+</html>
