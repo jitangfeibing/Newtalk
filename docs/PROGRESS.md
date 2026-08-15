@@ -17,16 +17,16 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P2 文本聊天闭环 |
+| 当前阶段 | P3 第一个真实流式 LLM |
 | 阶段状态 | 已完成并验证 |
-| 开发分支 | `codex/p2-text-chat` |
-| 项目版本 | `0.2.0` |
+| 开发分支 | `codex/p3-real-llm` |
+| 项目版本 | `0.3.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 23 项通过，包括真实服务进程文本聊天测试 |
-| CI | P1 已在 PR #1 通过；P2 等待 PR 验证 |
+| 自动测试 | 33 项通过；真实 Provider 测试显式运行通过 |
+| CI | P1、P2 已通过并合并；P3 等待 PR 验证 |
 | 最后更新 | 2026-08-15 |
 
 ## P1：基础运行骨架
@@ -175,9 +175,73 @@ Web 文本输入
 - 同一连接内 Turn 目前顺序处理，不实现并发打断。
 - 不包含真实 LLM、Memory、ASR、TTS、Vision 或 Tool。
 
+## P3：第一个真实流式 LLM
+
+### 目标
+
+基于一次真实 OpenAI-compatible 流式调用定义聊天核心当前真正需要的最小模型契约，同时保持 WebSocket 和 Turn 不感知厂商协议。
+
+### 已完成
+
+- 定义 `ChatModel.stream(user_text)` 和 `ChatModel.aclose()` 最小契约。
+- Fake LLM 和 OpenAI-compatible LLM 由同一个 `ChatService` 调用。
+- 使用 `AsyncOpenAI` 和异步 SSE 迭代，不在事件循环中执行同步网络请求。
+- 支持 API Key、Base URL、模型名、静态 System Prompt 和超时配置。
+- 默认使用 Fake；只有显式配置 `NEWTALK_LLM_BACKEND=openai` 才创建真实客户端。
+- API Key 不进入 `AppConfig` 的字符串表示，`.env` 保持 Git 忽略。
+- `ChatService` 记录首 Token、流完成总耗时和失败日志。
+- 空文本流视为模型失败，并沿用 `turn_failed` 协议，不关闭 WebSocket。
+- 浏览器提前断开或停止消费时显式关闭异步生成器和底层 HTTP 流。
+- 应用关闭时通过生命周期钩子关闭模型客户端。
+- 增加默认跳过的 `live` 冒烟测试，避免 CI 或普通 pytest 产生 API 费用。
+
+### 当前调用链
+
+```text
+Web text_input
+-> transport/websocket.py
+-> transport/text_chat.py
+-> ChatService.create_turn()
+-> ChatService.stream_reply()
+-> ChatModel.stream(user_text)
+   |-> FakeLLM.stream()                    默认测试路径
+   `-> OpenAICompatibleChatModel.stream()  真实异步 SSE 路径
+-> text_delta
+-> turn_completed / turn_failed
+```
+
+### 主要文件
+
+- `src/newtalk/chat/model.py`：P3 最小模型契约。
+- `src/newtalk/chat/openai_compatible.py`：第一个真实异步流式实现。
+- `src/newtalk/chat/service.py`：统一调用模型并记录 LLM 耗时。
+- `src/newtalk/config.py`：LLM 环境变量校验和 Secret 边界。
+- `src/newtalk/app.py`：Fake/真实模型装配和资源生命周期。
+- `src/newtalk/transport/text_chat.py`：流式消费和提前关闭资源释放。
+- `tests/test_openai_compatible.py`：模拟 SSE、消息参数和资源释放测试。
+- `tests/live/test_llm.py`：显式开启的真实 Provider 冒烟测试。
+
+### 验证结果
+
+- `pytest` 执行结果为 `33 passed, 1 skipped`。
+- 默认跳过项是会产生真实外部调用的 `live` 测试。
+- 模拟流验证 System/User 消息、增量过滤、流上下文退出和客户端关闭。
+- Fake 路径继续通过真实 Uvicorn 子进程和 WebSocket 集成测试。
+- DeepSeek `deepseek-v4-pro` 真实流式冒烟测试通过，收到 6 个文本增量。
+- 本次真实调用首 Token 为 `2564.0ms`，流完成总耗时为 `2609.9ms`。
+- 用户通过真实 Web 页面完成文本发送，页面能够逐步显示 DeepSeek 流式回复。
+
+### 当前边界
+
+- 每个 Turn 仍然独立，只发送当前用户文本，不包含 Dialogue Context。
+- System Prompt 是可选静态配置，不是 Dynamic Prompt。
+- 只有一个真实 OpenAI-compatible 实现，没有 Registry、动态 Provider 加载或第二个 LLM 对比。
+- 不包含 Tool Calling、Token 统计、重试策略、ASR、TTS、Vision 或 Memory。
+- 同一连接仍然顺序处理 Turn，不包含打断和并发生成。
+
 ## 下一阶段
 
-P3 目标是接入第一个真实流式 LLM，并根据真实调用需要定义最小模型契约。Fake LLM 将继续保留用于自动测试。
+P4 目标是让文本回复接入 TTS，并在浏览器完成音频播放闭环。
 
 ## 变更记录
 
@@ -186,3 +250,4 @@ P3 目标是接入第一个真实流式 LLM，并根据真实调用需要定义�
 | 2026-08-14 | P1 | 建立独立仓库、配置、日志、FastAPI、静态 Web 和 WebSocket 生命周期 | 15 项测试通过，包含真实服务 HTTP/WS 集成测试 |
 | 2026-08-14 | P1 工程流程 | 加入 GitHub Actions CI 和可调整的默认开发流程 | PR #1 CI 通过并合并到 main |
 | 2026-08-15 | P2 | 建立唯一 Turn、Fake LLM 流式回复和 Web 文本聊天闭环 | 23 项测试及真实浏览器桌面/移动验证通过 |
+| 2026-08-15 | P3 | 增加最小 ChatModel 契约、异步 OpenAI-compatible 流和 LLM 耗时日志 | 33 项通过；DeepSeek live 测试和真实 Web 流式聊天通过 |

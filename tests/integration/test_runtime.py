@@ -54,6 +54,7 @@ def running_newtalk(port: int) -> Iterator[None]:
             "NEWTALK_PORT": str(port),
             "NEWTALK_LOG_LEVEL": "INFO",
             "NEWTALK_WEB_ROOT": str(PROJECT_ROOT / "web"),
+            "NEWTALK_LLM_BACKEND": "fake",
         }
     )
     process = subprocess.Popen(

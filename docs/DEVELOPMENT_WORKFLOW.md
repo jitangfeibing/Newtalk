@@ -102,7 +102,7 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 -> pytest
 ```
 
-当前 CI 不使用真实 ASR、LLM、TTS、Vision 或 Memory 密钥。未来 Provider 测试默认使用 Fake 或 Mock；确实需要真实 API 的测试应单独分类，并明确控制密钥和调用成本。
+当前 CI 不使用真实 ASR、LLM、TTS、Vision 或 Memory 密钥。Provider 测试默认使用 Fake 或 Mock；真实 LLM 冒烟测试标记为 `live`，只有显式设置 `NEWTALK_RUN_LIVE_LLM=1` 才会产生外部调用和费用。
 
 ## 可简化情况
 
@@ -116,4 +116,4 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 
 ## 当前应用
 
-P1 使用 `codex/p1-bootstrap` 分支完成。加入 CI 后，通过第一个 Pull Request 验证这套流程；P2 及后续 Part 默认沿用该方式，并根据实际问题调整。
+P1 使用 `codex/p1-bootstrap` 分支完成，P2 使用 `codex/p2-text-chat` 完成并通过 PR #2。P3 使用 `codex/p3-real-llm` 接入第一个真实流式模型；后续 Part 默认沿用该方式，并根据实际问题调整。

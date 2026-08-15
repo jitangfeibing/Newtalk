@@ -2,9 +2,10 @@ from fastapi.testclient import TestClient
 
 from newtalk.app import create_app
 from newtalk.chat import ChatService, FakeLLM
+from newtalk.config import AppConfig
 
 
-client = TestClient(create_app())
+client = TestClient(create_app(AppConfig()))
 
 
 def receive_turn(websocket) -> tuple[dict, list[dict], dict]:

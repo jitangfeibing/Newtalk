@@ -5,7 +5,7 @@ from newtalk.app import create_app
 from newtalk.config import AppConfig
 
 
-client = TestClient(create_app())
+client = TestClient(create_app(AppConfig()))
 
 
 def test_health() -> None:
@@ -15,7 +15,7 @@ def test_health() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "newtalk",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 

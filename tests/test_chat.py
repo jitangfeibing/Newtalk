@@ -1,4 +1,7 @@
 import asyncio
+import logging
+
+import pytest
 
 from newtalk.chat import ChatService, FakeLLM
 
@@ -29,3 +32,36 @@ def test_fake_llm_stream_is_deterministic() -> None:
     chunks = collect_reply(service, turn)
 
     assert chunks == ["我收到了：", "测试消息"]
+
+
+def test_chat_service_logs_first_token_and_completion(caplog) -> None:
+    service = ChatService(FakeLLM(chunk_delay_seconds=0))
+    turn = service.create_turn(session_id="session", user_text="测试消息")
+
+    with caplog.at_level(logging.INFO, logger="newtalk.chat.service"):
+        chunks = collect_reply(service, turn)
+
+    assert chunks == ["我收到了：", "测试消息"]
+    assert "llm_first_token" in caplog.text
+    assert "llm_stream_completed" in caplog.text
+    assert f"turn_id={turn.turn_id}" in caplog.text
+
+
+class EmptyModel:
+    async def stream(self, user_text: str):
+        if False:
+            yield user_text
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_chat_service_rejects_an_empty_model_response(caplog) -> None:
+    service = ChatService(EmptyModel())
+    turn = service.create_turn(session_id="session", user_text="测试消息")
+
+    with caplog.at_level(logging.ERROR, logger="newtalk.chat.service"):
+        with pytest.raises(ValueError, match="returned no text"):
+            collect_reply(service, turn)
+
+    assert "llm_stream_failed" in caplog.text
