@@ -123,9 +123,9 @@ Provider 思想提前确定，但不在 P2 预先设计完整 Provider 世界。
 示例：
 
 ```text
-P1 Fake LLM：直接满足文本闭环，不建立通用 Provider 框架。
-P2 第一个真实 LLM：根据真实流式输出定义最小 ChatModel 契约。
-P3 第二个 LLM：确认公共行为后再增加配置切换。
+P2 Fake LLM：直接满足文本闭环，不建立通用 Provider 框架。
+P3 第一个真实 LLM：根据真实流式输出定义最小 ChatModel 契约。
+以后接入第二个 LLM：确认公共行为后再增加配置切换。
 P4 接入 TTS：此时才定义 TTS 所需的最小音频流契约。
 P5 接入 ASR：此时才定义 ASR 的音频输入和最终结果契约。
 ```

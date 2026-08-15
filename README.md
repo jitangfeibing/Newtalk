@@ -6,17 +6,19 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
 
-## 当前阶段
+## 当前阶段：P2
 
-P1 提供最小可运行骨架：
+P2 已在 P1 骨架上完成最小文本聊天闭环：
 
 - `GET /health` 健康检查。
-- `WS /ws` WebSocket 握手、`ping/pong` 和正常关闭。
-- `web/` 基础连接验证页面。
+- `WS /ws` WebSocket 握手、文本聊天和正常关闭。
+- 每个 `text_input` 创建唯一 `turn_id`。
+- Fake LLM 通过 `text_delta` 确定性流式返回内容。
+- `web/` 展示用户消息和流式助手回复。
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段不包含 ASR、LLM、TTS、Vision、Memory 和 Provider 抽象。
+当前阶段不包含真实 LLM、Dialogue Context、ASR、TTS、Vision、Memory 和 Provider Registry。
 
 ## 本地启动
 

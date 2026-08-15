@@ -81,8 +81,28 @@ async def assert_websocket_lifecycle(port: int) -> None:
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.1"
+        assert hello["protocol_version"] == "0.2"
         assert hello["session_id"]
+
+        await websocket.send(
+            json.dumps(
+                {"type": "text_input", "event_id": "integration-text", "text": "你好"}
+            )
+        )
+        started = json.loads(await websocket.recv())
+        first_delta = json.loads(await websocket.recv())
+        second_delta = json.loads(await websocket.recv())
+        completed = json.loads(await websocket.recv())
+
+        assert started["type"] == "turn_started"
+        assert first_delta["delta"] == "我收到了："
+        assert second_delta["delta"] == "你好"
+        assert completed == {
+            "type": "turn_completed",
+            "turn_id": started["turn_id"],
+            "event_id": "integration-text",
+            "text": "我收到了：你好",
+        }
 
         await websocket.send(json.dumps({"type": "close", "event_id": "integration"}))
         closing = json.loads(await websocket.recv())
@@ -105,6 +125,7 @@ def test_real_server_serves_web_and_websocket_hello() -> None:
         with urlopen(f"http://127.0.0.1:{port}/", timeout=2) as response:
             page = response.read().decode("utf-8")
             assert response.status == 200
-            assert "Newtalk Signal Console" in page
+            assert "Newtalk Text Console" in page
+            assert 'id="chatForm"' in page
 
         asyncio.run(assert_websocket_lifecycle(port))

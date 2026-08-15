@@ -15,7 +15,7 @@ def test_health() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "newtalk",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
 
@@ -23,7 +23,9 @@ def test_web_page_is_served() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Newtalk Signal Console" in response.text
+    assert "Newtalk Text Console" in response.text
+    assert 'id="chatForm"' in response.text
+    assert 'id="messageInput"' in response.text
 
 
 def test_app_fails_fast_when_web_root_is_missing(tmp_path) -> None:

@@ -17,16 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P1 基础运行骨架 |
+| 当前阶段 | P2 文本聊天闭环 |
 | 阶段状态 | 已完成并验证 |
-| 开发分支 | `codex/p1-bootstrap` |
+| 开发分支 | `codex/p2-text-chat` |
+| 项目版本 | `0.2.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 15 项通过，包括真实服务进程集成测试 |
-| CI | GitHub Actions 工作流已加入，等待首次 PR 验证 |
-| 最后更新 | 2026-08-14 |
+| 自动测试 | 23 项通过，包括真实服务进程文本聊天测试 |
+| CI | P1 已在 PR #1 通过；P2 等待 PR 验证 |
+| 最后更新 | 2026-08-15 |
 
 ## P1：基础运行骨架
 
@@ -98,7 +99,7 @@
 - 集成测试自动启动和清理真实 Uvicorn 服务。
 - `pytest` 执行结果为 `15 passed`，无警告。
 
-### 尚未实现
+### P1 结束时尚未实现
 
 - 文本聊天和对话 Turn。
 - LLM 及其 Provider 接口。
@@ -112,24 +113,76 @@
 
 这些能力不是 P1 的缺陷，而是尚未开始对应 Part。当前不会提前定义完整 Provider 或 Manager 体系。
 
-## 下一阶段
+## P2：文本聊天闭环
 
-P2 尚未开始。预定目标是建立最小文本对话闭环：
+### 目标
+
+在不接入真实模型的前提下，完成浏览器文本输入到流式回复显示的第一个纵向聊天闭环，并验证一次用户事件只创建一个 Turn。
+
+### 已完成
+
+- Web 提供文本输入、发送和流式消息显示。
+- `text_input` 使用必填 `event_id` 关联一个用户行为。
+- 每个有效事件创建包含唯一 `turn_id` 的 `Turn`。
+- Fake LLM 通过异步生成器稳定返回两个文本增量。
+- 服务端依次发送 `turn_started`、`text_delta` 和 `turn_completed`。
+- 相同 `event_id` 重发返回 `duplicate_event`，不创建第二个 Turn。
+- 相同文本使用不同 `event_id` 时正常创建两个独立 Turn。
+- 空文本、超长文本、生成失败和断开连接有明确边界。
+- Turn 失败后 WebSocket 保持可用。
+- WebSocket 生命周期、协议错误、文本事件处理和聊天核心分离。
+
+### 当前调用链
 
 ```text
 Web 文本输入
--> WebSocket text_input 事件
--> 创建唯一 Turn
--> Fake LLM 生成回复
--> WebSocket 返回文本结果
--> 页面显示对话
+-> web/app.js 发送 text_input(event_id, text)
+-> transport/websocket.py 路由事件
+-> transport/text_chat.py 校验输入和幂等键
+-> ChatService.create_turn(session_id, user_text)
+-> FakeLLM.stream(user_text)
+-> text_delta(turn_id, sequence, delta)
+-> web/app.js 增量更新助手消息
+-> turn_completed(turn_id, text)
 ```
 
-P2 首先验证 Turn 和聊天核心的职责边界，不接入真实 LLM、Memory、Vision、ASR 或 TTS。
+### 主要文件
+
+- `src/newtalk/chat/models.py`：P2 Turn 数据边界。
+- `src/newtalk/chat/service.py`：Turn 创建和回复流组织。
+- `src/newtalk/chat/fake_llm.py`：确定性异步文本流。
+- `src/newtalk/transport/protocol.py`：协议版本和公共错误事件。
+- `src/newtalk/transport/text_chat.py`：文本事件校验和协议输出。
+- `src/newtalk/transport/websocket.py`：连接生命周期和事件路由。
+- `web/index.html`、`web/app.js`、`web/styles.css`：P2 聊天页面。
+- `tests/test_chat.py`：聊天核心测试。
+- `tests/test_websocket.py`：Turn、重复输入和失败协议测试。
+- `tests/integration/test_runtime.py`：真实进程文本聊天集成测试。
+
+### 验证结果
+
+- `pytest` 执行结果为 `23 passed`。
+- JavaScript 语法检查通过。
+- 真实浏览器自动连接并收到 `hello 0.2`。
+- 真实页面发送文本后收到两个 delta 和完成事件。
+- 桌面和 390px 移动视口布局通过检查。
+- 浏览器控制台没有 JavaScript warning 或 error。
+
+### 当前边界
+
+- Fake LLM 不是 Provider 接口，只是 P2 测试实现。
+- 每个 Turn 当前独立，不保存 Dialogue Context。
+- 同一连接内 Turn 目前顺序处理，不实现并发打断。
+- 不包含真实 LLM、Memory、ASR、TTS、Vision 或 Tool。
+
+## 下一阶段
+
+P3 目标是接入第一个真实流式 LLM，并根据真实调用需要定义最小模型契约。Fake LLM 将继续保留用于自动测试。
 
 ## 变更记录
 
 | 日期 | Part | 内容 | 验证 |
 | --- | --- | --- | --- |
 | 2026-08-14 | P1 | 建立独立仓库、配置、日志、FastAPI、静态 Web 和 WebSocket 生命周期 | 15 项测试通过，包含真实服务 HTTP/WS 集成测试 |
-| 2026-08-14 | P1 工程流程 | 加入 GitHub Actions CI 和可调整的默认开发流程 | 本地测试通过，等待首个 PR 的远端 CI 结果 |
+| 2026-08-14 | P1 工程流程 | 加入 GitHub Actions CI 和可调整的默认开发流程 | PR #1 CI 通过并合并到 main |
+| 2026-08-15 | P2 | 建立唯一 Turn、Fake LLM 流式回复和 Web 文本聊天闭环 | 23 项测试及真实浏览器桌面/移动验证通过 |
