@@ -6,6 +6,7 @@
     --line: #b8b9ae;
     --panel: rgba(255, 255, 255, 0.56);
     --online: #18865d;
+    --soft-ink: #dfe3db;
 }
 
 * {
@@ -59,7 +60,8 @@ pre {
 }
 
 h1,
-h2 {
+h2,
+h3 {
     margin: 0;
     letter-spacing: -0.045em;
 }
@@ -103,7 +105,7 @@ h1 {
     display: grid;
     grid-template-columns: minmax(80px, 0.25fr) minmax(0, 1fr);
     gap: 24px;
-    padding: clamp(54px, 9vw, 110px) 0;
+    padding: clamp(46px, 7vw, 82px) 0;
 }
 
 .hero-index {
@@ -116,7 +118,7 @@ h1 {
 .hero h2 {
     max-width: 800px;
     font-family: Georgia, "STSong", serif;
-    font-size: clamp(3rem, 9vw, 7.4rem);
+    font-size: clamp(3rem, 8vw, 6.4rem);
     font-weight: 400;
     line-height: 0.93;
 }
@@ -129,6 +131,14 @@ h1 {
     line-height: 1.85;
 }
 
+.workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.55fr);
+    gap: 18px;
+    align-items: stretch;
+}
+
+.chat-panel,
 .console-panel {
     overflow: hidden;
     border: 1px solid var(--ink);
@@ -136,9 +146,179 @@ h1 {
     backdrop-filter: blur(18px);
 }
 
+.chat-panel {
+    display: grid;
+    grid-template-rows: auto minmax(330px, 1fr) auto;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 18px;
+    border-bottom: 1px solid var(--line);
+}
+
+.panel-header h3 {
+    font-family: Georgia, "STSong", serif;
+    font-size: 1.55rem;
+    font-weight: 400;
+}
+
+.model-badge {
+    border: 1px solid var(--signal);
+    padding: 6px 9px;
+    color: var(--signal);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+}
+
+.message-list {
+    min-height: 390px;
+    max-height: 520px;
+    margin: 0;
+    padding: 24px 18px;
+    overflow-y: auto;
+    list-style: none;
+}
+
+.message-list:empty::before {
+    display: block;
+    width: min(330px, 80%);
+    margin: 105px auto 0;
+    color: var(--muted);
+    content: "连接成功后输入第一条消息。每次发送都会生成一个独立 Turn。";
+    font-family: Georgia, "STSong", serif;
+    font-size: 1.25rem;
+    line-height: 1.6;
+    text-align: center;
+}
+
+.message {
+    width: min(78%, 580px);
+    margin-bottom: 18px;
+    padding: 14px 16px 16px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.52);
+}
+
+.message.user {
+    margin-left: auto;
+    border-color: var(--ink);
+    color: var(--paper);
+    background: var(--ink);
+}
+
+.message.assistant {
+    margin-right: auto;
+}
+
+.message.assistant[data-state="failed"] {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
+.message-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 9px;
+    color: var(--muted);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+}
+
+.message.user .message-heading {
+    color: #abb4ae;
+}
+
+.message-heading code {
+    overflow: hidden;
+    font-family: Consolas, monospace;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+}
+
+.message-content {
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    line-height: 1.65;
+}
+
+.message.assistant[data-state="streaming"] .message-content::after {
+    display: inline-block;
+    width: 7px;
+    height: 1em;
+    margin-left: 4px;
+    background: var(--signal);
+    content: "";
+    vertical-align: -0.12em;
+    animation: pulse 0.65s ease-in-out infinite alternate;
+}
+
+.composer {
+    padding: 16px 18px 18px;
+    border-top: 1px solid var(--line);
+    background: rgba(242, 239, 229, 0.72);
+}
+
+.composer textarea {
+    width: 100%;
+    min-height: 70px;
+    resize: vertical;
+    border: 0;
+    border-bottom: 1px solid var(--ink);
+    border-radius: 0;
+    padding: 10px 4px;
+    outline: none;
+    color: var(--ink);
+    background: transparent;
+    font: inherit;
+    line-height: 1.5;
+}
+
+.composer textarea:focus {
+    border-bottom-color: var(--signal);
+}
+
+.composer-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-top: 12px;
+    color: var(--muted);
+    font-size: 0.72rem;
+}
+
+.send-button {
+    min-width: 120px;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 .console-toolbar {
     padding: 18px;
     border-bottom: 1px solid var(--line);
+}
+
+.console-panel .console-toolbar {
+    align-items: stretch;
+    flex-direction: column;
 }
 
 .console-toolbar code {
@@ -149,6 +329,11 @@ h1 {
 .actions {
     display: flex;
     gap: 10px;
+}
+
+.console-panel .actions .button {
+    flex: 1;
+    min-width: 0;
 }
 
 .button {
@@ -171,8 +356,8 @@ h1 {
 }
 
 .event-log {
-    min-height: 220px;
-    max-height: 420px;
+    min-height: 390px;
+    max-height: 520px;
     margin: 0;
     padding: 0;
     overflow-y: auto;
@@ -234,6 +419,19 @@ h1 {
         padding: 60px 0;
     }
 
+    .workspace {
+        grid-template-columns: 1fr;
+    }
+
+    .message-list,
+    .event-log {
+        min-height: 320px;
+    }
+
+    .message {
+        width: 90%;
+    }
+
     .console-toolbar {
         align-items: flex-start;
         flex-direction: column;
@@ -242,5 +440,10 @@ h1 {
     .actions,
     .button {
         width: 100%;
+    }
+
+    .composer-footer {
+        align-items: flex-start;
+        flex-direction: column;
     }
 }

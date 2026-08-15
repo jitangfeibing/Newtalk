@@ -4,27 +4,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from newtalk.transport.protocol import PROTOCOL_VERSION, send_protocol_error
+from newtalk.transport.text_chat import handle_text_input
+
 
 router = APIRouter()
-PROTOCOL_VERSION = "0.1"
 logger = logging.getLogger(__name__)
-
-
-async def send_protocol_error(
-    websocket: WebSocket,
-    *,
-    code: str,
-    message: str,
-    event_id: str | None = None,
-) -> None:
-    event: dict[str, str] = {
-        "type": "error",
-        "code": code,
-        "message": message,
-    }
-    if event_id:
-        event["event_id"] = event_id
-    await websocket.send_json(event)
 
 
 @router.websocket("/ws")
@@ -39,6 +24,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "session_id": session_id,
         }
     )
+    seen_event_ids: set[str] = set()
 
     try:
         while True:
@@ -99,6 +85,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.close(code=1000, reason="client requested close")
                 logger.info("websocket_closed session_id=%s reason=client_request", session_id)
                 return
+
+            if event["type"] == "text_input":
+                await handle_text_input(
+                    websocket,
+                    session_id=session_id,
+                    event=event,
+                    event_id=event_id,
+                    seen_event_ids=seen_event_ids,
+                )
+                continue
 
             await send_protocol_error(
                 websocket,

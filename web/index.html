@@ -3,15 +3,15 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Newtalk Signal Console</title>
+    <title>Newtalk Text Console</title>
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
     <main class="shell">
         <header class="masthead">
             <div>
-                <p class="eyebrow">NEWTALK / PART 01</p>
-                <h1>Signal Console</h1>
+                <p class="eyebrow">NEWTALK / PART 02</p>
+                <h1>Text Console</h1>
             </div>
             <div class="status" data-state="offline" id="connectionStatus">
                 <span class="status-dot"></span>
@@ -22,27 +22,55 @@
         <section class="hero">
             <p class="hero-index">01</p>
             <div>
-                <h2>先确认连接，<br>再开始对话。</h2>
+                <h2>一次输入，<br>一个 Turn。</h2>
                 <p class="hero-copy">
-                    当前骨架只验证 Web、Health Check 与 WebSocket 生命周期，
-                    不包含 LLM、ASR、TTS、Vision 或 Memory。
+                    当前页面验证文本输入、Turn 创建和流式回复。
+                    回复来自确定性的 Fake LLM，暂不包含真实模型、Context 或 Memory。
                 </p>
             </div>
         </section>
 
-        <section class="console-panel">
-            <div class="console-toolbar">
-                <div>
-                    <span class="label">ENDPOINT</span>
-                    <code id="endpoint">等待页面初始化</code>
+        <div class="workspace">
+            <section class="chat-panel" aria-labelledby="chatTitle">
+                <header class="panel-header">
+                    <div>
+                        <span class="label">STREAMING CHAT</span>
+                        <h3 id="chatTitle">文本对话</h3>
+                    </div>
+                    <span class="model-badge">FAKE LLM</span>
+                </header>
+
+                <ol class="message-list" id="messageList" aria-live="polite"></ol>
+
+                <form class="composer" id="chatForm">
+                    <label class="sr-only" for="messageInput">输入聊天内容</label>
+                    <textarea
+                        id="messageInput"
+                        maxlength="4000"
+                        placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                        rows="2"
+                    ></textarea>
+                    <div class="composer-footer">
+                        <span>最多 4000 字符</span>
+                        <button type="submit" class="button send-button" id="sendButton" disabled>发送消息</button>
+                    </div>
+                </form>
+            </section>
+
+            <section class="console-panel">
+                <div class="console-toolbar">
+                    <div>
+                        <span class="label">ENDPOINT</span>
+                        <code id="endpoint">等待页面初始化</code>
+                    </div>
+                    <div class="actions">
+                        <button type="button" class="button secondary" id="pingButton" disabled>Ping</button>
+                        <button type="button" class="button" id="connectionButton">连接</button>
+                    </div>
                 </div>
-                <div class="actions">
-                    <button type="button" class="button secondary" id="pingButton" disabled>发送 Ping</button>
-                    <button type="button" class="button" id="connectionButton">连接</button>
-                </div>
-            </div>
-            <ol class="event-log" id="eventLog" aria-live="polite"></ol>
-        </section>
+                <ol class="event-log" id="eventLog" aria-live="polite"></ol>
+            </section>
+        </div>
     </main>
 
     <script type="module" src="/app.js"></script>

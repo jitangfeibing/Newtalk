@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from newtalk import __version__
+from newtalk.chat import ChatService
 from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
 from newtalk.transport import websocket_router
@@ -19,6 +20,7 @@ def create_app(
     config: AppConfig | None = None,
     *,
     web_root: Path | None = None,
+    chat_service: ChatService | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -39,6 +41,7 @@ def create_app(
 
     app = FastAPI(title="Newtalk", version=__version__, lifespan=lifespan)
     app.state.config = config
+    app.state.chat_service = chat_service or ChatService()
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
