@@ -11,14 +11,41 @@ from newtalk.chat import ChatService, FakeLLM, OpenAICompatibleChatModel
 from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
 from newtalk.transport import websocket_router
+from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
 
 
 logger = logging.getLogger(__name__)
 
 
+def create_synthesizer(config: AppConfig) -> TextToSpeech:
+    if config.tts_backend == "fake":
+        return FakeTTS(sample_rate=config.tts_sample_rate)
+
+    if not all(
+        (
+            config.tts_app_id,
+            config.tts_access_token,
+            config.tts_resource_id,
+            config.tts_voice_type,
+        )
+    ):
+        raise RuntimeError("Doubao TTS configuration is incomplete")
+    return DoubaoTTS(
+        app_id=config.tts_app_id,
+        access_token=config.tts_access_token,
+        resource_id=config.tts_resource_id,
+        voice_type=config.tts_voice_type,
+        ws_url=config.tts_ws_url,
+        sample_rate=config.tts_sample_rate,
+        timeout_seconds=config.tts_timeout_seconds,
+        use_system_proxy=config.tts_use_system_proxy,
+    )
+
+
 def create_chat_service(config: AppConfig) -> ChatService:
+    synthesizer = create_synthesizer(config)
     if config.llm_backend == "fake":
-        return ChatService(FakeLLM())
+        return ChatService(FakeLLM(), synthesizer)
 
     if not config.llm_api_key or not config.llm_model:
         raise RuntimeError("OpenAI-compatible LLM configuration is incomplete")
@@ -29,7 +56,8 @@ def create_chat_service(config: AppConfig) -> ChatService:
             model=config.llm_model,
             system_prompt=config.llm_system_prompt,
             timeout_seconds=config.llm_timeout_seconds,
-        )
+        ),
+        synthesizer,
     )
 
 
@@ -49,12 +77,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         logger.info(
-            "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s",
+            "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s",
             config.host,
             config.port,
             config.web_root,
             config.llm_backend,
             config.llm_model or "fake",
+            config.tts_backend,
         )
         try:
             yield

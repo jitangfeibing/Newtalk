@@ -3,7 +3,17 @@ import logging
 
 import pytest
 
-from newtalk.chat import ChatService, FakeLLM
+from newtalk.chat import (
+    AudioCompleted,
+    AudioFailed,
+    AudioFrame,
+    AudioStarted,
+    ChatService,
+    FakeLLM,
+    TextDelta,
+    TurnCompleted,
+)
+from newtalk.tts import AudioFormat, FakeTTS
 
 
 def collect_reply(service: ChatService, turn) -> list[str]:
@@ -65,3 +75,57 @@ def test_chat_service_rejects_an_empty_model_response(caplog) -> None:
             collect_reply(service, turn)
 
     assert "llm_stream_failed" in caplog.text
+
+
+def test_chat_service_streams_text_and_audio_for_one_turn(caplog) -> None:
+    service = ChatService(
+        FakeLLM(chunk_delay_seconds=0),
+        FakeTTS(sample_rate=24000),
+    )
+    turn = service.create_turn(session_id="session", user_text="测试消息")
+
+    async def collect():
+        return [output async for output in service.stream_turn(turn)]
+
+    with caplog.at_level(logging.INFO, logger="newtalk.chat.service"):
+        outputs = asyncio.run(collect())
+
+    assert [output.text for output in outputs if isinstance(output, TextDelta)] == [
+        "我收到了：",
+        "测试消息",
+    ]
+    assert len([output for output in outputs if isinstance(output, AudioStarted)]) == 1
+    assert len([output for output in outputs if isinstance(output, AudioFrame)]) == 1
+    assert len([output for output in outputs if isinstance(output, AudioCompleted)]) == 1
+    assert isinstance(outputs[-1], TurnCompleted)
+    assert outputs[-1].text == "我收到了：测试消息"
+    assert "tts_first_audio" in caplog.text
+    assert "tts_stream_completed" in caplog.text
+
+
+class FailingTTS:
+    audio_format = AudioFormat(codec="pcm_s16le", sample_rate=24000, channels=1)
+
+    async def stream(self, text_chunks, *, turn_id: str):
+        del turn_id
+        async for _ in text_chunks:
+            raise RuntimeError("deterministic TTS failure")
+        if False:
+            yield b""
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_tts_failure_preserves_completed_text_turn() -> None:
+    service = ChatService(FakeLLM(chunk_delay_seconds=0), FailingTTS())
+    turn = service.create_turn(session_id="session", user_text="仍然显示文本")
+
+    async def collect():
+        return [output async for output in service.stream_turn(turn)]
+
+    outputs = asyncio.run(collect())
+
+    assert any(isinstance(output, AudioFailed) for output in outputs)
+    assert isinstance(outputs[-1], TurnCompleted)
+    assert outputs[-1].text == "我收到了：仍然显示文本"

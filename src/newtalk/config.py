@@ -13,8 +13,16 @@ DEFAULT_PORT = 8006
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LLM_BACKEND = "fake"
 DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
+DEFAULT_TTS_BACKEND = "fake"
+DEFAULT_TTS_WS_URL = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
+DEFAULT_TTS_AUDIO_FORMAT = "pcm"
+DEFAULT_TTS_SAMPLE_RATE = 24000
+DEFAULT_TTS_TIMEOUT_SECONDS = 30.0
+DEFAULT_TTS_USE_SYSTEM_PROXY = False
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
+VALID_TTS_BACKENDS = {"fake", "doubao"}
+VALID_TTS_SAMPLE_RATES = {8000, 16000, 24000, 48000}
 
 
 class ConfigError(ValueError):
@@ -33,6 +41,16 @@ class AppConfig:
     llm_model: str | None = None
     llm_system_prompt: str | None = None
     llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
+    tts_backend: str = DEFAULT_TTS_BACKEND
+    tts_app_id: str | None = field(default=None, repr=False)
+    tts_access_token: str | None = field(default=None, repr=False)
+    tts_resource_id: str | None = None
+    tts_voice_type: str | None = None
+    tts_ws_url: str = DEFAULT_TTS_WS_URL
+    tts_audio_format: str = DEFAULT_TTS_AUDIO_FORMAT
+    tts_sample_rate: int = DEFAULT_TTS_SAMPLE_RATE
+    tts_timeout_seconds: float = DEFAULT_TTS_TIMEOUT_SECONDS
+    tts_use_system_proxy: bool = DEFAULT_TTS_USE_SYSTEM_PROXY
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -90,6 +108,65 @@ class AppConfig:
                     "NEWTALK_LLM_MODEL is required when NEWTALK_LLM_BACKEND=openai"
                 )
 
+        tts_backend = values.get("NEWTALK_TTS_BACKEND", DEFAULT_TTS_BACKEND).strip().lower()
+        if tts_backend not in VALID_TTS_BACKENDS:
+            allowed = ", ".join(sorted(VALID_TTS_BACKENDS))
+            raise ConfigError(f"NEWTALK_TTS_BACKEND must be one of: {allowed}")
+
+        tts_app_id = _optional_value(values.get("NEWTALK_TTS_APP_ID"))
+        tts_access_token = _optional_value(values.get("NEWTALK_TTS_ACCESS_TOKEN"))
+        tts_resource_id = _optional_value(values.get("NEWTALK_TTS_RESOURCE_ID"))
+        tts_voice_type = _optional_value(values.get("NEWTALK_TTS_VOICE_TYPE"))
+        tts_ws_url = values.get("NEWTALK_TTS_WS_URL", DEFAULT_TTS_WS_URL).strip()
+        if not tts_ws_url.startswith(("ws://", "wss://")):
+            raise ConfigError("NEWTALK_TTS_WS_URL must be a WebSocket URL")
+
+        tts_audio_format = values.get(
+            "NEWTALK_TTS_AUDIO_FORMAT", DEFAULT_TTS_AUDIO_FORMAT
+        ).strip().lower()
+        if tts_audio_format != "pcm":
+            raise ConfigError("P4 only supports NEWTALK_TTS_AUDIO_FORMAT=pcm")
+
+        raw_sample_rate = values.get(
+            "NEWTALK_TTS_SAMPLE_RATE", str(DEFAULT_TTS_SAMPLE_RATE)
+        ).strip()
+        try:
+            tts_sample_rate = int(raw_sample_rate)
+        except ValueError as exc:
+            raise ConfigError("NEWTALK_TTS_SAMPLE_RATE must be an integer") from exc
+        if tts_sample_rate not in VALID_TTS_SAMPLE_RATES:
+            allowed = ", ".join(str(value) for value in sorted(VALID_TTS_SAMPLE_RATES))
+            raise ConfigError(f"NEWTALK_TTS_SAMPLE_RATE must be one of: {allowed}")
+
+        raw_tts_timeout = values.get(
+            "NEWTALK_TTS_TIMEOUT_SECONDS", str(DEFAULT_TTS_TIMEOUT_SECONDS)
+        ).strip()
+        try:
+            tts_timeout_seconds = float(raw_tts_timeout)
+        except ValueError as exc:
+            raise ConfigError("NEWTALK_TTS_TIMEOUT_SECONDS must be a number") from exc
+        if tts_timeout_seconds <= 0:
+            raise ConfigError("NEWTALK_TTS_TIMEOUT_SECONDS must be greater than zero")
+
+        tts_use_system_proxy = _boolean_value(
+            values.get("NEWTALK_TTS_USE_SYSTEM_PROXY"),
+            default=DEFAULT_TTS_USE_SYSTEM_PROXY,
+            name="NEWTALK_TTS_USE_SYSTEM_PROXY",
+        )
+
+        if tts_backend == "doubao":
+            required_tts_values = {
+                "NEWTALK_TTS_APP_ID": tts_app_id,
+                "NEWTALK_TTS_ACCESS_TOKEN": tts_access_token,
+                "NEWTALK_TTS_RESOURCE_ID": tts_resource_id,
+                "NEWTALK_TTS_VOICE_TYPE": tts_voice_type,
+            }
+            for name, value in required_tts_values.items():
+                if not value:
+                    raise ConfigError(
+                        f"{name} is required when NEWTALK_TTS_BACKEND=doubao"
+                    )
+
         return cls(
             host=host,
             port=port,
@@ -101,6 +178,16 @@ class AppConfig:
             llm_model=llm_model,
             llm_system_prompt=llm_system_prompt,
             llm_timeout_seconds=llm_timeout_seconds,
+            tts_backend=tts_backend,
+            tts_app_id=tts_app_id,
+            tts_access_token=tts_access_token,
+            tts_resource_id=tts_resource_id,
+            tts_voice_type=tts_voice_type,
+            tts_ws_url=tts_ws_url,
+            tts_audio_format=tts_audio_format,
+            tts_sample_rate=tts_sample_rate,
+            tts_timeout_seconds=tts_timeout_seconds,
+            tts_use_system_proxy=tts_use_system_proxy,
         )
 
 
@@ -116,3 +203,14 @@ def _optional_value(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _boolean_value(value: str | None, *, default: bool, name: str) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be true or false")

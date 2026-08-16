@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from newtalk.app import create_app
@@ -8,23 +10,37 @@ from newtalk.config import AppConfig
 client = TestClient(create_app(AppConfig()))
 
 
-def receive_turn(websocket) -> tuple[dict, list[dict], dict]:
+def receive_turn(websocket) -> tuple[dict, list[dict], dict, list[dict], list[bytes]]:
     started = websocket.receive_json()
-    deltas = []
+    deltas: list[dict] = []
+    audio_events: list[dict] = []
+    audio_frames: list[bytes] = []
     while True:
-        event = websocket.receive_json()
+        frame = websocket.receive()
+        if frame.get("bytes") is not None:
+            audio_frames.append(frame["bytes"])
+            continue
+        event = json.loads(frame["text"])
         if event["type"] == "text_delta":
             deltas.append(event)
             continue
-        return started, deltas, event
+        if event["type"] in {"audio_start", "audio_end", "audio_failed"}:
+            audio_events.append(event)
+            continue
+        return started, deltas, event, audio_events, audio_frames
 
 
 def test_websocket_sends_hello_and_answers_ping() -> None:
     with client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.2"
+        assert hello["protocol_version"] == "0.3"
         assert hello["session_id"]
+        assert hello["audio"] == {
+            "codec": "pcm_s16le",
+            "sample_rate": 24000,
+            "channels": 1,
+        }
 
         websocket.send_json({"type": "ping", "event_id": "test-ping"})
         pong = websocket.receive_json()
@@ -83,7 +99,7 @@ def test_text_input_streams_one_turn() -> None:
             {"type": "text_input", "event_id": "text-1", "text": " 你好 "}
         )
 
-        started, deltas, completed = receive_turn(websocket)
+        started, deltas, completed, audio_events, audio_frames = receive_turn(websocket)
 
         assert started == {
             "type": "turn_started",
@@ -100,6 +116,13 @@ def test_text_input_streams_one_turn() -> None:
             "event_id": "text-1",
             "text": "我收到了：你好",
         }
+        assert [event["type"] for event in audio_events] == [
+            "audio_start",
+            "audio_end",
+        ]
+        assert audio_events[0]["stream_id"] == audio_events[1]["stream_id"]
+        assert audio_events[0]["turn_id"] == started["turn_id"]
+        assert audio_frames and all(frame for frame in audio_frames)
 
 
 def test_same_text_with_different_events_creates_two_turns() -> None:
@@ -111,7 +134,7 @@ def test_same_text_with_different_events_creates_two_turns() -> None:
             websocket.send_json(
                 {"type": "text_input", "event_id": event_id, "text": "重复文本"}
             )
-            started, _, completed = receive_turn(websocket)
+            started, _, completed, _, _ = receive_turn(websocket)
             assert completed["type"] == "turn_completed"
             turn_ids.append(started["turn_id"])
 
@@ -124,7 +147,7 @@ def test_duplicate_event_id_does_not_create_another_turn() -> None:
     with client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
         websocket.send_json(event)
-        first_started, _, first_completed = receive_turn(websocket)
+        first_started, _, first_completed, _, _ = receive_turn(websocket)
         assert first_completed["type"] == "turn_completed"
 
         websocket.send_json(event)

@@ -22,6 +22,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "type": "hello",
             "protocol_version": PROTOCOL_VERSION,
             "session_id": session_id,
+            "audio": {
+                "codec": websocket.app.state.chat_service.audio_format.codec,
+                "sample_rate": websocket.app.state.chat_service.audio_format.sample_rate,
+                "channels": websocket.app.state.chat_service.audio_format.channels,
+            },
         }
     )
     seen_event_ids: set[str] = set()
@@ -38,7 +43,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await send_protocol_error(
                     websocket,
                     code="unsupported_frame",
-                    message="P1 only accepts JSON text frames",
+                    message="Client messages must be JSON text frames",
                 )
                 continue
 
@@ -94,6 +99,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     event_id=event_id,
                     seen_event_ids=seen_event_ids,
                 )
+                continue
+
+            if event["type"] == "playback_started":
+                turn_id = event.get("turn_id")
+                stream_id = event.get("stream_id")
+                elapsed_ms = event.get("elapsed_ms")
+                if (
+                    isinstance(turn_id, str)
+                    and isinstance(stream_id, str)
+                    and isinstance(elapsed_ms, (int, float))
+                    and not isinstance(elapsed_ms, bool)
+                    and elapsed_ms >= 0
+                ):
+                    logger.info(
+                        "browser_playback_started session_id=%s turn_id=%s stream_id=%s elapsed_ms=%.1f",
+                        session_id,
+                        turn_id,
+                        stream_id,
+                        elapsed_ms,
+                    )
+                else:
+                    await send_protocol_error(
+                        websocket,
+                        code="invalid_playback_metric",
+                        message="playback_started contains invalid fields",
+                        event_id=event_id,
+                    )
                 continue
 
             await send_protocol_error(

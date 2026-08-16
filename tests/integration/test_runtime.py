@@ -55,6 +55,7 @@ def running_newtalk(port: int) -> Iterator[None]:
             "NEWTALK_LOG_LEVEL": "INFO",
             "NEWTALK_WEB_ROOT": str(PROJECT_ROOT / "web"),
             "NEWTALK_LLM_BACKEND": "fake",
+            "NEWTALK_TTS_BACKEND": "fake",
         }
     )
     process = subprocess.Popen(
@@ -82,8 +83,9 @@ async def assert_websocket_lifecycle(port: int) -> None:
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.2"
+        assert hello["protocol_version"] == "0.3"
         assert hello["session_id"]
+        assert hello["audio"]["codec"] == "pcm_s16le"
 
         await websocket.send(
             json.dumps(
@@ -93,7 +95,20 @@ async def assert_websocket_lifecycle(port: int) -> None:
         started = json.loads(await websocket.recv())
         first_delta = json.loads(await websocket.recv())
         second_delta = json.loads(await websocket.recv())
-        completed = json.loads(await websocket.recv())
+        audio_events = []
+        audio_frames = []
+        completed = None
+        while completed is None:
+            frame = await websocket.recv()
+            if isinstance(frame, bytes):
+                audio_frames.append(frame)
+                continue
+            event = json.loads(frame)
+            if event["type"] in {"audio_start", "audio_end"}:
+                audio_events.append(event)
+                continue
+            if event["type"] == "turn_completed":
+                completed = event
 
         assert started["type"] == "turn_started"
         assert first_delta["delta"] == "我收到了："
@@ -104,6 +119,11 @@ async def assert_websocket_lifecycle(port: int) -> None:
             "event_id": "integration-text",
             "text": "我收到了：你好",
         }
+        assert [event["type"] for event in audio_events] == [
+            "audio_start",
+            "audio_end",
+        ]
+        assert audio_frames
 
         await websocket.send(json.dumps({"type": "close", "event_id": "integration"}))
         closing = json.loads(await websocket.recv())
@@ -126,7 +146,7 @@ def test_real_server_serves_web_and_websocket_hello() -> None:
         with urlopen(f"http://127.0.0.1:{port}/", timeout=2) as response:
             page = response.read().decode("utf-8")
             assert response.status == 200
-            assert "Newtalk Text Console" in page
+            assert "Newtalk Voice Console" in page
             assert 'id="chatForm"' in page
 
         asyncio.run(assert_websocket_lifecycle(port))

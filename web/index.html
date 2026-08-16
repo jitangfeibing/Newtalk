@@ -3,15 +3,15 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Newtalk Text Console</title>
+    <title>Newtalk Voice Console</title>
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
     <main class="shell">
         <header class="masthead">
             <div>
-                <p class="eyebrow">NEWTALK / PART 02</p>
-                <h1>Text Console</h1>
+                <p class="eyebrow">NEWTALK / PART 04</p>
+                <h1>Voice Console</h1>
             </div>
             <div class="status" data-state="offline" id="connectionStatus">
                 <span class="status-dot"></span>
@@ -22,10 +22,10 @@
         <section class="hero">
             <p class="hero-index">01</p>
             <div>
-                <h2>一次输入，<br>一个 Turn。</h2>
+                <h2>文字流动，<br>声音随行。</h2>
                 <p class="hero-copy">
-                    当前页面验证文本输入、Turn 创建和流式回复。
-                    回复来自确定性的 Fake LLM，暂不包含真实模型、Context 或 Memory。
+                    当前页面验证真实 LLM 文本流、双向流式 TTS 与浏览器 PCM 播放。
+                    每条输入仍只创建一个 Turn，语音失败不会丢失文本回复。
                 </p>
             </div>
         </section>
@@ -37,7 +37,10 @@
                         <span class="label">STREAMING CHAT</span>
                         <h3 id="chatTitle">文本对话</h3>
                     </div>
-                    <span class="model-badge">FAKE LLM</span>
+                    <div class="runtime-badges">
+                        <span class="model-badge">LLM STREAM</span>
+                        <span class="audio-badge" data-state="idle" id="audioStatus">音频待命</span>
+                    </div>
                 </header>
 
                 <ol class="message-list" id="messageList" aria-live="polite"></ol>
@@ -51,8 +54,11 @@
                         rows="2"
                     ></textarea>
                     <div class="composer-footer">
-                        <span>最多 4000 字符</span>
-                        <button type="submit" class="button send-button" id="sendButton" disabled>发送消息</button>
+                        <span>最多 4000 字符 · PCM 低延迟播放</span>
+                        <div class="composer-actions">
+                            <button type="button" class="button secondary" id="stopAudioButton" disabled>停止播放</button>
+                            <button type="submit" class="button send-button" id="sendButton" disabled>发送消息</button>
+                        </div>
                     </div>
                 </form>
             </section>
