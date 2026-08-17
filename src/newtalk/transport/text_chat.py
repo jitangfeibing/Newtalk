@@ -1,3 +1,4 @@
+from contextlib import aclosing
 import logging
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -75,22 +76,23 @@ async def handle_text_input(
     response_parts: list[str] = []
     try:
         sequence = 0
-        async for delta in chat_service.stream_reply(turn):
-            sequence += 1
-            response_parts.append(delta)
-            await websocket.send_json(
-                {
-                    "type": "text_delta",
-                    "turn_id": turn.turn_id,
-                    "event_id": event_id,
-                    "sequence": sequence,
-                    "delta": delta,
-                }
-            )
+        async with aclosing(chat_service.stream_reply(turn)) as reply_stream:
+            async for delta in reply_stream:
+                sequence += 1
+                response_parts.append(delta)
+                await websocket.send_json(
+                    {
+                        "type": "text_delta",
+                        "turn_id": turn.turn_id,
+                        "event_id": event_id,
+                        "sequence": sequence,
+                        "delta": delta,
+                    }
+                )
     except WebSocketDisconnect:
         raise
     except Exception:
-        logger.exception(
+        logger.warning(
             "turn_failed session_id=%s turn_id=%s event_id=%s",
             session_id,
             turn.turn_id,

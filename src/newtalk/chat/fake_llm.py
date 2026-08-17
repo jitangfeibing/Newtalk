@@ -13,3 +13,6 @@ class FakeLLM:
             if self.chunk_delay_seconds:
                 await asyncio.sleep(self.chunk_delay_seconds)
             yield chunk
+
+    async def aclose(self) -> None:
+        return None

@@ -1,8 +1,8 @@
-# P2 WebSocket 协议
+# P3 WebSocket 协议
 
 Endpoint：`GET /ws`，通过 WebSocket Upgrade 建立连接。
 
-P2 只接收 JSON 文本帧。音频和图片帧尚未定义。协议版本为 `0.2`。
+P3 仍只接收 JSON 文本帧。音频和图片帧尚未定义。由于事件结构没有变化，协议版本保持 `0.2`。
 
 ## Hello
 
@@ -73,7 +73,8 @@ P2 只接收 JSON 文本帧。音频和图片帧尚未定义。协议版本为 `
 }
 ```
 
-P2 Fake LLM 固定返回两段 delta：`我收到了：` 和用户文本。该行为用于稳定测试，不代表未来真实 LLM 的分段方式。
+Fake LLM 固定返回两段 delta：`我收到了：` 和用户文本，用于稳定测试。真实
+OpenAI-compatible 模型的 delta 数量和切分位置由上游 SSE 响应决定，客户端不得依赖固定分段。
 
 ## Turn 失败
 
