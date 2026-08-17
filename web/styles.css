@@ -175,6 +175,37 @@ h1 {
     letter-spacing: 0.12em;
 }
 
+.runtime-badges,
+.composer-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.audio-badge {
+    border: 1px solid var(--line);
+    padding: 6px 9px;
+    color: var(--muted);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.audio-badge[data-state="buffering"] {
+    border-color: #d59524;
+    color: #a56e0b;
+}
+
+.audio-badge[data-state="playing"] {
+    border-color: var(--online);
+    color: var(--online);
+}
+
+.audio-badge[data-state="error"] {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
 .message-list {
     min-height: 390px;
     max-height: 520px;
@@ -445,5 +476,10 @@ h1 {
     .composer-footer {
         align-items: flex-start;
         flex-direction: column;
+    }
+
+    .composer-actions,
+    .composer-actions .button {
+        width: 100%;
     }
 }

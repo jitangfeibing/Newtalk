@@ -3,6 +3,14 @@ import logging
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from newtalk.chat import (
+    AudioCompleted,
+    AudioFailed,
+    AudioFrame,
+    AudioStarted,
+    TextDelta,
+    TurnCompleted,
+)
 from newtalk.transport.protocol import send_protocol_error
 
 
@@ -73,22 +81,65 @@ async def handle_text_input(
         }
     )
 
-    response_parts: list[str] = []
     try:
-        sequence = 0
-        async with aclosing(chat_service.stream_reply(turn)) as reply_stream:
-            async for delta in reply_stream:
-                sequence += 1
-                response_parts.append(delta)
-                await websocket.send_json(
-                    {
-                        "type": "text_delta",
-                        "turn_id": turn.turn_id,
-                        "event_id": event_id,
-                        "sequence": sequence,
-                        "delta": delta,
-                    }
-                )
+        async with aclosing(chat_service.stream_turn(turn)) as output_stream:
+            async for output in output_stream:
+                if isinstance(output, TextDelta):
+                    await websocket.send_json(
+                        {
+                            "type": "text_delta",
+                            "turn_id": turn.turn_id,
+                            "event_id": event_id,
+                            "sequence": output.sequence,
+                            "delta": output.text,
+                        }
+                    )
+                    continue
+                if isinstance(output, AudioStarted):
+                    await websocket.send_json(
+                        {
+                            "type": "audio_start",
+                            "turn_id": turn.turn_id,
+                            "stream_id": output.stream_id,
+                            "codec": output.audio_format.codec,
+                            "sample_rate": output.audio_format.sample_rate,
+                            "channels": output.audio_format.channels,
+                        }
+                    )
+                    continue
+                if isinstance(output, AudioFrame):
+                    await websocket.send_bytes(output.data)
+                    continue
+                if isinstance(output, AudioCompleted):
+                    await websocket.send_json(
+                        {
+                            "type": "audio_end",
+                            "turn_id": turn.turn_id,
+                            "stream_id": output.stream_id,
+                            "frames": output.frame_count,
+                            "bytes": output.byte_count,
+                        }
+                    )
+                    continue
+                if isinstance(output, AudioFailed):
+                    await websocket.send_json(
+                        {
+                            "type": "audio_failed",
+                            "turn_id": turn.turn_id,
+                            "stream_id": output.stream_id,
+                            "message": output.message,
+                        }
+                    )
+                    continue
+                if isinstance(output, TurnCompleted):
+                    await websocket.send_json(
+                        {
+                            "type": "turn_completed",
+                            "turn_id": turn.turn_id,
+                            "event_id": event_id,
+                            "text": output.text,
+                        }
+                    )
     except WebSocketDisconnect:
         raise
     except Exception:
@@ -109,17 +160,8 @@ async def handle_text_input(
         )
         return
 
-    await websocket.send_json(
-        {
-            "type": "turn_completed",
-            "turn_id": turn.turn_id,
-            "event_id": event_id,
-            "text": "".join(response_parts),
-        }
-    )
     logger.info(
-        "turn_completed session_id=%s turn_id=%s chunks=%s",
+        "turn_completed session_id=%s turn_id=%s",
         session_id,
         turn.turn_id,
-        sequence,
     )

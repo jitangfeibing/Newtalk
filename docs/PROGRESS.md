@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P3 第一个真实流式 LLM |
+| 当前阶段 | P4 TTS 播放闭环 |
 | 阶段状态 | 已完成并验证 |
-| 开发分支 | `codex/p3-real-llm` |
-| 项目版本 | `0.3.0` |
+| 开发分支 | `codex/p4-streaming-tts` |
+| 项目版本 | `0.4.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 33 项通过；真实 Provider 测试显式运行通过 |
-| CI | P1、P2 已通过并合并；P3 等待 PR 验证 |
-| 最后更新 | 2026-08-15 |
+| 自动测试 | 50 项通过，2 项 live 默认跳过；真实豆包 TTS 显式运行通过 |
+| CI | P1、P2 已合并；P3、P4 等待 PR 验证 |
+| 最后更新 | 2026-08-16 |
 
 ## P1：基础运行骨架
 
@@ -239,9 +239,63 @@ Web text_input
 - 不包含 Tool Calling、Token 统计、重试策略、ASR、TTS、Vision 或 Memory。
 - 同一连接仍然顺序处理 Turn，不包含打断和并发生成。
 
+## P4：TTS 播放闭环
+
+### 目标
+
+让 LLM 流式文本进入真实 TTS，并让浏览器在完整回复结束前开始播放音频。
+
+### 已完成
+
+- 根据真实豆包 V3 双向流式调用定义最小 `TextToSpeech` 契约。
+- 实现 Fake TTS 和豆包 TTS，不建立动态 Provider 注册中心。
+- LLM 文本增量经过独立分段器进入 TTS 文本队列。
+- LLM 和 TTS 是同一 Turn 内的两个异步生产者，共用有序输出队列。
+- WebSocket 使用 JSON 传输音频元数据，使用二进制帧传输 PCM。
+- 浏览器使用 24kHz、16-bit、单声道 AudioWorklet 队列播放。
+- 浏览器提供本地停止播放，并在实际取出首批样本时上报耗时。
+- 服务端记录 `llm_first_token`、`tts_first_audio` 和 `browser_playback_started`。
+- TTS 失败产生 `audio_failed`，不影响文本继续形成 `turn_completed`。
+- Provider 会话或浏览器断开时，异步生成器负责取消任务和关闭连接。
+- 豆包 App ID 和 Access Token 不进入配置对象的 `repr`。
+- 豆包 WebSocket 默认禁用 Windows 系统代理，避免本机代理为实时链路增加约 4 秒延迟；需要时可显式开启。
+
+### 当前调用链
+
+```text
+text_input
+-> ChatService.stream_turn
+   |-> ChatModel.stream -> text_delta
+   |-> StreamingTextSegmenter -> TTS text queue
+   `-> TextToSpeech.stream -> PCM frames
+-> transport/text_chat.py
+-> audio_start -> WebSocket binary frames -> audio_end
+-> web/app.js -> pcm-player-worklet.js -> system output
+-> playback_started -> service log
+```
+
+### 验证结果
+
+- 普通测试 `50 passed, 2 skipped`，live 测试不会在 CI 中产生费用。
+- 豆包真实 V3 冒烟测试成功返回 PCM，配置、鉴权、Resource ID 和音色有效。
+- 真实 Uvicorn 子进程完成 HTTP、JSON WebSocket 和二进制音频集成测试。
+- 浏览器实际收到并消费 Fake PCM，状态从缓冲进入播放完成。
+- 浏览器测得本次 Fake 链路播放开始时间为 `347.3ms`。
+- 代理隔离测试中，完整真实管线首字由 `5.76–6.07s` 恢复为 `1.42–2.08s`，豆包首音频增量约 `253ms`。
+- JavaScript 语法检查通过，浏览器控制台无 warning/error。
+
+### 当前边界
+
+- 浏览器停止播放只清空本地播放队列，不取消服务端 LLM/TTS；服务端取消属于 P5。
+- 同一连接仍顺序处理 Turn，不支持麦克风输入和用户语音打断。
+- 只支持 PCM；Opus 与音频格式协商尚未实现。
+- 豆包每个 Turn 新建一条 Provider WebSocket，尚未实现连接复用。
+- 真实豆包音频与真实 LLM 的浏览器听感需要用户手工确认。
+- Dialogue Context、Memory、ASR、Vision 和 Tool 仍未实现。
+
 ## 下一阶段
 
-P4 目标是让文本回复接入 TTS，并在浏览器完成音频播放闭环。
+P5 目标是加入浏览器麦克风、一个真实流式 ASR，以及新 Turn 对旧 LLM/TTS 的服务端取消。
 
 ## 变更记录
 
@@ -251,3 +305,4 @@ P4 目标是让文本回复接入 TTS，并在浏览器完成音频播放闭环�
 | 2026-08-14 | P1 工程流程 | 加入 GitHub Actions CI 和可调整的默认开发流程 | PR #1 CI 通过并合并到 main |
 | 2026-08-15 | P2 | 建立唯一 Turn、Fake LLM 流式回复和 Web 文本聊天闭环 | 23 项测试及真实浏览器桌面/移动验证通过 |
 | 2026-08-15 | P3 | 增加最小 ChatModel 契约、异步 OpenAI-compatible 流和 LLM 耗时日志 | 33 项通过；DeepSeek live 测试和真实 Web 流式聊天通过 |
+| 2026-08-16 | P4 | 增加豆包双向流式 TTS、PCM 二进制协议和 AudioWorklet 播放 | 50 项通过；豆包 live 与浏览器播放验证通过 |

@@ -8,11 +8,163 @@ const chatForm = document.querySelector('#chatForm');
 const messageInput = document.querySelector('#messageInput');
 const messageList = document.querySelector('#messageList');
 const sendButton = document.querySelector('#sendButton');
+const audioStatus = document.querySelector('#audioStatus');
+const stopAudioButton = document.querySelector('#stopAudioButton');
 
 let socket = null;
 let eventSequence = 0;
+let advertisedAudioFormat = null;
 const pendingEvents = new Set();
 const messagesByTurn = new Map();
+const turnStartedAt = new Map();
+
+class PcmPlayer {
+    constructor() {
+        this.context = null;
+        this.node = null;
+        this.format = null;
+        this.active = null;
+        this.queuedBytes = 0;
+        this.playRequested = false;
+    }
+
+    async prepare(format) {
+        if (!format) throw new Error('服务器没有提供音频格式');
+        if (format.codec !== 'pcm_s16le' || format.channels !== 1) {
+            throw new Error(`不支持的音频格式：${format.codec}/${format.channels}ch`);
+        }
+        if (!this.context) {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass || !window.AudioWorkletNode) {
+                throw new Error('当前浏览器不支持 AudioWorklet');
+            }
+            this.context = new AudioContextClass({
+                latencyHint: 'interactive',
+                sampleRate: format.sample_rate,
+            });
+            await this.context.audioWorklet.addModule('/pcm-player-worklet.js');
+            if (this.context.sampleRate !== format.sample_rate) {
+                throw new Error(`浏览器采样率为 ${this.context.sampleRate}，无法播放 ${format.sample_rate}Hz PCM`);
+            }
+            this.node = new AudioWorkletNode(this.context, 'newtalk-pcm-player');
+            this.node.connect(this.context.destination);
+            this.node.port.addEventListener('message', (event) => this.handleWorkletEvent(event.data));
+            this.node.port.start();
+        }
+        this.format = format;
+        if (this.context.state === 'suspended') await this.context.resume();
+    }
+
+    begin(metadata) {
+        if (!this.node || !this.format) {
+            this.setStatus('error', '音频未初始化');
+            return;
+        }
+        if (
+            metadata.codec !== this.format.codec
+            || metadata.sample_rate !== this.format.sample_rate
+            || metadata.channels !== this.format.channels
+        ) {
+            this.setStatus('error', '音频格式发生变化');
+            return;
+        }
+        this.node.port.postMessage({type: 'reset'});
+        this.active = {
+            streamId: metadata.stream_id,
+            turnId: metadata.turn_id,
+            stopped: false,
+        };
+        this.queuedBytes = 0;
+        this.playRequested = false;
+        this.setStatus('buffering', '音频缓冲中');
+        stopAudioButton.disabled = false;
+    }
+
+    push(buffer) {
+        if (!this.active || this.active.stopped || !this.node) return;
+        if (buffer.byteLength % 2 !== 0) {
+            this.stop('PCM 帧长度错误');
+            return;
+        }
+        this.queuedBytes += buffer.byteLength;
+        this.node.port.postMessage({type: 'audio', buffer}, [buffer]);
+
+        const prebufferBytes = this.format.sample_rate * 2 * 0.06;
+        if (!this.playRequested && this.queuedBytes >= prebufferBytes) {
+            this.playRequested = true;
+            this.node.port.postMessage({type: 'play'});
+        }
+    }
+
+    end(metadata) {
+        if (!this.active || metadata.stream_id !== this.active.streamId || !this.node) return;
+        if (this.active.stopped) {
+            this.active = null;
+            return;
+        }
+        if (!this.playRequested) {
+            this.playRequested = true;
+            this.node.port.postMessage({type: 'play'});
+        }
+        this.node.port.postMessage({type: 'end'});
+        this.setStatus('playing', '播放收尾中');
+    }
+
+    fail() {
+        if (this.active) turnStartedAt.delete(this.active.turnId);
+        this.node?.port.postMessage({type: 'reset'});
+        this.active = null;
+        stopAudioButton.disabled = true;
+        this.setStatus('error', '语音生成失败');
+    }
+
+    stop(label = '播放已停止') {
+        if (!this.active) return;
+        this.active.stopped = true;
+        this.node?.port.postMessage({type: 'reset'});
+        stopAudioButton.disabled = true;
+        this.setStatus('idle', label);
+    }
+
+    reset() {
+        this.node?.port.postMessage({type: 'reset'});
+        this.active = null;
+        stopAudioButton.disabled = true;
+        this.setStatus('idle', '音频待命');
+    }
+
+    handleWorkletEvent(event) {
+        if (!this.active) return;
+        if (event.type === 'playback_started') {
+            this.setStatus('playing', '正在播放');
+            const startedAt = turnStartedAt.get(this.active.turnId);
+            const elapsedMs = startedAt ? performance.now() - startedAt : 0;
+            turnStartedAt.delete(this.active.turnId);
+            const metric = {
+                type: 'playback_started',
+                event_id: nextEventId('playback'),
+                turn_id: this.active.turnId,
+                stream_id: this.active.streamId,
+                elapsed_ms: Number(elapsedMs.toFixed(1)),
+            };
+            if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(metric));
+            appendProtocolEvent('outgoing', metric);
+            return;
+        }
+        if (event.type === 'playback_drained') {
+            this.setStatus('idle', '播放完成');
+            stopAudioButton.disabled = true;
+            this.active = null;
+        }
+    }
+
+    setStatus(state, label) {
+        audioStatus.dataset.state = state;
+        audioStatus.textContent = label;
+    }
+}
+
+const audioPlayer = new PcmPlayer();
 
 function websocketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -83,8 +235,15 @@ function markStreamingMessagesInterrupted() {
 function handleIncoming(payload) {
     appendProtocolEvent('incoming', payload);
 
+    if (payload.type === 'hello') {
+        advertisedAudioFormat = payload.audio;
+        audioStatus.textContent = `${payload.audio.sample_rate / 1000}k PCM 待命`;
+        return;
+    }
+
     if (payload.type === 'turn_started') {
         pendingEvents.delete(payload.event_id);
+        turnStartedAt.set(payload.turn_id, performance.now());
         const message = appendMessage('assistant', '', payload.turn_id.slice(0, 8));
         message.dataset.state = 'streaming';
         messagesByTurn.set(payload.turn_id, message);
@@ -97,6 +256,21 @@ function handleIncoming(payload) {
             message.querySelector('.message-content').textContent += payload.delta;
             message.scrollIntoView({block: 'nearest'});
         }
+        return;
+    }
+
+    if (payload.type === 'audio_start') {
+        audioPlayer.begin(payload);
+        return;
+    }
+
+    if (payload.type === 'audio_end') {
+        audioPlayer.end(payload);
+        return;
+    }
+
+    if (payload.type === 'audio_failed') {
+        audioPlayer.fail();
         return;
     }
 
@@ -116,6 +290,7 @@ function handleIncoming(payload) {
             message.querySelector('.message-content').textContent = '回复生成失败，请重新发送。';
             message.dataset.state = 'failed';
         }
+        audioPlayer.fail();
         return;
     }
 
@@ -148,6 +323,7 @@ function connect() {
 
     setStatus('connecting', '连接中');
     socket = new WebSocket(websocketUrl());
+    socket.binaryType = 'arraybuffer';
 
     socket.addEventListener('open', () => {
         setStatus('online', '已连接');
@@ -156,6 +332,11 @@ function connect() {
     });
 
     socket.addEventListener('message', (event) => {
+        if (event.data instanceof ArrayBuffer) {
+            appendProtocolEvent('incoming', {type: 'audio_frame', bytes: event.data.byteLength});
+            audioPlayer.push(event.data);
+            return;
+        }
         try {
             handleIncoming(JSON.parse(event.data));
         } catch {
@@ -167,6 +348,7 @@ function connect() {
         appendProtocolEvent('system', `WebSocket closed (${event.code})`);
         markStreamingMessagesInterrupted();
         pendingEvents.clear();
+        audioPlayer.reset();
         socket = null;
         setStatus('offline', '离线');
     });
@@ -177,10 +359,17 @@ function connect() {
     });
 }
 
-chatForm.addEventListener('submit', (event) => {
+chatForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const text = messageInput.value.trim();
     if (!text || socket?.readyState !== WebSocket.OPEN) return;
+
+    try {
+        await audioPlayer.prepare(advertisedAudioFormat);
+    } catch (error) {
+        appendProtocolEvent('system', `Audio initialization failed: ${error.message}`);
+        audioPlayer.setStatus('error', '音频不可用');
+    }
 
     const payload = {
         type: 'text_input',
@@ -210,6 +399,7 @@ pingButton.addEventListener('click', () => {
     socket.send(JSON.stringify(event));
     appendProtocolEvent('outgoing', event);
 });
+stopAudioButton.addEventListener('click', () => audioPlayer.stop());
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
 connect();

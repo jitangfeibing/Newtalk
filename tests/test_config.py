@@ -30,6 +30,15 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_LLM_MODEL": "test-model",
             "NEWTALK_LLM_SYSTEM_PROMPT": "Test system prompt",
             "NEWTALK_LLM_TIMEOUT_SECONDS": "12.5",
+            "NEWTALK_TTS_BACKEND": "doubao",
+            "NEWTALK_TTS_APP_ID": "tts-app",
+            "NEWTALK_TTS_ACCESS_TOKEN": "tts-secret",
+            "NEWTALK_TTS_RESOURCE_ID": "seed-tts-2.0",
+            "NEWTALK_TTS_VOICE_TYPE": "test-voice",
+            "NEWTALK_TTS_AUDIO_FORMAT": "pcm",
+            "NEWTALK_TTS_SAMPLE_RATE": "16000",
+            "NEWTALK_TTS_TIMEOUT_SECONDS": "9.5",
+            "NEWTALK_TTS_USE_SYSTEM_PROXY": "true",
         }
     )
 
@@ -43,7 +52,16 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.llm_model == "test-model"
     assert config.llm_system_prompt == "Test system prompt"
     assert config.llm_timeout_seconds == 12.5
+    assert config.tts_backend == "doubao"
+    assert config.tts_app_id == "tts-app"
+    assert config.tts_access_token == "tts-secret"
+    assert config.tts_resource_id == "seed-tts-2.0"
+    assert config.tts_voice_type == "test-voice"
+    assert config.tts_sample_rate == 16000
+    assert config.tts_timeout_seconds == 9.5
+    assert config.tts_use_system_proxy is True
     assert "test-secret" not in repr(config)
+    assert "tts-secret" not in repr(config)
 
 
 @pytest.mark.parametrize(
@@ -56,6 +74,12 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_LLM_BACKEND", "unknown"),
         ("NEWTALK_LLM_TIMEOUT_SECONDS", "never"),
         ("NEWTALK_LLM_TIMEOUT_SECONDS", "0"),
+        ("NEWTALK_TTS_BACKEND", "unknown"),
+        ("NEWTALK_TTS_WS_URL", "https://not-websocket.test"),
+        ("NEWTALK_TTS_AUDIO_FORMAT", "mp3"),
+        ("NEWTALK_TTS_SAMPLE_RATE", "44100"),
+        ("NEWTALK_TTS_TIMEOUT_SECONDS", "0"),
+        ("NEWTALK_TTS_USE_SYSTEM_PROXY", "sometimes"),
     ],
 )
 def test_config_rejects_invalid_values(name: str, value: str) -> None:
@@ -79,6 +103,29 @@ def test_config_rejects_invalid_values(name: str, value: str) -> None:
 def test_openai_config_requires_secret_and_model(
     values: dict[str, str], missing_name: str
 ) -> None:
+    with pytest.raises(ConfigError, match=missing_name):
+        load_config(values)
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    [
+        "NEWTALK_TTS_APP_ID",
+        "NEWTALK_TTS_ACCESS_TOKEN",
+        "NEWTALK_TTS_RESOURCE_ID",
+        "NEWTALK_TTS_VOICE_TYPE",
+    ],
+)
+def test_doubao_config_requires_all_provider_values(missing_name: str) -> None:
+    values = {
+        "NEWTALK_TTS_BACKEND": "doubao",
+        "NEWTALK_TTS_APP_ID": "app",
+        "NEWTALK_TTS_ACCESS_TOKEN": "token",
+        "NEWTALK_TTS_RESOURCE_ID": "resource",
+        "NEWTALK_TTS_VOICE_TYPE": "voice",
+    }
+    del values[missing_name]
+
     with pytest.raises(ConfigError, match=missing_name):
         load_config(values)
 
