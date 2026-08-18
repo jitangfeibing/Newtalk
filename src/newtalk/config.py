@@ -19,10 +19,18 @@ DEFAULT_TTS_AUDIO_FORMAT = "pcm"
 DEFAULT_TTS_SAMPLE_RATE = 24000
 DEFAULT_TTS_TIMEOUT_SECONDS = 30.0
 DEFAULT_TTS_USE_SYSTEM_PROXY = False
+DEFAULT_VAD_MODEL_PATH = PROJECT_ROOT / "models" / "silero_vad.onnx"
+DEFAULT_VAD_THRESHOLD = 0.5
+DEFAULT_VAD_THRESHOLD_LOW = 0.3
+DEFAULT_VAD_MIN_SILENCE_MS = 600
+DEFAULT_VAD_PRE_ROLL_MS = 300
+DEFAULT_ASR_BACKEND = "fake"
+DEFAULT_ASR_FAKE_TEXT = "这是一次语音输入测试"
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
 VALID_TTS_SAMPLE_RATES = {8000, 16000, 24000, 48000}
+VALID_ASR_BACKENDS = {"fake"}
 
 
 class ConfigError(ValueError):
@@ -51,6 +59,13 @@ class AppConfig:
     tts_sample_rate: int = DEFAULT_TTS_SAMPLE_RATE
     tts_timeout_seconds: float = DEFAULT_TTS_TIMEOUT_SECONDS
     tts_use_system_proxy: bool = DEFAULT_TTS_USE_SYSTEM_PROXY
+    vad_model_path: Path = DEFAULT_VAD_MODEL_PATH
+    vad_threshold: float = DEFAULT_VAD_THRESHOLD
+    vad_threshold_low: float = DEFAULT_VAD_THRESHOLD_LOW
+    vad_min_silence_ms: int = DEFAULT_VAD_MIN_SILENCE_MS
+    vad_pre_roll_ms: int = DEFAULT_VAD_PRE_ROLL_MS
+    asr_backend: str = DEFAULT_ASR_BACKEND
+    asr_fake_text: str = DEFAULT_ASR_FAKE_TEXT
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -167,6 +182,49 @@ class AppConfig:
                         f"{name} is required when NEWTALK_TTS_BACKEND=doubao"
                     )
 
+        raw_vad_model_path = values.get("NEWTALK_VAD_MODEL_PATH")
+        vad_model_path = (
+            Path(raw_vad_model_path).expanduser().resolve()
+            if raw_vad_model_path
+            else DEFAULT_VAD_MODEL_PATH
+        )
+        vad_threshold = _float_value(
+            values,
+            "NEWTALK_VAD_THRESHOLD",
+            DEFAULT_VAD_THRESHOLD,
+        )
+        vad_threshold_low = _float_value(
+            values,
+            "NEWTALK_VAD_THRESHOLD_LOW",
+            DEFAULT_VAD_THRESHOLD_LOW,
+        )
+        if not 0 <= vad_threshold_low < vad_threshold <= 1:
+            raise ConfigError(
+                "VAD thresholds must satisfy 0 <= low < high <= 1"
+            )
+        vad_min_silence_ms = _positive_int_value(
+            values,
+            "NEWTALK_VAD_MIN_SILENCE_MS",
+            DEFAULT_VAD_MIN_SILENCE_MS,
+        )
+        vad_pre_roll_ms = _positive_int_value(
+            values,
+            "NEWTALK_VAD_PRE_ROLL_MS",
+            DEFAULT_VAD_PRE_ROLL_MS,
+        )
+
+        asr_backend = values.get(
+            "NEWTALK_ASR_BACKEND", DEFAULT_ASR_BACKEND
+        ).strip().lower()
+        if asr_backend not in VALID_ASR_BACKENDS:
+            allowed = ", ".join(sorted(VALID_ASR_BACKENDS))
+            raise ConfigError(f"NEWTALK_ASR_BACKEND must be one of: {allowed}")
+        asr_fake_text = values.get(
+            "NEWTALK_ASR_FAKE_TEXT", DEFAULT_ASR_FAKE_TEXT
+        ).strip()
+        if not asr_fake_text:
+            raise ConfigError("NEWTALK_ASR_FAKE_TEXT must not be empty")
+
         return cls(
             host=host,
             port=port,
@@ -188,6 +246,13 @@ class AppConfig:
             tts_sample_rate=tts_sample_rate,
             tts_timeout_seconds=tts_timeout_seconds,
             tts_use_system_proxy=tts_use_system_proxy,
+            vad_model_path=vad_model_path,
+            vad_threshold=vad_threshold,
+            vad_threshold_low=vad_threshold_low,
+            vad_min_silence_ms=vad_min_silence_ms,
+            vad_pre_roll_ms=vad_pre_roll_ms,
+            asr_backend=asr_backend,
+            asr_fake_text=asr_fake_text,
         )
 
 
@@ -214,3 +279,30 @@ def _boolean_value(value: str | None, *, default: bool, name: str) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ConfigError(f"{name} must be true or false")
+
+
+def _float_value(
+    values: Mapping[str, str],
+    name: str,
+    default: float,
+) -> float:
+    raw_value = values.get(name, str(default)).strip()
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number") from exc
+
+
+def _positive_int_value(
+    values: Mapping[str, str],
+    name: str,
+    default: int,
+) -> int:
+    raw_value = values.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise ConfigError(f"{name} must be greater than zero")
+    return value

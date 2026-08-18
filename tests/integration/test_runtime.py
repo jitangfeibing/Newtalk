@@ -83,9 +83,10 @@ async def assert_websocket_lifecycle(port: int) -> None:
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.3"
+        assert hello["protocol_version"] == "0.4"
         assert hello["session_id"]
-        assert hello["audio"]["codec"] == "pcm_s16le"
+        assert hello["audio"]["input"]["codec"] == "pcm_s16le"
+        assert hello["audio"]["output"]["codec"] == "pcm_s16le"
 
         await websocket.send(
             json.dumps(

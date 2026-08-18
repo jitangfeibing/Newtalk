@@ -1,160 +1,92 @@
-# P4 WebSocket 协议
+# P5-A WebSocket 协议
 
-Endpoint：`GET /ws`，协议版本 `0.3`。客户端只发送 JSON 文本帧；服务端发送 JSON 事件和 PCM 二进制帧。
+Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客户端 JSON 帧传控制事件，客户端二进制帧传麦克风 PCM；服务端 JSON 帧传对话事件，服务端二进制帧传 TTS PCM。二进制帧的含义由发送方向区分。
 
 ## 建连
+
+服务端 `hello` 同时声明输入和输出格式：
 
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.3",
+  "protocol_version": "0.4",
   "session_id": "generated UUID",
   "audio": {
-    "codec": "pcm_s16le",
-    "sample_rate": 24000,
-    "channels": 1
+    "input": {"codec":"pcm_s16le","sample_rate":16000,"channels":1,"frame_duration_ms":20},
+    "output": {"codec":"pcm_s16le","sample_rate":24000,"channels":1}
   }
 }
 ```
 
-`audio` 是当前连接使用的服务端音频格式，浏览器据此创建 AudioContext。
+## 麦克风输入
 
-## 文本 Turn
-
-客户端输入：
-
-```json
-{"type":"text_input","event_id":"client ID","text":"你好"}
-```
-
-- `event_id` 是当前连接内的幂等键。
-- 文本去除首尾空白后必须非空，最多 4000 字符。
-- 一个有效 `text_input` 只创建一个 `turn_id`。
-
-服务端首先发送：
+客户端先声明一次采集，然后持续发送二进制 PCM：
 
 ```json
 {
-  "type": "turn_started",
-  "session_id": "session UUID",
-  "turn_id": "turn UUID",
-  "event_id": "client ID"
-}
-```
-
-随后发送零个或多个文本增量：
-
-```json
-{
-  "type": "text_delta",
-  "turn_id": "turn UUID",
+  "type": "audio_input_start",
   "event_id": "client ID",
-  "sequence": 1,
-  "delta": "你好"
+  "capture_id": "capture ID",
+  "format": {"codec":"pcm_s16le","sample_rate":16000,"channels":1,"frame_duration_ms":20}
 }
 ```
 
-LLM 文本与 TTS 音频并行产生，客户端不能假定 `text_delta` 与音频事件之间存在固定交错顺序。
-
-## 音频流
-
-第一帧 PCM 之前发送：
+服务端确认 `audio_input_ready`。Silero 检测到边界时发送：
 
 ```json
-{
-  "type": "audio_start",
-  "turn_id": "turn UUID",
-  "stream_id": "audio stream UUID",
-  "codec": "pcm_s16le",
-  "sample_rate": 24000,
-  "channels": 1
-}
+{"type":"vad_speech_start","capture_id":"capture ID","utterance_id":"UUID","probability":0.87,"audio_ms":96.0}
+{"type":"vad_speech_end","capture_id":"capture ID","utterance_id":"UUID","probability":0.08,"audio_ms":1248.0}
 ```
 
-`audio_start` 之后的 WebSocket 二进制帧属于该 `stream_id`。P4 同一连接不会同时发送两条音频流，因此二进制帧本身不重复携带 ID。
-
-正常结束：
+`vad_speech_start` 会取消当前旧 Turn。ASR 事件为：
 
 ```json
-{
-  "type": "audio_end",
-  "turn_id": "turn UUID",
-  "stream_id": "audio stream UUID",
-  "frames": 12,
-  "bytes": 48000
-}
+{"type":"asr_partial","utterance_id":"UUID","text":"中间文本"}
+{"type":"asr_final","utterance_id":"UUID","text":"最终文本"}
 ```
 
-TTS 失败：
+只有非空 `asr_final` 创建一个新 Turn。P5-A 使用 Fake ASR，因此只产生固定最终文本，不产生 partial。
+
+停止采集：
 
 ```json
-{
-  "type": "audio_failed",
-  "turn_id": "turn UUID",
-  "stream_id": "audio stream UUID",
-  "message": "Unable to synthesize speech"
-}
+{"type":"audio_input_stop","event_id":"client ID","capture_id":"capture ID"}
 ```
 
-`audio_failed` 不等于 `turn_failed`。TTS 失败后文本仍可继续完成。
+服务端完成当前音频收尾后返回 `audio_input_stopped`。同一连接同时只允许一个 `capture_id`。
 
-## Turn 完成与失败
+## Turn 和打断
 
-文本和 TTS 管线结束后：
+文本仍使用 `text_input`。文本或 ASR Final 都进入相同的 Turn 流，依次可能产生 `turn_started`、`text_delta`、`audio_start`、服务端二进制 PCM、`audio_end` 和 `turn_completed`。
+
+新文本输入或 VAD 说话开始取消旧 Turn：
 
 ```json
-{
-  "type": "turn_completed",
-  "turn_id": "turn UUID",
-  "event_id": "client ID",
-  "text": "完整回复"
-}
+{"type":"turn_cancelled","turn_id":"old Turn UUID","reason":"barge_in"}
+{"type":"audio_stop","turn_id":"old Turn UUID","stream_id":"old stream UUID or null","reason":"barge_in"}
 ```
 
-LLM 或聊天核心失败时：
+客户端收到 `audio_stop` 必须立即清空播放队列。服务端先使旧 `turn_id` 失效，再取消 LLM/TTS 任务；发送队列会丢弃已经失效 Turn 的迟到帧。
 
-```json
-{
-  "type": "turn_failed",
-  "turn_id": "turn UUID",
-  "event_id": "client ID",
-  "code": "chat_failed",
-  "message": "Unable to generate a reply"
-}
-```
+## 错误和生命周期
 
-## 浏览器播放指标
+- 二进制音频未先开始采集：`audio_input_not_started`。
+- 输入格式不匹配：`unsupported_audio_format`。
+- PCM 字节数不是 2 的倍数：`invalid_audio_frame`。
+- 同一连接重复开始采集：`audio_input_active`。
+- `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
+- `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
 
-AudioWorklet 真正取出第一批 PCM 样本时，客户端上报：
-
-```json
-{
-  "type": "playback_started",
-  "event_id": "client metric ID",
-  "turn_id": "turn UUID",
-  "stream_id": "audio stream UUID",
-  "elapsed_ms": 347.3
-}
-```
-
-`elapsed_ms` 从浏览器收到 `turn_started` 开始计算。该事件用于日志，不创建新 Turn。
-
-## 其他事件
-
-- `ping` 返回 `pong`。
-- `close` 返回 `closing`，然后使用 WebSocket code `1000` 关闭。
-- 非法 JSON、字段或未知事件返回结构化 `error`，通常不关闭连接。
-
-## P4 调用链
+## P5-A 调用链
 
 ```text
-Web text_input
--> websocket_endpoint
--> handle_text_input
--> ChatService.stream_turn
-   |-> ChatModel.stream -> TextDelta
-   `-> StreamingTextSegmenter -> TextToSpeech.stream -> AudioFrame
--> text_delta / audio_start / binary PCM / audio_end / turn_completed
--> PcmPlayer -> AudioWorklet
--> playback_started metric
+Browser getUserMedia
+-> mic-recorder-worklet (resample -> 16kHz / 20ms / PCM S16LE)
+-> WebSocket binary frames
+-> AudioInputSession -> SileroVadStream
+   |-> speech_start -> cancel old Turn -> turn_cancelled + audio_stop
+   `-> speech_end   -> finish ASR utterance
+-> SpeechRecognizer.stream -> asr_final
+-> ConnectionRuntime.start_turn -> ChatService.stream_turn
+-> text_delta + TTS binary PCM -> PcmPlayer / AudioWorklet
 ```

@@ -10,10 +10,13 @@ const messageList = document.querySelector('#messageList');
 const sendButton = document.querySelector('#sendButton');
 const audioStatus = document.querySelector('#audioStatus');
 const stopAudioButton = document.querySelector('#stopAudioButton');
+const micStatus = document.querySelector('#micStatus');
+const micButton = document.querySelector('#micButton');
 
 let socket = null;
 let eventSequence = 0;
 let advertisedAudioFormat = null;
+let advertisedInputFormat = null;
 const pendingEvents = new Set();
 const messagesByTurn = new Map();
 const turnStartedAt = new Map();
@@ -166,6 +169,94 @@ class PcmPlayer {
 
 const audioPlayer = new PcmPlayer();
 
+class MicrophoneRecorder {
+    constructor() {
+        this.context = null;
+        this.stream = null;
+        this.source = null;
+        this.node = null;
+        this.captureId = null;
+        this.active = false;
+    }
+
+    async start(format) {
+        if (this.active) return;
+        if (!format || format.codec !== 'pcm_s16le' || format.sample_rate !== 16000 || format.channels !== 1) {
+            throw new Error('服务器没有提供受支持的麦克风格式');
+        }
+        if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) {
+            throw new Error('当前浏览器不支持麦克风 AudioWorklet');
+        }
+
+        this.stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
+        });
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        this.context = new AudioContextClass({latencyHint: 'interactive'});
+        await this.context.audioWorklet.addModule('/mic-recorder-worklet.js');
+        this.source = this.context.createMediaStreamSource(this.stream);
+        this.node = new AudioWorkletNode(this.context, 'newtalk-mic-recorder');
+        const mute = this.context.createGain();
+        mute.gain.value = 0;
+        this.source.connect(this.node);
+        this.node.connect(mute).connect(this.context.destination);
+        this.captureId = nextEventId('capture');
+        this.active = true;
+        this.node.port.onmessage = (event) => {
+            if (!this.active || event.data?.type !== 'audio_frame') return;
+            if (socket?.readyState === WebSocket.OPEN) socket.send(event.data.buffer);
+        };
+        const payload = {
+            type: 'audio_input_start',
+            event_id: nextEventId('audio-start'),
+            capture_id: this.captureId,
+            format,
+        };
+        socket.send(JSON.stringify(payload));
+        appendProtocolEvent('outgoing', payload);
+        this.setStatus('listening', `监听中 ${this.context.sampleRate / 1000}k→16k`);
+        micButton.textContent = '关闭麦克风';
+    }
+
+    async stop(sendEvent = true) {
+        if (!this.active && !this.stream) return;
+        const captureId = this.captureId;
+        this.active = false;
+        this.node?.disconnect();
+        this.source?.disconnect();
+        this.stream?.getTracks().forEach((track) => track.stop());
+        await this.context?.close();
+        this.context = null;
+        this.stream = null;
+        this.source = null;
+        this.node = null;
+        this.captureId = null;
+        if (sendEvent && captureId && socket?.readyState === WebSocket.OPEN) {
+            const payload = {
+                type: 'audio_input_stop',
+                event_id: nextEventId('audio-stop'),
+                capture_id: captureId,
+            };
+            socket.send(JSON.stringify(payload));
+            appendProtocolEvent('outgoing', payload);
+        }
+        this.setStatus('idle', '麦克风待命');
+        micButton.textContent = '开启麦克风';
+    }
+
+    setStatus(state, label) {
+        micStatus.dataset.state = state;
+        micStatus.textContent = label;
+    }
+}
+
+const microphone = new MicrophoneRecorder();
+
 function websocketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     return `${scheme}://${window.location.host}/ws`;
@@ -178,6 +269,7 @@ function nextEventId(prefix) {
 function updateComposer() {
     const connected = socket?.readyState === WebSocket.OPEN;
     sendButton.disabled = !connected || !messageInput.value.trim();
+    micButton.disabled = !connected;
 }
 
 function setStatus(state, label) {
@@ -236,8 +328,41 @@ function handleIncoming(payload) {
     appendProtocolEvent('incoming', payload);
 
     if (payload.type === 'hello') {
-        advertisedAudioFormat = payload.audio;
-        audioStatus.textContent = `${payload.audio.sample_rate / 1000}k PCM 待命`;
+        advertisedInputFormat = payload.audio.input;
+        advertisedAudioFormat = payload.audio.output;
+        audioStatus.textContent = `${advertisedAudioFormat.sample_rate / 1000}k PCM 待命`;
+        return;
+    }
+
+    if (payload.type === 'audio_input_ready') {
+        microphone.setStatus('listening', '麦克风监听中');
+        return;
+    }
+
+    if (payload.type === 'vad_speech_start') {
+        microphone.setStatus('speech', '检测到说话');
+        return;
+    }
+
+    if (payload.type === 'vad_speech_end') {
+        microphone.setStatus('listening', '识别处理中');
+        return;
+    }
+
+    if (payload.type === 'asr_final') {
+        if (payload.text) appendMessage('user', payload.text, payload.utterance_id.slice(0, 8));
+        microphone.setStatus('listening', '麦克风监听中');
+        return;
+    }
+
+    if (payload.type === 'turn_cancelled') {
+        const message = messagesByTurn.get(payload.turn_id);
+        if (message) message.dataset.state = 'failed';
+        return;
+    }
+
+    if (payload.type === 'audio_stop') {
+        audioPlayer.stop('已被新语音打断');
         return;
     }
 
@@ -294,8 +419,8 @@ function handleIncoming(payload) {
         return;
     }
 
-    if (payload.type === 'error' && payload.event_id && pendingEvents.has(payload.event_id)) {
-        pendingEvents.delete(payload.event_id);
+    if (payload.type === 'error') {
+        if (payload.event_id) pendingEvents.delete(payload.event_id);
         appendMessage('assistant', `消息未处理：${payload.message}`, payload.code);
     }
 }
@@ -344,11 +469,12 @@ function connect() {
         }
     });
 
-    socket.addEventListener('close', (event) => {
+    socket.addEventListener('close', async (event) => {
         appendProtocolEvent('system', `WebSocket closed (${event.code})`);
         markStreamingMessagesInterrupted();
         pendingEvents.clear();
         audioPlayer.reset();
+        await microphone.stop(false);
         socket = null;
         setStatus('offline', '离线');
     });
@@ -400,6 +526,20 @@ pingButton.addEventListener('click', () => {
     appendProtocolEvent('outgoing', event);
 });
 stopAudioButton.addEventListener('click', () => audioPlayer.stop());
+micButton.addEventListener('click', async () => {
+    if (microphone.active) {
+        await microphone.stop();
+        return;
+    }
+    try {
+        await audioPlayer.prepare(advertisedAudioFormat);
+        await microphone.start(advertisedInputFormat);
+    } catch (error) {
+        await microphone.stop(false);
+        microphone.setStatus('error', '麦克风不可用');
+        appendProtocolEvent('system', `Microphone initialization failed: ${error.message}`);
+    }
+});
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
 connect();

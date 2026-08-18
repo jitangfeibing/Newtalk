@@ -191,6 +191,31 @@ h1 {
     letter-spacing: 0.08em;
 }
 
+.mic-badge {
+    border: 1px solid var(--line);
+    padding: 6px 9px;
+    color: var(--muted);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.mic-badge[data-state="listening"] {
+    border-color: var(--online);
+    color: var(--online);
+}
+
+.mic-badge[data-state="speech"] {
+    border-color: var(--signal);
+    color: var(--signal);
+    animation: pulse 0.55s ease-in-out infinite alternate;
+}
+
+.mic-badge[data-state="error"] {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
 .audio-badge[data-state="buffering"] {
     border-color: #d59524;
     color: #a56e0b;

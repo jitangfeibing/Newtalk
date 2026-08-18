@@ -8,7 +8,7 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 - 文字聊天。
 - 浏览器麦克风实时语音输入。
-- 流式 ASR、LLM 和 TTS。
+- VAD 语音活动检测，以及流式 ASR、LLM 和 TTS。
 - 浏览器音频播放和用户打断。
 - 摄像头、图片理解和多模态输入。
 - 基于声纹的家庭成员身份识别。
@@ -67,6 +67,7 @@ git remote -v
 - Web 是主要客户端。
 - 文本、语音和图片最终进入同一套聊天核心。
 - 一个用户行为只创建一个对话 Turn。
+- 麦克风音频必须经过明确的语音起止检测；静音和环境噪声不能直接创建 Turn。
 - 声纹识别结果必须映射到家庭成员 Identity。
 - Memory 和 User Profile 按家庭成员隔离。
 - Memory 查询不能无限增加首字延迟。
@@ -127,7 +128,7 @@ P2 Fake LLM：直接满足文本闭环，不建立通用 Provider 框架。
 P3 第一个真实 LLM：根据真实流式输出定义最小 ChatModel 契约。
 以后接入第二个 LLM：确认公共行为后再增加配置切换。
 P4 接入 TTS：此时才定义 TTS 所需的最小音频流契约。
-P5 接入 ASR：此时才定义 ASR 的音频输入和最终结果契约。
+P5 接入 VAD 和 ASR：此时才根据真实麦克风、音频格式和 ASR 行为定义最小契约。
 ```
 
 接口不是越早越好，而是在有真实调用者和至少一个真实实现时才有意义。
@@ -157,9 +158,9 @@ P5 接入 ASR：此时才定义 ASR 的音频输入和最终结果契约。
 ## 5. 目标调用链
 
 ```text
-Web 文本 --------------------------+
-浏览器麦克风 -> ASR 最终文本 ------+--> ChatInput
-Web 图片/摄像头帧 -----------------+       |
+Web 文本 ---------------------------------------+
+浏览器麦克风 -> 音频帧 -> VAD -> ASR 最终文本 --+--> ChatInput
+Web 图片/摄像头帧 ------------------------------+       |
                                             v
                                       TurnContext
                                             |
@@ -216,7 +217,7 @@ provider_tasks
 timing
 ```
 
-所有 ASR、Vision、LLM、Tool、TTS 返回都必须能归属到 `turn_id`。旧 Turn 的迟到结果不得写入新 Turn。
+所有 VAD、ASR、Vision、LLM、Tool、TTS 返回都必须能归属到当前输入或 `turn_id`。旧 Turn 的迟到结果不得写入新 Turn。
 
 ### 6.3 四类上下文
 
@@ -300,20 +301,26 @@ timing
 
 完成标准：记录 LLM 首 Token、TTS 首帧和浏览器开始播放时间。
 
-### P5：麦克风、ASR 和打断
+### P5：麦克风、VAD、ASR 和打断
 
-目标：完成语音实时聊天闭环。
+目标：完成包含语音起止检测的实时语音聊天闭环。
 
 工作内容：
 
 - 浏览器采集麦克风。
 - 明确浏览器到服务端的音频格式。
+- 定义音频帧的顺序、时间和连接归属，避免不同输入的音频串流。
+- 接入一个真实 VAD，检测 `speech_start` 和 `speech_end`。
+- 使用 VAD 的 `speech_start` 触发低延迟打断候选，使用 `speech_end` 推进 ASR 最终结果。
 - 接入一个 ASR，按实际实现定义最小契约。
 - ASR 最终文本转换为 `ChatInput`。
 - 新 Turn 能取消旧 Turn。
 - 旧 LLM/TTS 的迟到结果被丢弃。
+- 区分“浏览器本地停止播放”和“服务端取消当前 Turn”。
 
-完成标准：语音输入、回答、播放和 barge-in 有自动化集成测试。
+VAD 放在浏览器、服务端或两端配合，在 P5 根据真实音频格式、ASR Provider 的 endpointing 能力和实测延迟决定；本阶段之前不预设完整 VAD Provider Registry。
+
+完成标准：连续麦克风音频能稳定识别语音起止，静音不创建 Turn，一段有效语音只创建一个 Turn；语音输入、回答、播放和 barge-in 有自动化集成测试。
 
 ### P6：Session 和 Context
 
@@ -405,6 +412,8 @@ Fake Provider 单元测试
 必须覆盖：
 
 - 一次输入只创建一个 Turn。
+- 静音和短暂环境噪声不会创建 Turn。
+- 一段有效语音只产生一次 `speech_start`、`speech_end` 和 ASR 最终输入。
 - 打断后旧结果不能继续输出。
 - Memory 超时不会阻止 LLM。
 - Vision 失败能降级为纯文本聊天。
@@ -417,7 +426,9 @@ Fake Provider 单元测试
 
 ```text
 input_received
-speech_end
+audio_first_frame
+vad_speech_start
+vad_speech_end
 asr_final
 context_ready
 memory_ready_or_timeout
@@ -426,6 +437,8 @@ tts_first_frame
 browser_play_start
 turn_complete
 ```
+
+文本输入不产生音频、VAD 和 ASR 指标；语音输入必须记录这些阶段，便于区分采集、端点检测、识别、模型和合成各自的延迟。
 
 总延迟必须能拆解到具体阶段，不能只记录“这一轮用了 3 秒”。
 

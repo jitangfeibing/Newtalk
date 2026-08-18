@@ -3,6 +3,8 @@ import json
 from fastapi.testclient import TestClient
 
 from newtalk.app import create_app
+from newtalk.asr import FakeASR
+from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
 from newtalk.chat import ChatService, FakeLLM
 from newtalk.config import AppConfig
 
@@ -34,12 +36,20 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.3"
+        assert hello["protocol_version"] == "0.4"
         assert hello["session_id"]
         assert hello["audio"] == {
-            "codec": "pcm_s16le",
-            "sample_rate": 24000,
-            "channels": 1,
+            "input": {
+                "codec": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+                "frame_duration_ms": 20,
+            },
+            "output": {
+                "codec": "pcm_s16le",
+                "sample_rate": 24000,
+                "channels": 1,
+            },
         }
 
         websocket.send_json({"type": "ping", "event_id": "test-ping"})
@@ -220,3 +230,112 @@ def test_disconnect_during_stream_keeps_application_healthy() -> None:
         websocket.close()
 
     assert slow_client.get("/health").status_code == 200
+
+
+class ScriptedVadStream:
+    def __init__(self) -> None:
+        self.frame_count = 0
+
+    def process(self, pcm: bytes) -> list[VadEvent]:
+        del pcm
+        self.frame_count += 1
+        if self.frame_count == 1:
+            return [VadEvent("speech_start", 0.9, 20.0)]
+        if self.frame_count == 2:
+            return [VadEvent("speech_end", 0.1, 40.0)]
+        return []
+
+    def flush(self) -> list[VadEvent]:
+        return []
+
+    def reset(self) -> None:
+        return None
+
+
+class ScriptedVad:
+    def create_stream(self) -> ScriptedVadStream:
+        return ScriptedVadStream()
+
+
+def audio_input_start(capture_id: str = "capture-1") -> dict:
+    return {
+        "type": "audio_input_start",
+        "event_id": "audio-start-1",
+        "capture_id": capture_id,
+        "format": {
+            "codec": INPUT_AUDIO_FORMAT.codec,
+            "sample_rate": INPUT_AUDIO_FORMAT.sample_rate,
+            "channels": INPUT_AUDIO_FORMAT.channels,
+            "frame_duration_ms": INPUT_AUDIO_FORMAT.frame_duration_ms,
+        },
+    }
+
+
+def test_microphone_audio_creates_one_voice_turn() -> None:
+    voice_client = TestClient(
+        create_app(
+            AppConfig(),
+            vad=ScriptedVad(),
+            recognizer=FakeASR("语音测试"),
+        )
+    )
+    with voice_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        assert websocket.receive_json()["type"] == "audio_input_ready"
+
+        websocket.send_bytes(bytes(640))
+        assert websocket.receive_json()["type"] == "vad_speech_start"
+        websocket.send_bytes(bytes(640))
+
+        event_types: list[str] = []
+        turn_started_count = 0
+        final_text = None
+        while final_text is None:
+            frame = websocket.receive()
+            if frame.get("bytes") is not None:
+                continue
+            event = json.loads(frame["text"])
+            event_types.append(event["type"])
+            if event["type"] == "turn_started":
+                turn_started_count += 1
+            if event["type"] == "turn_completed":
+                final_text = event["text"]
+
+        assert event_types[:3] == ["vad_speech_end", "asr_final", "turn_started"]
+        assert turn_started_count == 1
+        assert final_text == "我收到了：语音测试"
+
+
+def test_vad_speech_start_cancels_the_active_turn() -> None:
+    barge_in_client = TestClient(
+        create_app(
+            AppConfig(),
+            chat_service=ChatService(FakeLLM(chunk_delay_seconds=0.2)),
+            vad=ScriptedVad(),
+            recognizer=FakeASR(),
+        )
+    )
+    with barge_in_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        assert websocket.receive_json()["type"] == "audio_input_ready"
+        websocket.send_json(
+            {"type": "text_input", "event_id": "old-turn", "text": "不要说完"}
+        )
+        old_turn = websocket.receive_json()
+        assert old_turn["type"] == "turn_started"
+
+        websocket.send_bytes(bytes(640))
+        assert websocket.receive_json()["type"] == "vad_speech_start"
+        cancelled = websocket.receive_json()
+        stopped = websocket.receive_json()
+
+        assert cancelled == {
+            "type": "turn_cancelled",
+            "turn_id": old_turn["turn_id"],
+            "reason": "barge_in",
+        }
+        assert stopped["type"] == "audio_stop"
+        assert stopped["turn_id"] == old_turn["turn_id"]
+        assert stopped["reason"] == "barge_in"
