@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from newtalk.app import create_app
-from newtalk.asr import FakeASR
+from newtalk.asr import AsrFinal, FakeASR
 from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
 from newtalk.chat import ChatService, FakeLLM
 from newtalk.config import AppConfig
@@ -257,6 +257,15 @@ class ScriptedVad:
         return ScriptedVadStream()
 
 
+class FailingASR(FakeASR):
+    async def stream(self, audio_chunks, *, utterance_id: str):
+        async for _ in audio_chunks:
+            break
+        if False:
+            yield AsrFinal(utterance_id)
+        raise RuntimeError("deterministic ASR failure")
+
+
 def audio_input_start(capture_id: str = "capture-1") -> dict:
     return {
         "type": "audio_input_start",
@@ -339,3 +348,31 @@ def test_vad_speech_start_cancels_the_active_turn() -> None:
         assert stopped["type"] == "audio_stop"
         assert stopped["turn_id"] == old_turn["turn_id"]
         assert stopped["reason"] == "barge_in"
+
+
+def test_asr_failure_is_reported_without_closing_websocket() -> None:
+    failing_asr_client = TestClient(
+        create_app(
+            AppConfig(),
+            vad=ScriptedVad(),
+            recognizer=FailingASR(),
+        )
+    )
+    with failing_asr_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        websocket.receive_json()
+        websocket.send_bytes(bytes(640))
+        boundary = websocket.receive_json()
+        failed = websocket.receive_json()
+
+        assert boundary["type"] == "vad_speech_start"
+        assert failed == {
+            "type": "asr_failed",
+            "utterance_id": boundary["utterance_id"],
+            "code": "recognition_failed",
+            "message": "Unable to recognize speech",
+        }
+
+        websocket.send_json({"type": "ping", "event_id": "after-asr-failure"})
+        assert websocket.receive_json()["type"] == "pong"

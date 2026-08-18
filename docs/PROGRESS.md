@@ -17,16 +17,16 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P5-A 麦克风、VAD、Fake ASR 与打断 |
-| 阶段状态 | P5-A 已完成并验证；真实 ASR 属于 P5-B |
-| 开发分支 | `codex/p5-voice-barge-in` |
-| 项目版本 | `0.5.0` |
+| 当前阶段 | P5-B 豆包双向流式 ASR |
+| 阶段状态 | 已完成并通过真实浏览器语音验收 |
+| 开发分支 | `codex/p5-real-asr` |
+| 项目版本 | `0.5.1` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 63 项通过，2 项 live 默认跳过；Silero ONNX 静音推理通过 |
-| CI | P1-P4 已合并；P5-A 尚未提交 PR |
+| 自动测试 | 76 项通过，2 项 live 默认跳过；真实 ASR 不进入普通 CI |
+| CI | P1-P5-A 已合并；P5-B 尚未提交 PR |
 | 最后更新 | 2026-08-18 |
 
 ## P1：基础运行骨架
@@ -318,9 +318,27 @@ text_input
 - 豆包真实流式 ASR 尚未接入，用户暂时不需要提供 App ID、Access Token 或 Resource ID。
 - Fake ASR 阶段不验证识别准确率；扬声器回声和真实流式识别下的打断听感留到 P5-B 验收。
 
+## P5-B：豆包双向流式 ASR
+
+### 已实现
+
+- 根据官方 V3 协议实现鉴权头、gzip JSON 请求、PCM 音频包、序列号和服务响应解析。
+- 浏览器 20ms PCM 在 Provider 内聚合为 100ms 包；最后一包使用负序列结束 utterance。
+- 豆包 partial/final 映射到现有 `SpeechRecognizer` 契约，只有 final 创建 Turn。
+- 默认 `enable_nonstream=false`，继续由本地 Silero 决定打断和静音结束。
+- 记录 `asr_first_result` 和 `asr_stream_completed` 耗时日志。
+- 鉴权、协议或超时失败通过 `asr_failed` 返回浏览器，WebSocket 保持可用。
+- Fake ASR 保留为 CI 默认路径，普通测试不调用外部服务或消耗额度。
+
+### 人工验收
+
+- 用户在火山控制台开通正确项目的 ASR 资源后，Chrome 已能返回真实中文识别文本。
+- 握手失败时已验证火山错误正文和 `logid` 会进入服务日志，便于区分代码错误与资源未授权。
+- 耳机/扬声器回声场景和完整 ASR→LLM→TTS 延迟仍作为后续持续观测项，不阻塞 P5-B 完成。
+
 ## 下一阶段
 
-P5-B 根据豆包实时语音识别官方文档接入第一个真实流式 ASR，并用浏览器实际验证 partial、final、端点延迟和双工回声场景。
+P5-B 合并后，再讨论 Dialogue Context、Identity/Memory 或 Vision 的优先顺序。
 
 ## 变更记录
 
@@ -332,3 +350,4 @@ P5-B 根据豆包实时语音识别官方文档接入第一个真实流式 ASR�
 | 2026-08-15 | P3 | 增加最小 ChatModel 契约、异步 OpenAI-compatible 流和 LLM 耗时日志 | 33 项通过；DeepSeek live 测试和真实 Web 流式聊天通过 |
 | 2026-08-16 | P4 | 增加豆包双向流式 TTS、PCM 二进制协议和 AudioWorklet 播放 | 50 项通过；豆包 live 与浏览器播放验证通过 |
 | 2026-08-18 | P5-A | 增加麦克风、Silero VAD、Fake ASR、可取消 Turn 和服务端 barge-in | 63 项通过；Silero 静音推理与协议集成测试通过 |
+| 2026-08-18 | P5-B | 增加豆包双向流式 ASR 协议、partial/final、失败反馈和耗时日志 | 76 项通过，2 项 live 跳过；真实 Chrome 中文识别通过 |

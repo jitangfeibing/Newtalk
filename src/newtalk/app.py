@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from newtalk import __version__
-from newtalk.asr import FakeASR, SpeechRecognizer
+from newtalk.asr import DoubaoStreamingASR, FakeASR, SpeechRecognizer
 from newtalk.audio import SileroVad, VoiceActivityDetector
 from newtalk.chat import ChatService, FakeLLM, OpenAICompatibleChatModel
 from newtalk.config import AppConfig, load_config
@@ -47,7 +47,16 @@ def create_vad(config: AppConfig) -> VoiceActivityDetector:
 def create_recognizer(config: AppConfig) -> SpeechRecognizer:
     if config.asr_backend == "fake":
         return FakeASR(config.asr_fake_text)
-    raise RuntimeError(f"Unsupported ASR backend: {config.asr_backend}")
+    if not config.asr_api_key or not config.asr_resource_id:
+        raise RuntimeError("Doubao ASR configuration is incomplete")
+    return DoubaoStreamingASR(
+        api_key=config.asr_api_key,
+        resource_id=config.asr_resource_id,
+        ws_url=config.asr_ws_url,
+        packet_duration_ms=config.asr_packet_duration_ms,
+        timeout_seconds=config.asr_timeout_seconds,
+        use_system_proxy=config.asr_use_system_proxy,
+    )
 
 
 def create_synthesizer(config: AppConfig) -> TextToSpeech:

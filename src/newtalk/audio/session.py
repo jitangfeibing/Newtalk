@@ -25,12 +25,14 @@ class AudioInputSession:
         recognizer: SpeechRecognizer,
         on_boundary: Callable[[SpeechBoundary], Awaitable[None]],
         on_asr_event: Callable[[str, AsrEvent], Awaitable[None]],
+        on_asr_error: Callable[[str, Exception], Awaitable[None]] | None = None,
         pre_roll_ms: int = 300,
     ) -> None:
         self._vad_stream = vad_stream
         self._recognizer = recognizer
         self._on_boundary = on_boundary
         self._on_asr_event = on_asr_event
+        self._on_asr_error = on_asr_error
         self._pre_roll_limit = int(
             INPUT_AUDIO_FORMAT.bytes_per_second * pre_roll_ms / 1000
         )
@@ -132,11 +134,23 @@ class AudioInputSession:
                 if isinstance(chunk, bytes):
                     yield chunk
 
-        async with aclosing(
-            self._recognizer.stream(audio_chunks(), utterance_id=utterance_id)
-        ) as events:
-            async for event in events:
-                await self._on_asr_event(utterance_id, event)
+        try:
+            async with aclosing(
+                self._recognizer.stream(audio_chunks(), utterance_id=utterance_id)
+            ) as events:
+                async for event in events:
+                    await self._on_asr_event(utterance_id, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "asr_stream_failed recognizer=%s utterance_id=%s",
+                type(self._recognizer).__name__,
+                utterance_id,
+                exc_info=True,
+            )
+            if self._on_asr_error is not None:
+                await self._on_asr_error(utterance_id, exc)
 
     def _append_pre_roll(self, pcm: bytes) -> None:
         self._pre_roll.append(pcm)

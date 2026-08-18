@@ -26,11 +26,15 @@ DEFAULT_VAD_MIN_SILENCE_MS = 600
 DEFAULT_VAD_PRE_ROLL_MS = 300
 DEFAULT_ASR_BACKEND = "fake"
 DEFAULT_ASR_FAKE_TEXT = "这是一次语音输入测试"
+DEFAULT_ASR_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+DEFAULT_ASR_PACKET_DURATION_MS = 100
+DEFAULT_ASR_TIMEOUT_SECONDS = 30.0
+DEFAULT_ASR_USE_SYSTEM_PROXY = False
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
 VALID_TTS_SAMPLE_RATES = {8000, 16000, 24000, 48000}
-VALID_ASR_BACKENDS = {"fake"}
+VALID_ASR_BACKENDS = {"doubao", "fake"}
 
 
 class ConfigError(ValueError):
@@ -66,6 +70,12 @@ class AppConfig:
     vad_pre_roll_ms: int = DEFAULT_VAD_PRE_ROLL_MS
     asr_backend: str = DEFAULT_ASR_BACKEND
     asr_fake_text: str = DEFAULT_ASR_FAKE_TEXT
+    asr_api_key: str | None = field(default=None, repr=False)
+    asr_resource_id: str | None = None
+    asr_ws_url: str = DEFAULT_ASR_WS_URL
+    asr_packet_duration_ms: int = DEFAULT_ASR_PACKET_DURATION_MS
+    asr_timeout_seconds: float = DEFAULT_ASR_TIMEOUT_SECONDS
+    asr_use_system_proxy: bool = DEFAULT_ASR_USE_SYSTEM_PROXY
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -224,6 +234,38 @@ class AppConfig:
         ).strip()
         if not asr_fake_text:
             raise ConfigError("NEWTALK_ASR_FAKE_TEXT must not be empty")
+        asr_api_key = _optional_value(values.get("NEWTALK_ASR_API_KEY"))
+        asr_resource_id = _optional_value(values.get("NEWTALK_ASR_RESOURCE_ID"))
+        asr_ws_url = values.get("NEWTALK_ASR_WS_URL", DEFAULT_ASR_WS_URL).strip()
+        if not asr_ws_url.startswith(("ws://", "wss://")):
+            raise ConfigError("NEWTALK_ASR_WS_URL must be a WebSocket URL")
+        asr_packet_duration_ms = _positive_int_value(
+            values,
+            "NEWTALK_ASR_PACKET_DURATION_MS",
+            DEFAULT_ASR_PACKET_DURATION_MS,
+        )
+        if asr_packet_duration_ms > 1000:
+            raise ConfigError("NEWTALK_ASR_PACKET_DURATION_MS must not exceed 1000")
+        asr_timeout_seconds = _positive_float_value(
+            values,
+            "NEWTALK_ASR_TIMEOUT_SECONDS",
+            DEFAULT_ASR_TIMEOUT_SECONDS,
+        )
+        asr_use_system_proxy = _boolean_value(
+            values.get("NEWTALK_ASR_USE_SYSTEM_PROXY"),
+            default=DEFAULT_ASR_USE_SYSTEM_PROXY,
+            name="NEWTALK_ASR_USE_SYSTEM_PROXY",
+        )
+        if asr_backend == "doubao":
+            required_asr_values = {
+                "NEWTALK_ASR_API_KEY": asr_api_key,
+                "NEWTALK_ASR_RESOURCE_ID": asr_resource_id,
+            }
+            for name, value in required_asr_values.items():
+                if not value:
+                    raise ConfigError(
+                        f"{name} is required when NEWTALK_ASR_BACKEND=doubao"
+                    )
 
         return cls(
             host=host,
@@ -253,6 +295,12 @@ class AppConfig:
             vad_pre_roll_ms=vad_pre_roll_ms,
             asr_backend=asr_backend,
             asr_fake_text=asr_fake_text,
+            asr_api_key=asr_api_key,
+            asr_resource_id=asr_resource_id,
+            asr_ws_url=asr_ws_url,
+            asr_packet_duration_ms=asr_packet_duration_ms,
+            asr_timeout_seconds=asr_timeout_seconds,
+            asr_use_system_proxy=asr_use_system_proxy,
         )
 
 
@@ -303,6 +351,17 @@ def _positive_int_value(
         value = int(raw_value)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise ConfigError(f"{name} must be greater than zero")
+    return value
+
+
+def _positive_float_value(
+    values: Mapping[str, str],
+    name: str,
+    default: float,
+) -> float:
+    value = _float_value(values, name, default)
     if value <= 0:
         raise ConfigError(f"{name} must be greater than zero")
     return value

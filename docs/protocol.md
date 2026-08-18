@@ -1,4 +1,4 @@
-# P5-A WebSocket 协议
+# P5-B WebSocket 协议
 
 Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客户端 JSON 帧传控制事件，客户端二进制帧传麦克风 PCM；服务端 JSON 帧传对话事件，服务端二进制帧传 TTS PCM。二进制帧的含义由发送方向区分。
 
@@ -45,7 +45,13 @@ Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客�
 {"type":"asr_final","utterance_id":"UUID","text":"最终文本"}
 ```
 
-只有非空 `asr_final` 创建一个新 Turn。P5-A 使用 Fake ASR，因此只产生固定最终文本，不产生 partial。
+只有非空 `asr_final` 创建一个新 Turn。Fake ASR 只产生固定 final；豆包 ASR 会产生去重后的 partial 和唯一 final。
+
+识别失败不会关闭客户端连接：
+
+```json
+{"type":"asr_failed","utterance_id":"UUID","code":"recognition_failed","message":"Unable to recognize speech"}
+```
 
 停止采集：
 
@@ -73,11 +79,12 @@ Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客�
 - 二进制音频未先开始采集：`audio_input_not_started`。
 - 输入格式不匹配：`unsupported_audio_format`。
 - PCM 字节数不是 2 的倍数：`invalid_audio_frame`。
+- Provider 鉴权、超时或协议失败：`asr_failed`。
 - 同一连接重复开始采集：`audio_input_active`。
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
 - `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
 
-## P5-A 调用链
+## P5-B 调用链
 
 ```text
 Browser getUserMedia
@@ -86,7 +93,9 @@ Browser getUserMedia
 -> AudioInputSession -> SileroVadStream
    |-> speech_start -> cancel old Turn -> turn_cancelled + audio_stop
    `-> speech_end   -> finish ASR utterance
--> SpeechRecognizer.stream -> asr_final
+-> SpeechRecognizer.stream
+   |-> FakeASR (test/CI)
+   `-> DoubaoStreamingASR (100ms packets -> partial/final)
 -> ConnectionRuntime.start_turn -> ChatService.stream_turn
 -> text_delta + TTS binary PCM -> PcmPlayer / AudioWorklet
 ```
