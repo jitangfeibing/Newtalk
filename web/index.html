@@ -10,7 +10,7 @@
     <main class="shell">
         <header class="masthead">
             <div>
-                <p class="eyebrow">NEWTALK / PART 04</p>
+                <p class="eyebrow">NEWTALK / PART 05</p>
                 <h1>Voice Console</h1>
             </div>
             <div class="status" data-state="offline" id="connectionStatus">
@@ -24,8 +24,8 @@
             <div>
                 <h2>文字流动，<br>声音随行。</h2>
                 <p class="hero-copy">
-                    当前页面验证真实 LLM 文本流、双向流式 TTS 与浏览器 PCM 播放。
-                    每条输入仍只创建一个 Turn，语音失败不会丢失文本回复。
+                    当前页面验证麦克风 PCM、Silero VAD、语音 Turn、流式 LLM/TTS 与打断。
+                    P5 先使用 Fake ASR 固定文本，真实流式 ASR 在链路稳定后接入。
                 </p>
             </div>
         </section>
@@ -39,6 +39,7 @@
                     </div>
                     <div class="runtime-badges">
                         <span class="model-badge">LLM STREAM</span>
+                        <span class="mic-badge" data-state="idle" id="micStatus">麦克风待命</span>
                         <span class="audio-badge" data-state="idle" id="audioStatus">音频待命</span>
                     </div>
                 </header>
@@ -56,6 +57,7 @@
                     <div class="composer-footer">
                         <span>最多 4000 字符 · PCM 低延迟播放</span>
                         <div class="composer-actions">
+                            <button type="button" class="button secondary" id="micButton" disabled>开启麦克风</button>
                             <button type="button" class="button secondary" id="stopAudioButton" disabled>停止播放</button>
                             <button type="submit" class="button send-button" id="sendButton" disabled>发送消息</button>
                         </div>

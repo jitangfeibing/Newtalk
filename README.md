@@ -6,9 +6,9 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
 
-## 当前阶段：P4
+## 当前阶段：P5-A
 
-P4 已完成文本回复到浏览器语音播放的第一个闭环：
+P5-A 已完成语音输入和打断的结构闭环：
 
 - `GET /health` 健康检查。
 - `WS /ws` WebSocket 握手、文本聊天和正常关闭。
@@ -23,10 +23,15 @@ P4 已完成文本回复到浏览器语音播放的第一个闭环：
 - 浏览器通过 AudioWorklet 缓冲、播放和停止 PCM。
 - 记录 LLM 首 Token、TTS 首音频帧和浏览器开始播放时间。
 - TTS 失败不会丢失已经生成的文本回复。
+- 浏览器通过 `getUserMedia` 和 AudioWorklet 采集麦克风，重采样为 16kHz 单声道 PCM。
+- 服务端通过 Silero VAD v6.2.1 检测语音开始和静音结束。
+- `speech_start` 取消旧 LLM/TTS Turn，并要求浏览器立即停止旧音频。
+- Fake ASR 把一段有效语音转换为固定测试文本，ASR Final 只创建一个 Turn。
+- WebSocket 接收、当前 Turn 和单一发送队列并发运行，旧 Turn 的迟到结果会被丢弃。
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段不包含 Dialogue Context、ASR、用户语音打断、Vision、Memory 和 Provider Registry。
+当前阶段尚未接入真实流式 ASR，也不包含 Dialogue Context、Vision、Memory 和 Provider Registry。
 
 ## 本地启动
 

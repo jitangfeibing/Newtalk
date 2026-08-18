@@ -4,7 +4,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from newtalk.transport.protocol import PROTOCOL_VERSION, send_protocol_error
+from newtalk.audio import INPUT_AUDIO_FORMAT
+from newtalk.transport.protocol import PROTOCOL_VERSION
+from newtalk.transport.runtime import ConnectionRuntime
 from newtalk.transport.text_chat import handle_text_input
 
 
@@ -17,19 +19,35 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     session_id = str(uuid4())
     logger.info("websocket_connected session_id=%s", session_id)
-    await websocket.send_json(
+    runtime = ConnectionRuntime(
+        websocket,
+        session_id=session_id,
+        chat_service=websocket.app.state.chat_service,
+        vad=websocket.app.state.vad,
+        recognizer=websocket.app.state.recognizer,
+        vad_pre_roll_ms=websocket.app.state.config.vad_pre_roll_ms,
+    )
+    await runtime.start()
+    await runtime.send_json(
         {
             "type": "hello",
             "protocol_version": PROTOCOL_VERSION,
             "session_id": session_id,
             "audio": {
-                "codec": websocket.app.state.chat_service.audio_format.codec,
-                "sample_rate": websocket.app.state.chat_service.audio_format.sample_rate,
-                "channels": websocket.app.state.chat_service.audio_format.channels,
+                "input": {
+                    "codec": INPUT_AUDIO_FORMAT.codec,
+                    "sample_rate": INPUT_AUDIO_FORMAT.sample_rate,
+                    "channels": INPUT_AUDIO_FORMAT.channels,
+                    "frame_duration_ms": INPUT_AUDIO_FORMAT.frame_duration_ms,
+                },
+                "output": {
+                    "codec": websocket.app.state.chat_service.audio_format.codec,
+                    "sample_rate": websocket.app.state.chat_service.audio_format.sample_rate,
+                    "channels": websocket.app.state.chat_service.audio_format.channels,
+                },
             },
         }
     )
-    seen_event_ids: set[str] = set()
 
     try:
         while True:
@@ -38,10 +56,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 logger.info("websocket_disconnected session_id=%s", session_id)
                 break
 
+            raw_bytes = frame.get("bytes")
+            if raw_bytes is not None:
+                await runtime.push_audio(raw_bytes)
+                continue
+
             raw_message = frame.get("text")
             if raw_message is None:
-                await send_protocol_error(
-                    websocket,
+                await runtime.send_error(
                     code="unsupported_frame",
                     message="Client messages must be JSON text frames",
                 )
@@ -50,16 +72,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             try:
                 event = json.loads(raw_message)
             except json.JSONDecodeError:
-                await send_protocol_error(
-                    websocket,
+                await runtime.send_error(
                     code="invalid_json",
                     message="Message must be valid JSON",
                 )
                 continue
 
             if not isinstance(event, dict) or not isinstance(event.get("type"), str):
-                await send_protocol_error(
-                    websocket,
+                await runtime.send_error(
                     code="invalid_event",
                     message="Event must be an object with a string type",
                 )
@@ -76,7 +96,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 }
                 if event_id:
                     response["event_id"] = event_id
-                await websocket.send_json(response)
+                await runtime.send_json(response)
                 continue
 
             if event["type"] == "close":
@@ -86,19 +106,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 }
                 if event_id:
                     response["event_id"] = event_id
-                await websocket.send_json(response)
+                await runtime.send_json(response)
                 await websocket.close(code=1000, reason="client requested close")
                 logger.info("websocket_closed session_id=%s reason=client_request", session_id)
                 return
 
             if event["type"] == "text_input":
                 await handle_text_input(
-                    websocket,
-                    session_id=session_id,
+                    runtime,
                     event=event,
                     event_id=event_id,
-                    seen_event_ids=seen_event_ids,
                 )
+                continue
+
+            if event["type"] == "audio_input_start":
+                await runtime.start_audio_input(event)
+                continue
+
+            if event["type"] == "audio_input_stop":
+                await runtime.stop_audio_input(event)
                 continue
 
             if event["type"] == "playback_started":
@@ -120,16 +146,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         elapsed_ms,
                     )
                 else:
-                    await send_protocol_error(
-                        websocket,
+                    await runtime.send_error(
                         code="invalid_playback_metric",
                         message="playback_started contains invalid fields",
                         event_id=event_id,
                     )
                 continue
 
-            await send_protocol_error(
-                websocket,
+            await runtime.send_error(
                 code="unsupported_event",
                 message=f"Unsupported event type: {event['type']}",
                 event_id=event_id,
@@ -141,3 +165,5 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             exc.code,
         )
         return
+    finally:
+        await runtime.close()

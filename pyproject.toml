@@ -4,12 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newtalk"
-version = "0.4.0"
+version = "0.5.0"
 description = "Web-first multimodal companion runtime"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110,<1",
+    "numpy>=1.26,<3",
+    "onnxruntime>=1.16,<2",
     "openai>=2,<3",
     "python-dotenv>=1,<2",
     "uvicorn[standard]>=0.29,<1",

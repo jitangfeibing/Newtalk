@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from functools import lru_cache
 import logging
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from newtalk import __version__
+from newtalk.asr import FakeASR, SpeechRecognizer
+from newtalk.audio import SileroVad, VoiceActivityDetector
 from newtalk.chat import ChatService, FakeLLM, OpenAICompatibleChatModel
 from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
@@ -15,6 +18,36 @@ from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
 
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=8)
+def _create_silero_vad(
+    model_path: Path,
+    threshold: float,
+    threshold_low: float,
+    min_silence_ms: int,
+) -> SileroVad:
+    return SileroVad(
+        model_path,
+        threshold=threshold,
+        threshold_low=threshold_low,
+        min_silence_duration_ms=min_silence_ms,
+    )
+
+
+def create_vad(config: AppConfig) -> VoiceActivityDetector:
+    return _create_silero_vad(
+        config.vad_model_path,
+        config.vad_threshold,
+        config.vad_threshold_low,
+        config.vad_min_silence_ms,
+    )
+
+
+def create_recognizer(config: AppConfig) -> SpeechRecognizer:
+    if config.asr_backend == "fake":
+        return FakeASR(config.asr_fake_text)
+    raise RuntimeError(f"Unsupported ASR backend: {config.asr_backend}")
 
 
 def create_synthesizer(config: AppConfig) -> TextToSpeech:
@@ -66,6 +99,8 @@ def create_app(
     *,
     web_root: Path | None = None,
     chat_service: ChatService | None = None,
+    vad: VoiceActivityDetector | None = None,
+    recognizer: SpeechRecognizer | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -73,27 +108,33 @@ def create_app(
     if not config.web_root.is_dir():
         raise RuntimeError(f"Web root does not exist: {config.web_root}")
     resolved_chat_service = chat_service or create_chat_service(config)
+    resolved_vad = vad or create_vad(config)
+    resolved_recognizer = recognizer or create_recognizer(config)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         logger.info(
-            "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s",
+            "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s",
             config.host,
             config.port,
             config.web_root,
             config.llm_backend,
             config.llm_model or "fake",
             config.tts_backend,
+            config.asr_backend,
         )
         try:
             yield
         finally:
             await resolved_chat_service.aclose()
+            await resolved_recognizer.aclose()
             logger.info("service_stopped")
 
     app = FastAPI(title="Newtalk", version=__version__, lifespan=lifespan)
     app.state.config = config
     app.state.chat_service = resolved_chat_service
+    app.state.vad = resolved_vad
+    app.state.recognizer = resolved_recognizer
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

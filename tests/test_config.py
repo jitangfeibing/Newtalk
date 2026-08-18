@@ -39,6 +39,13 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_TTS_SAMPLE_RATE": "16000",
             "NEWTALK_TTS_TIMEOUT_SECONDS": "9.5",
             "NEWTALK_TTS_USE_SYSTEM_PROXY": "true",
+            "NEWTALK_VAD_MODEL_PATH": str(tmp_path / "vad.onnx"),
+            "NEWTALK_VAD_THRESHOLD": "0.6",
+            "NEWTALK_VAD_THRESHOLD_LOW": "0.2",
+            "NEWTALK_VAD_MIN_SILENCE_MS": "450",
+            "NEWTALK_VAD_PRE_ROLL_MS": "240",
+            "NEWTALK_ASR_BACKEND": "fake",
+            "NEWTALK_ASR_FAKE_TEXT": "fake speech",
         }
     )
 
@@ -60,6 +67,12 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.tts_sample_rate == 16000
     assert config.tts_timeout_seconds == 9.5
     assert config.tts_use_system_proxy is True
+    assert config.vad_model_path == (tmp_path / "vad.onnx").resolve()
+    assert config.vad_threshold == 0.6
+    assert config.vad_threshold_low == 0.2
+    assert config.vad_min_silence_ms == 450
+    assert config.vad_pre_roll_ms == 240
+    assert config.asr_fake_text == "fake speech"
     assert "test-secret" not in repr(config)
     assert "tts-secret" not in repr(config)
 
@@ -80,6 +93,13 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_TTS_SAMPLE_RATE", "44100"),
         ("NEWTALK_TTS_TIMEOUT_SECONDS", "0"),
         ("NEWTALK_TTS_USE_SYSTEM_PROXY", "sometimes"),
+        ("NEWTALK_VAD_THRESHOLD", "loud"),
+        ("NEWTALK_VAD_THRESHOLD", "1.1"),
+        ("NEWTALK_VAD_THRESHOLD_LOW", "0.5"),
+        ("NEWTALK_VAD_MIN_SILENCE_MS", "0"),
+        ("NEWTALK_VAD_PRE_ROLL_MS", "none"),
+        ("NEWTALK_ASR_BACKEND", "unknown"),
+        ("NEWTALK_ASR_FAKE_TEXT", ""),
     ],
 )
 def test_config_rejects_invalid_values(name: str, value: str) -> None:

@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P4 TTS 播放闭环 |
-| 阶段状态 | 已完成并验证 |
-| 开发分支 | `codex/p4-streaming-tts` |
-| 项目版本 | `0.4.0` |
+| 当前阶段 | P5-A 麦克风、VAD、Fake ASR 与打断 |
+| 阶段状态 | P5-A 已完成并验证；真实 ASR 属于 P5-B |
+| 开发分支 | `codex/p5-voice-barge-in` |
+| 项目版本 | `0.5.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 50 项通过，2 项 live 默认跳过；真实豆包 TTS 显式运行通过 |
-| CI | P1、P2 已合并；P3、P4 等待 PR 验证 |
-| 最后更新 | 2026-08-16 |
+| 自动测试 | 63 项通过，2 项 live 默认跳过；Silero ONNX 静音推理通过 |
+| CI | P1-P4 已合并；P5-A 尚未提交 PR |
+| 最后更新 | 2026-08-18 |
 
 ## P1：基础运行骨架
 
@@ -293,9 +293,34 @@ text_input
 - 真实豆包音频与真实 LLM 的浏览器听感需要用户手工确认。
 - Dialogue Context、Memory、ASR、Vision 和 Tool 仍未实现。
 
+## P5-A：麦克风、VAD、Fake ASR 与打断
+
+### 已完成
+
+- 浏览器麦克风重采样为 16kHz、单声道、PCM S16LE，并按 20ms 发送。
+- 固定 Silero VAD v6.2.1 ONNX 模型，双阈值、滑动窗口、pre-roll 和静音结束均在服务端执行。
+- 定义最小 `SpeechRecognizer` 契约和 Fake ASR，ASR Final 进入现有 ChatService。
+- 每条连接持有独立 VAD/采集状态，只允许一个活动 capture 和一个活动 Turn。
+- WebSocket 接收循环不再阻塞于聊天生成，当前 Turn 可被新文本或 `speech_start` 取消。
+- 单一发送队列按 `turn_id` 丢弃旧 LLM/TTS 的迟到结果。
+- 浏览器收到 `audio_stop` 时清空播放队列，系统“停止播放”按钮仍只处理本地播放。
+
+### 验证结果
+
+- `63 passed, 2 skipped`，覆盖 VAD 边界、静音、音频会话、语音唯一 Turn 和 barge-in。
+- 真实 Silero ONNX 对 1 秒全零 PCM 推理完成，未产生误触发。
+- JavaScript 语法检查、`git diff --check` 和真实 Uvicorn HTTP/WebSocket 集成测试通过。
+- 用户通过 Chrome 完成真实麦克风测试，VAD 能检测声音并在静音后形成唯一 Fake ASR Turn。
+
+### 当前边界
+
+- Fake ASR 只返回 `.env` 中的固定测试文本，不代表语音内容识别正确。
+- 豆包真实流式 ASR 尚未接入，用户暂时不需要提供 App ID、Access Token 或 Resource ID。
+- Fake ASR 阶段不验证识别准确率；扬声器回声和真实流式识别下的打断听感留到 P5-B 验收。
+
 ## 下一阶段
 
-P5 目标是加入浏览器麦克风、一个真实流式 ASR，以及新 Turn 对旧 LLM/TTS 的服务端取消。
+P5-B 根据豆包实时语音识别官方文档接入第一个真实流式 ASR，并用浏览器实际验证 partial、final、端点延迟和双工回声场景。
 
 ## 变更记录
 
@@ -306,3 +331,4 @@ P5 目标是加入浏览器麦克风、一个真实流式 ASR，以及新 Turn �
 | 2026-08-15 | P2 | 建立唯一 Turn、Fake LLM 流式回复和 Web 文本聊天闭环 | 23 项测试及真实浏览器桌面/移动验证通过 |
 | 2026-08-15 | P3 | 增加最小 ChatModel 契约、异步 OpenAI-compatible 流和 LLM 耗时日志 | 33 项通过；DeepSeek live 测试和真实 Web 流式聊天通过 |
 | 2026-08-16 | P4 | 增加豆包双向流式 TTS、PCM 二进制协议和 AudioWorklet 播放 | 50 项通过；豆包 live 与浏览器播放验证通过 |
+| 2026-08-18 | P5-A | 增加麦克风、Silero VAD、Fake ASR、可取消 Turn 和服务端 barge-in | 63 项通过；Silero 静音推理与协议集成测试通过 |
