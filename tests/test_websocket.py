@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi.testclient import TestClient
@@ -5,7 +6,7 @@ from fastapi.testclient import TestClient
 from newtalk.app import create_app
 from newtalk.asr import AsrFinal, FakeASR
 from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
-from newtalk.chat import ChatService, FakeLLM
+from newtalk.chat import ChatMessage, ChatService, FakeLLM
 from newtalk.config import AppConfig
 
 
@@ -149,6 +150,88 @@ def test_same_text_with_different_events_creates_two_turns() -> None:
             turn_ids.append(started["turn_id"])
 
         assert turn_ids[0] != turn_ids[1]
+
+
+class RecordingModel:
+    def __init__(self, delay_seconds: float = 0) -> None:
+        self.delay_seconds = delay_seconds
+        self.requests: list[tuple[ChatMessage, ...]] = []
+
+    async def stream(self, messages):
+        self.requests.append(tuple(messages))
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+        yield "回复："
+        yield messages[-1].content
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_completed_turns_are_sent_as_dialogue_context() -> None:
+    model = RecordingModel()
+    context_client = TestClient(create_app(chat_service=ChatService(model)))
+
+    with context_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        for event_id, text in (("first", "我叫小明"), ("second", "我叫什么？")):
+            websocket.send_json(
+                {"type": "text_input", "event_id": event_id, "text": text}
+            )
+            _, _, completed, _, _ = receive_turn(websocket)
+            assert completed["type"] == "turn_completed"
+
+    assert model.requests == [
+        (ChatMessage("user", "我叫小明"),),
+        (
+            ChatMessage("user", "我叫小明"),
+            ChatMessage("assistant", "回复：我叫小明"),
+            ChatMessage("user", "我叫什么？"),
+        ),
+    ]
+
+
+def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
+    model = RecordingModel(delay_seconds=0.1)
+    context_client = TestClient(create_app(chat_service=ChatService(model)))
+
+    with context_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {"type": "text_input", "event_id": "cancelled", "text": "不要记住"}
+        )
+        assert websocket.receive_json()["type"] == "turn_started"
+        websocket.send_json(
+            {"type": "text_input", "event_id": "replacement", "text": "新的问题"}
+        )
+
+        event_types: list[str] = []
+        while "turn_completed" not in event_types:
+            frame = websocket.receive()
+            if frame.get("bytes") is None:
+                event_types.append(json.loads(frame["text"])["type"])
+
+    assert "turn_cancelled" in event_types
+    assert model.requests[-1] == (ChatMessage("user", "新的问题"),)
+
+
+def test_websocket_connections_do_not_share_dialogue_context() -> None:
+    model = RecordingModel()
+    isolated_client = TestClient(create_app(chat_service=ChatService(model)))
+
+    for event_id, text in (("session-a", "甲的问题"), ("session-b", "乙的问题")):
+        with isolated_client.websocket_connect("/ws") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                {"type": "text_input", "event_id": event_id, "text": text}
+            )
+            _, _, completed, _, _ = receive_turn(websocket)
+            assert completed["type"] == "turn_completed"
+
+    assert model.requests == [
+        (ChatMessage("user", "甲的问题"),),
+        (ChatMessage("user", "乙的问题"),),
+    ]
 
 
 def test_duplicate_event_id_does_not_create_another_turn() -> None:

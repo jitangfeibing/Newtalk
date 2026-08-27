@@ -26,6 +26,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         vad=websocket.app.state.vad,
         recognizer=websocket.app.state.recognizer,
         vad_pre_roll_ms=websocket.app.state.config.vad_pre_roll_ms,
+        dialogue_max_turns=websocket.app.state.config.dialogue_max_turns,
+        dialogue_max_chars=websocket.app.state.config.dialogue_max_chars,
     )
     await runtime.start()
     await runtime.send_json(

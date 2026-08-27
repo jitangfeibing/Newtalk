@@ -9,6 +9,7 @@ from newtalk.chat import (
     AudioFrame,
     AudioStarted,
     ChatService,
+    ChatMessage,
     FakeLLM,
     TextDelta,
     TurnCompleted,
@@ -32,6 +33,7 @@ def test_chat_service_creates_unique_turns() -> None:
     assert first.turn_id != second.turn_id
     assert first.session_id == second.session_id == "session"
     assert first.user_text == second.user_text == "你好"
+    assert first.messages == second.messages == (ChatMessage("user", "你好"),)
     assert first.created_at.tzinfo is not None
 
 
@@ -58,9 +60,9 @@ def test_chat_service_logs_first_token_and_completion(caplog) -> None:
 
 
 class EmptyModel:
-    async def stream(self, user_text: str):
+    async def stream(self, messages):
         if False:
-            yield user_text
+            yield messages
 
     async def aclose(self) -> None:
         return None

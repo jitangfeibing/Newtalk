@@ -11,6 +11,8 @@ DEFAULT_WEB_ROOT = PROJECT_ROOT / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8006
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_DIALOGUE_MAX_TURNS = 8
+DEFAULT_DIALOGUE_MAX_CHARS = 12000
 DEFAULT_LLM_BACKEND = "fake"
 DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 DEFAULT_TTS_BACKEND = "fake"
@@ -47,6 +49,8 @@ class AppConfig:
     port: int = DEFAULT_PORT
     log_level: str = DEFAULT_LOG_LEVEL
     web_root: Path = DEFAULT_WEB_ROOT
+    dialogue_max_turns: int = DEFAULT_DIALOGUE_MAX_TURNS
+    dialogue_max_chars: int = DEFAULT_DIALOGUE_MAX_CHARS
     llm_backend: str = DEFAULT_LLM_BACKEND
     llm_api_key: str | None = field(default=None, repr=False)
     llm_base_url: str | None = None
@@ -102,6 +106,21 @@ class AppConfig:
             if raw_web_root
             else DEFAULT_WEB_ROOT
         )
+
+        dialogue_max_turns = _positive_int_value(
+            values,
+            "NEWTALK_DIALOGUE_MAX_TURNS",
+            DEFAULT_DIALOGUE_MAX_TURNS,
+        )
+        if dialogue_max_turns > 50:
+            raise ConfigError("NEWTALK_DIALOGUE_MAX_TURNS must not exceed 50")
+        dialogue_max_chars = _positive_int_value(
+            values,
+            "NEWTALK_DIALOGUE_MAX_CHARS",
+            DEFAULT_DIALOGUE_MAX_CHARS,
+        )
+        if dialogue_max_chars > 100000:
+            raise ConfigError("NEWTALK_DIALOGUE_MAX_CHARS must not exceed 100000")
 
         llm_backend = values.get("NEWTALK_LLM_BACKEND", DEFAULT_LLM_BACKEND).strip().lower()
         if llm_backend not in VALID_LLM_BACKENDS:
@@ -272,6 +291,8 @@ class AppConfig:
             port=port,
             log_level=log_level,
             web_root=web_root,
+            dialogue_max_turns=dialogue_max_turns,
+            dialogue_max_chars=dialogue_max_chars,
             llm_backend=llm_backend,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,

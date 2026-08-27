@@ -5,12 +5,14 @@ from newtalk.chat.models import (
     AudioFailed,
     AudioFrame,
     AudioStarted,
+    ChatMessage,
     TextDelta,
     Turn,
     TurnCompleted,
     TurnOutput,
 )
 from newtalk.chat.openai_compatible import OpenAICompatibleChatModel
+from newtalk.chat.session import DialogueExchange, DialogueSession
 from newtalk.chat.service import ChatService
 
 
@@ -21,6 +23,9 @@ __all__ = [
     "AudioFailed",
     "AudioFrame",
     "AudioStarted",
+    "ChatMessage",
+    "DialogueExchange",
+    "DialogueSession",
     "FakeLLM",
     "OpenAICompatibleChatModel",
     "TextDelta",

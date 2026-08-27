@@ -6,9 +6,9 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
 
-## 当前阶段：P5-B
+## 当前阶段：P6
 
-P5-B 已在 P5-A 语音输入和打断闭环上接入豆包双向流式 ASR：
+P6 在完整语音闭环上增加连接级 Session 和有限多轮 Context：
 
 - `GET /health` 健康检查。
 - `WS /ws` WebSocket 握手、文本聊天和正常关闭。
@@ -29,11 +29,15 @@ P5-B 已在 P5-A 语音输入和打断闭环上接入豆包双向流式 ASR：
 - Fake ASR 继续用于自动测试；豆包 ASR 使用官方 V3 二进制 WebSocket 协议。
 - 豆包 ASR 按 100ms 聚合 PCM，实时返回 partial，并在 final 时只创建一个 Turn。
 - ASR 记录首个识别结果和完整识别耗时；失败会返回 `asr_failed`，不会关闭 WebSocket。
+- 每条 WebSocket 连接持有独立 `DialogueSession`，不同连接不共享历史。
+- 只有成功完成的用户/助手轮次进入 Dialogue History；取消或失败的 Turn 不写入历史。
+- 上下文按最近轮次和总字符数双重限制，默认最多 8 轮、12000 字符。
+- Fake 和 OpenAI-compatible LLM 使用同一个多轮消息契约。
 - WebSocket 接收、当前 Turn 和单一发送队列并发运行，旧 Turn 的迟到结果会被丢弃。
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段仍不包含 Dialogue Context、Vision、Memory 和 Provider Registry。
+当前阶段仍不包含跨连接 Session 恢复、长期 Memory、Vision 和 Provider Registry。
 
 ## 本地启动
 
@@ -46,6 +50,15 @@ newtalk
 
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
+
+P6 对话窗口配置：
+
+```dotenv
+NEWTALK_DIALOGUE_MAX_TURNS=8
+NEWTALK_DIALOGUE_MAX_CHARS=12000
+```
+
+窗口只保存当前 WebSocket 连接内成功完成的对话；刷新或断开页面后历史会清空。
 
 使用智谱或其他 OpenAI-compatible 服务时，在本地 `.env` 配置：
 
