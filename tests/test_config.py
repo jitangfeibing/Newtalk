@@ -24,6 +24,8 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_PORT": "9000",
             "NEWTALK_LOG_LEVEL": "debug",
             "NEWTALK_WEB_ROOT": str(tmp_path),
+            "NEWTALK_DIALOGUE_MAX_TURNS": "6",
+            "NEWTALK_DIALOGUE_MAX_CHARS": "9000",
             "NEWTALK_LLM_BACKEND": "openai",
             "NEWTALK_LLM_API_KEY": "test-secret",
             "NEWTALK_LLM_BASE_URL": "https://example.test/v1",
@@ -59,6 +61,8 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.port == 9000
     assert config.log_level == "DEBUG"
     assert config.web_root == tmp_path.resolve()
+    assert config.dialogue_max_turns == 6
+    assert config.dialogue_max_chars == 9000
     assert config.llm_backend == "openai"
     assert config.llm_api_key == "test-secret"
     assert config.llm_base_url == "https://example.test/v1"
@@ -98,6 +102,10 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_PORT", "not-a-port"),
         ("NEWTALK_PORT", "0"),
         ("NEWTALK_LOG_LEVEL", "verbose"),
+        ("NEWTALK_DIALOGUE_MAX_TURNS", "0"),
+        ("NEWTALK_DIALOGUE_MAX_TURNS", "51"),
+        ("NEWTALK_DIALOGUE_MAX_CHARS", "0"),
+        ("NEWTALK_DIALOGUE_MAX_CHARS", "100001"),
         ("NEWTALK_LLM_BACKEND", "unknown"),
         ("NEWTALK_LLM_TIMEOUT_SECONDS", "never"),
         ("NEWTALK_LLM_TIMEOUT_SECONDS", "0"),

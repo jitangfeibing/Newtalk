@@ -1,7 +1,9 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from openai import AsyncOpenAI
+
+from newtalk.chat.models import ChatMessage
 
 
 class OpenAICompatibleChatModel:
@@ -23,11 +25,14 @@ class OpenAICompatibleChatModel:
             timeout=timeout_seconds,
         )
 
-    async def stream(self, user_text: str) -> AsyncIterator[str]:
+    async def stream(self, dialogue: Sequence[ChatMessage]) -> AsyncIterator[str]:
         messages: list[dict[str, str]] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
-        messages.append({"role": "user", "content": user_text})
+        messages.extend(
+            {"role": message.role, "content": message.content}
+            for message in dialogue
+        )
 
         async with self._client.chat.completions.stream(
             model=self.model,

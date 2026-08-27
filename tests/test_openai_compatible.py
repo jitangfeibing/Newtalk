@@ -2,7 +2,7 @@ import asyncio
 from contextlib import aclosing
 from types import SimpleNamespace
 
-from newtalk.chat import ChatService, OpenAICompatibleChatModel
+from newtalk.chat import ChatMessage, ChatService, OpenAICompatibleChatModel
 
 
 class StubStream:
@@ -65,7 +65,13 @@ def test_openai_compatible_model_uses_chat_service_and_closes_resources() -> Non
 
         service = ChatService(model)
         turn = service.create_turn(
-            session_id="test-session", user_text="介绍一下自己"
+            session_id="test-session",
+            user_text="介绍一下自己",
+            messages=(
+                ChatMessage("user", "我叫小明"),
+                ChatMessage("assistant", "你好，小明"),
+                ChatMessage("user", "介绍一下自己"),
+            ),
         )
         chunks = [chunk async for chunk in service.stream_reply(turn)]
         await service.aclose()
@@ -78,6 +84,8 @@ def test_openai_compatible_model_uses_chat_service_and_closes_resources() -> Non
         "model": "test-model",
         "messages": [
             {"role": "system", "content": "你是测试助手"},
+            {"role": "user", "content": "我叫小明"},
+            {"role": "assistant", "content": "你好，小明"},
             {"role": "user", "content": "介绍一下自己"},
         ],
     }
@@ -94,7 +102,10 @@ def test_openai_compatible_model_omits_empty_system_prompt() -> None:
             model="test-model",
             client=client,
         )
-        chunks = [chunk async for chunk in model.stream("你好")]
+        chunks = [
+            chunk
+            async for chunk in model.stream((ChatMessage("user", "你好"),))
+        ]
         return chunks, client
 
     chunks, client = asyncio.run(exercise())

@@ -14,6 +14,7 @@ from newtalk.chat.models import (
     AudioFrame,
     AudioStarted,
     TextDelta,
+    ChatMessage,
     Turn,
     TurnCompleted,
     TurnOutput,
@@ -40,11 +41,24 @@ class ChatService:
     def audio_format(self) -> AudioFormat:
         return self._synthesizer.audio_format
 
-    def create_turn(self, *, session_id: str, user_text: str) -> Turn:
+    def create_turn(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        messages: tuple[ChatMessage, ...] | None = None,
+    ) -> Turn:
+        resolved_messages = messages or (ChatMessage("user", user_text),)
+        if (
+            resolved_messages[-1].role != "user"
+            or resolved_messages[-1].content != user_text
+        ):
+            raise ValueError("Turn messages must end with the current user input")
         return Turn(
             turn_id=str(uuid4()),
             session_id=session_id,
             user_text=user_text,
+            messages=resolved_messages,
             created_at=datetime.now(timezone.utc),
         )
 
@@ -53,7 +67,7 @@ class ChatService:
         chunk_count = 0
         model_name = type(self._model).__name__
         try:
-            async with aclosing(self._model.stream(turn.user_text)) as model_stream:
+            async with aclosing(self._model.stream(turn.messages)) as model_stream:
                 async for chunk in model_stream:
                     if not isinstance(chunk, str) or not chunk:
                         raise ValueError("Chat model chunks must be non-empty strings")

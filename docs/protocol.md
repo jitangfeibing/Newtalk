@@ -1,6 +1,8 @@
-# P5-B WebSocket 协议
+# P6 WebSocket 协议
 
 Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客户端 JSON 帧传控制事件，客户端二进制帧传麦克风 PCM；服务端 JSON 帧传对话事件，服务端二进制帧传 TTS PCM。二进制帧的含义由发送方向区分。
+
+P6 没有增加客户端消息类型。`hello.session_id` 同时标识当前内存 Dialogue Session；同一连接内成功完成的文本或语音 Turn 会自动进入后续 LLM Context，断线后不恢复。
 
 ## 建连
 
@@ -84,7 +86,7 @@ Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客�
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
 - `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
 
-## P5-B 调用链
+## P6 调用链
 
 ```text
 Browser getUserMedia
@@ -96,6 +98,9 @@ Browser getUserMedia
 -> SpeechRecognizer.stream
    |-> FakeASR (test/CI)
    `-> DoubaoStreamingASR (100ms packets -> partial/final)
--> ConnectionRuntime.start_turn -> ChatService.stream_turn
+-> ConnectionRuntime.start_turn
+-> DialogueSession.messages_for -> immutable Turn.messages
+-> ChatService.stream_turn
 -> text_delta + TTS binary PCM -> PcmPlayer / AudioWorklet
+-> turn_completed -> DialogueSession.commit
 ```

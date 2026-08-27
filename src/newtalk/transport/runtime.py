@@ -20,6 +20,7 @@ from newtalk.chat import (
     AudioFrame,
     AudioStarted,
     ChatService,
+    DialogueSession,
     TextDelta,
     TurnCompleted,
 )
@@ -48,6 +49,8 @@ class ConnectionRuntime:
         vad: VoiceActivityDetector,
         recognizer: SpeechRecognizer,
         vad_pre_roll_ms: int,
+        dialogue_max_turns: int,
+        dialogue_max_chars: int,
     ) -> None:
         self.websocket = websocket
         self.session_id = session_id
@@ -55,6 +58,11 @@ class ConnectionRuntime:
         self._vad = vad
         self._recognizer = recognizer
         self._vad_pre_roll_ms = vad_pre_roll_ms
+        self._dialogue = DialogueSession(
+            session_id,
+            max_turns=dialogue_max_turns,
+            max_chars=dialogue_max_chars,
+        )
         self._seen_event_ids: set[str] = set()
         self._outbound: asyncio.Queue[_OutboundFrame] = asyncio.Queue(maxsize=256)
         self._sender_task: asyncio.Task[None] | None = None
@@ -108,9 +116,12 @@ class ConnectionRuntime:
 
     async def start_turn(self, *, text: str, event_id: str) -> None:
         await self.cancel_turn(reason="superseded")
+        context_started_at = perf_counter()
+        messages = self._dialogue.messages_for(text)
         turn = self._chat_service.create_turn(
             session_id=self.session_id,
             user_text=text,
+            messages=messages,
         )
         self._active_turn_id = turn.turn_id
         self._active_stream_id = None
@@ -119,6 +130,15 @@ class ConnectionRuntime:
             self.session_id,
             turn.turn_id,
             event_id,
+        )
+        logger.info(
+            "context_ready session_id=%s turn_id=%s completed_turns=%s messages=%s chars=%s elapsed_ms=%.1f",
+            self.session_id,
+            turn.turn_id,
+            len(self._dialogue.exchanges),
+            len(messages),
+            sum(len(message.content) for message in messages),
+            (perf_counter() - context_started_at) * 1000,
         )
         await self.send_json(
             {
@@ -326,6 +346,14 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
                     elif isinstance(output, TurnCompleted):
+                        if self._active_turn_id == turn.turn_id:
+                            self._dialogue.commit(turn, output.text)
+                            logger.info(
+                                "dialogue_committed session_id=%s turn_id=%s completed_turns=%s",
+                                self.session_id,
+                                turn.turn_id,
+                                len(self._dialogue.exchanges),
+                            )
                         await self.send_json(
                             {
                                 "type": "turn_completed",

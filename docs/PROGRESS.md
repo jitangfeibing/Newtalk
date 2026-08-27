@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P5-B 豆包双向流式 ASR |
-| 阶段状态 | 已完成并通过真实浏览器语音验收 |
-| 开发分支 | `codex/p5-real-asr` |
-| 项目版本 | `0.5.1` |
+| 当前阶段 | P6 Session 和有限 Dialogue Context |
+| 阶段状态 | 已完成：代码、自动测试和真实浏览器多轮验收通过 |
+| 开发分支 | `codex/p6-session-context` |
+| 项目版本 | `0.6.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 76 项通过，2 项 live 默认跳过；真实 ASR 不进入普通 CI |
-| CI | P1-P5-A 已合并；P5-B 尚未提交 PR |
-| 最后更新 | 2026-08-18 |
+| 自动测试 | 87 项通过，2 项 live 默认跳过 |
+| CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
+| 最后更新 | 2026-08-27 |
 
 ## P1：基础运行骨架
 
@@ -336,9 +336,32 @@ text_input
 - 握手失败时已验证火山错误正文和 `logid` 会进入服务日志，便于区分代码错误与资源未授权。
 - 耳机/扬声器回声场景和完整 ASR→LLM→TTS 延迟仍作为后续持续观测项，不阻塞 P5-B 完成。
 
+## P6：Session 和有限 Dialogue Context
+
+### 已实现
+
+- 每条 WebSocket 创建独立 `DialogueSession`，生命周期与当前连接一致。
+- `Turn.messages` 保存创建时的不可变消息快照，LLM 不再只接收单条用户字符串。
+- OpenAI-compatible 模型发送 System Prompt、历史用户/助手消息和当前用户输入。
+- 只有成功完成的 Turn 提交历史；被打断或失败的 Turn 不污染后续 Context。
+- 默认窗口最多 8 个完成轮次，并受 12000 字符总量限制；保留连续的最新对话后缀。
+- 不同 WebSocket 连接的 Dialogue History 相互隔离。
+- 记录 `context_ready` 的消息数、字符数和准备耗时。
+
+### 人工验收
+
+- 用户在同一浏览器连接中依次发送“请记住，我叫小明”和“我叫什么名字”，模型能够根据上一轮对话正确回答。
+- 该结果确认完整回复会提交到当前连接的 `DialogueSession`，下一轮创建时能够进入 LLM 消息上下文。
+
+### 当前边界
+
+- Session 尚不持久化，浏览器刷新或断开后历史清空。
+- 没有摘要和 Token 级压缩；P6 只使用有限轮次和字符预算。
+- 没有长期 Memory、User Profile、Identity 或 Tool 消息。
+
 ## 下一阶段
 
-P5-B 合并后，再讨论 Dialogue Context、Identity/Memory 或 Vision 的优先顺序。
+P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
 ## 变更记录
 
@@ -351,3 +374,4 @@ P5-B 合并后，再讨论 Dialogue Context、Identity/Memory 或 Vision 的优�
 | 2026-08-16 | P4 | 增加豆包双向流式 TTS、PCM 二进制协议和 AudioWorklet 播放 | 50 项通过；豆包 live 与浏览器播放验证通过 |
 | 2026-08-18 | P5-A | 增加麦克风、Silero VAD、Fake ASR、可取消 Turn 和服务端 barge-in | 63 项通过；Silero 静音推理与协议集成测试通过 |
 | 2026-08-18 | P5-B | 增加豆包双向流式 ASR 协议、partial/final、失败反馈和耗时日志 | 76 项通过，2 项 live 跳过；真实 Chrome 中文识别通过 |
+| 2026-08-27 | P6 | 增加连接级 DialogueSession、有限上下文窗口和完成轮次提交 | 87 项通过，2 项 live 跳过；真实浏览器多轮上下文验收通过 |

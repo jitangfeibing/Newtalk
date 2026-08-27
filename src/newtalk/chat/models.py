@@ -1,7 +1,14 @@
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from newtalk.tts import AudioFormat
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    role: Literal["user", "assistant"]
+    content: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -9,6 +16,7 @@ class Turn:
     turn_id: str
     session_id: str
     user_text: str
+    messages: tuple[ChatMessage, ...]
     created_at: datetime
 
 
