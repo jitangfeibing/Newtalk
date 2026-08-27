@@ -349,9 +349,19 @@ function handleIncoming(payload) {
         return;
     }
 
+    if (payload.type === 'asr_partial') {
+        microphone.setStatus('speech', `识别中：${payload.text}`);
+        return;
+    }
+
     if (payload.type === 'asr_final') {
         if (payload.text) appendMessage('user', payload.text, payload.utterance_id.slice(0, 8));
         microphone.setStatus('listening', '麦克风监听中');
+        return;
+    }
+
+    if (payload.type === 'asr_failed') {
+        microphone.setStatus('error', '语音识别失败，请查看服务日志');
         return;
     }
 

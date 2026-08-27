@@ -53,3 +53,42 @@ def test_audio_session_routes_one_utterance_to_asr() -> None:
         assert recognized[0][1].text == "识别结果"
 
     asyncio.run(run())
+
+
+def test_audio_session_reports_recognizer_failure() -> None:
+    class FailingASR(FakeASR):
+        async def stream(self, audio_chunks, *, utterance_id: str):
+            async for _ in audio_chunks:
+                break
+            if False:
+                yield AsrFinal(utterance_id)
+            raise RuntimeError("test ASR failure")
+
+    async def run() -> None:
+        failures: list[tuple[str, str]] = []
+
+        async def on_boundary(event: SpeechBoundary) -> None:
+            del event
+
+        async def on_asr_event(utterance_id: str, event) -> None:
+            del utterance_id, event
+
+        async def on_asr_error(utterance_id: str, error: Exception) -> None:
+            failures.append((utterance_id, str(error)))
+
+        session = AudioInputSession(
+            vad_stream=BoundaryVadStream(),
+            recognizer=FailingASR(),
+            on_boundary=on_boundary,
+            on_asr_event=on_asr_event,
+            on_asr_error=on_asr_error,
+            pre_roll_ms=20,
+        )
+        await session.push(bytes(640))
+        await session.push(bytes(640))
+        await session.close()
+
+        assert len(failures) == 1
+        assert failures[0][1] == "test ASR failure"
+
+    asyncio.run(run())

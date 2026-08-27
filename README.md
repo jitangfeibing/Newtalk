@@ -6,9 +6,9 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
 
-## 当前阶段：P5-A
+## 当前阶段：P5-B
 
-P5-A 已完成语音输入和打断的结构闭环：
+P5-B 已在 P5-A 语音输入和打断闭环上接入豆包双向流式 ASR：
 
 - `GET /health` 健康检查。
 - `WS /ws` WebSocket 握手、文本聊天和正常关闭。
@@ -26,12 +26,14 @@ P5-A 已完成语音输入和打断的结构闭环：
 - 浏览器通过 `getUserMedia` 和 AudioWorklet 采集麦克风，重采样为 16kHz 单声道 PCM。
 - 服务端通过 Silero VAD v6.2.1 检测语音开始和静音结束。
 - `speech_start` 取消旧 LLM/TTS Turn，并要求浏览器立即停止旧音频。
-- Fake ASR 把一段有效语音转换为固定测试文本，ASR Final 只创建一个 Turn。
+- Fake ASR 继续用于自动测试；豆包 ASR 使用官方 V3 二进制 WebSocket 协议。
+- 豆包 ASR 按 100ms 聚合 PCM，实时返回 partial，并在 final 时只创建一个 Turn。
+- ASR 记录首个识别结果和完整识别耗时；失败会返回 `asr_failed`，不会关闭 WebSocket。
 - WebSocket 接收、当前 Turn 和单一发送队列并发运行，旧 Turn 的迟到结果会被丢弃。
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未接入真实流式 ASR，也不包含 Dialogue Context、Vision、Memory 和 Provider Registry。
+当前阶段仍不包含 Dialogue Context、Vision、Memory 和 Provider Registry。
 
 ## 本地启动
 
@@ -71,6 +73,20 @@ NEWTALK_TTS_USE_SYSTEM_PROXY=false
 ```
 
 豆包默认直连，避免 `websockets` 自动读取 Windows 系统代理并增加实时链路延迟。只有网络环境明确要求豆包经过系统代理时，才将 `NEWTALK_TTS_USE_SYSTEM_PROXY` 改为 `true`。
+
+使用豆包 2.0 双向流式 ASR 时，在本地 `.env` 配置：
+
+```dotenv
+NEWTALK_ASR_BACKEND=doubao
+NEWTALK_ASR_API_KEY=replace-with-local-secret
+NEWTALK_ASR_RESOURCE_ID=volc.seedasr.sauc.duration
+NEWTALK_ASR_WS_URL=wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
+NEWTALK_ASR_PACKET_DURATION_MS=100
+NEWTALK_ASR_TIMEOUT_SECONDS=30
+NEWTALK_ASR_USE_SYSTEM_PROXY=false
+```
+
+小时版资源使用 `volc.seedasr.sauc.duration`，并发版使用 `volc.seedasr.sauc.concurrent`。ASR 同样默认直连；只有网络明确要求时才启用系统代理。
 
 `.env` 已被 Git 忽略。不要把真实 API Key 写入 `.env.example` 或提交到仓库。
 

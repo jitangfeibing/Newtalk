@@ -201,6 +201,7 @@ class ConnectionRuntime:
             recognizer=self._recognizer,
             on_boundary=self._on_speech_boundary,
             on_asr_event=self._on_asr_event,
+            on_asr_error=self._on_asr_error,
             pre_roll_ms=self._vad_pre_roll_ms,
         )
         await self.send_json(
@@ -425,6 +426,25 @@ class ConnectionRuntime:
                 event_id = f"voice-{utterance_id}"
                 self._seen_event_ids.add(event_id)
                 await self.start_turn(text=text, event_id=event_id)
+
+    async def _on_asr_error(self, utterance_id: str, error: Exception) -> None:
+        if self._closing:
+            return
+        logger.warning(
+            "asr_failed session_id=%s utterance_id=%s recognizer=%s error_type=%s",
+            self.session_id,
+            utterance_id,
+            type(self._recognizer).__name__,
+            type(error).__name__,
+        )
+        await self.send_json(
+            {
+                "type": "asr_failed",
+                "utterance_id": utterance_id,
+                "code": "recognition_failed",
+                "message": "Unable to recognize speech",
+            }
+        )
 
     async def _enqueue(self, payload: dict[str, Any] | bytes | object, *, turn_id: str | None) -> None:
         if self._sender_task is None:

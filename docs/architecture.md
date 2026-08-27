@@ -1,6 +1,6 @@
-# P5-A Architecture
+# P5-B Architecture
 
-P5-A 在不改变现有 LLM/TTS 契约的前提下加入麦克风、VAD、ASR 输入和可取消 Turn。原小智的 Silero 参数作为参考，但没有复制其 `ConnectionHandler` 状态耦合。
+P5-B 在 P5-A 本地 VAD 和可取消 Turn 的基础上加入豆包双向流式 ASR。原小智的 Silero 参数作为参考，但没有复制其 `ConnectionHandler` 状态耦合。
 
 ```text
 Browser text_input -------------------------------+
@@ -11,19 +11,22 @@ WebSocket receive loop -> ConnectionRuntime -> one active Turn
                               |                `-> ChatService -> LLM/TTS
                               `-> AudioInputSession
                                    |-> per-capture Silero state
-                                   `-> SpeechRecognizer -> ASR Final
+                                   `-> SpeechRecognizer
+                                        |-> FakeASR (test/CI)
+                                        `-> DoubaoStreamingASR -> partial/final
 
 all server output -> one ConnectionRuntime send queue -> WebSocket
 ```
 
 ## 当前职责
 
-- `newtalk.app` 是组合入口，选择 ChatService、Silero VAD 和 Fake ASR，并关闭有生命周期的 Provider。
+- `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
 - `newtalk.transport.websocket` 只接受连接、解析帧类型和分派协议事件。
 - `newtalk.transport.runtime.ConnectionRuntime` 保存单连接的 session、活动 Turn、采集会话、任务和发送队列。
 - `newtalk.audio.session.AudioInputSession` 把连续 PCM 切成 utterance，维护 pre-roll，并把语音段交给 ASR。
 - `newtalk.audio.vad.SileroVadStream` 保存每条采集流独立的 ONNX recurrent state、双阈值、滑窗和静音结束状态。
 - `newtalk.asr.model.SpeechRecognizer` 只定义真实调用需要的音频流输入与 partial/final 输出。
+- `newtalk.asr.doubao.DoubaoStreamingASR` 负责豆包鉴权、二进制协议、100ms PCM 分包和并发收发，不负责 VAD、Turn 或聊天。
 - `web/mic-recorder-worklet.js` 重采样并切 20ms 帧；`web/pcm-player-worklet.js` 继续负责播放。
 
 ## 并发和取消
@@ -36,7 +39,8 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 
 ## 当前边界
 
-- P5-A 的 ASR 是 Fake，只用于验证控制流；真实豆包流式 ASR 尚未接入。
+- 豆包 ASR 每个 utterance 新建一条 Provider WebSocket，尚未复用连接。
+- `enable_nonstream=false`，本地 Silero 仍是当前语音边界和打断的唯一判定来源。
 - 输入固定为 16kHz、16-bit、单声道 PCM，输出继续采用 TTS 配置的 PCM 采样率。
 - 浏览器启用系统回声消除、降噪和自动增益；服务端 AEC 尚未实现，真实扬声器场景仍需手工测试。
 - Silero 模型固定为 v6.2.1 并随仓库保存，运行时不联网下载。

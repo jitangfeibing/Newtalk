@@ -44,8 +44,14 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_VAD_THRESHOLD_LOW": "0.2",
             "NEWTALK_VAD_MIN_SILENCE_MS": "450",
             "NEWTALK_VAD_PRE_ROLL_MS": "240",
-            "NEWTALK_ASR_BACKEND": "fake",
+            "NEWTALK_ASR_BACKEND": "doubao",
             "NEWTALK_ASR_FAKE_TEXT": "fake speech",
+            "NEWTALK_ASR_API_KEY": "asr-secret",
+            "NEWTALK_ASR_RESOURCE_ID": "volc.seedasr.sauc.duration",
+            "NEWTALK_ASR_WS_URL": "wss://example.test/asr",
+            "NEWTALK_ASR_PACKET_DURATION_MS": "120",
+            "NEWTALK_ASR_TIMEOUT_SECONDS": "8.5",
+            "NEWTALK_ASR_USE_SYSTEM_PROXY": "true",
         }
     )
 
@@ -73,8 +79,16 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.vad_min_silence_ms == 450
     assert config.vad_pre_roll_ms == 240
     assert config.asr_fake_text == "fake speech"
+    assert config.asr_backend == "doubao"
+    assert config.asr_api_key == "asr-secret"
+    assert config.asr_resource_id == "volc.seedasr.sauc.duration"
+    assert config.asr_ws_url == "wss://example.test/asr"
+    assert config.asr_packet_duration_ms == 120
+    assert config.asr_timeout_seconds == 8.5
+    assert config.asr_use_system_proxy is True
     assert "test-secret" not in repr(config)
     assert "tts-secret" not in repr(config)
+    assert "asr-secret" not in repr(config)
 
 
 @pytest.mark.parametrize(
@@ -100,6 +114,11 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_VAD_PRE_ROLL_MS", "none"),
         ("NEWTALK_ASR_BACKEND", "unknown"),
         ("NEWTALK_ASR_FAKE_TEXT", ""),
+        ("NEWTALK_ASR_WS_URL", "https://not-websocket.test"),
+        ("NEWTALK_ASR_PACKET_DURATION_MS", "0"),
+        ("NEWTALK_ASR_PACKET_DURATION_MS", "1001"),
+        ("NEWTALK_ASR_TIMEOUT_SECONDS", "0"),
+        ("NEWTALK_ASR_USE_SYSTEM_PROXY", "sometimes"),
     ],
 )
 def test_config_rejects_invalid_values(name: str, value: str) -> None:
@@ -143,6 +162,22 @@ def test_doubao_config_requires_all_provider_values(missing_name: str) -> None:
         "NEWTALK_TTS_ACCESS_TOKEN": "token",
         "NEWTALK_TTS_RESOURCE_ID": "resource",
         "NEWTALK_TTS_VOICE_TYPE": "voice",
+    }
+    del values[missing_name]
+
+    with pytest.raises(ConfigError, match=missing_name):
+        load_config(values)
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    ["NEWTALK_ASR_API_KEY", "NEWTALK_ASR_RESOURCE_ID"],
+)
+def test_doubao_asr_config_requires_provider_values(missing_name: str) -> None:
+    values = {
+        "NEWTALK_ASR_BACKEND": "doubao",
+        "NEWTALK_ASR_API_KEY": "key",
+        "NEWTALK_ASR_RESOURCE_ID": "volc.seedasr.sauc.duration",
     }
     del values[missing_name]
 
