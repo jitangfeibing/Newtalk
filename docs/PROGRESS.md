@@ -363,6 +363,8 @@ text_input
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
+P7 当前仍处于设计讨论阶段。已经确认的边界和仍待决策的问题记录在 [`P7_DESIGN.md`](P7_DESIGN.md)，尚未开始功能实现。
+
 ## 变更记录
 
 | 日期 | Part | 内容 | 验证 |
