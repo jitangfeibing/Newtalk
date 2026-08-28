@@ -339,6 +339,8 @@ VAD 放在浏览器、服务端或两端配合，在 P5 根据真实音频格式
 
 目标：建立家庭陪伴核心能力。
 
+P7 的 Session、Device、Identity、Dialogue、Guest 和长期数据边界已进入独立讨论文档；已确认内容和待决策项见 [`docs/P7_DESIGN.md`](docs/P7_DESIGN.md)。该文档描述设计状态，不表示功能已经实现。
+
 工作内容：
 
 - 声纹结果映射到稳定 `user_id`。
