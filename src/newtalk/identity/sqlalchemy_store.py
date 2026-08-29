@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String, delete, func, select
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, LargeBinary, String, delete, func, select
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -36,6 +36,16 @@ class DeviceRow(Base):
 
 class IdentityRow(Base):
     __tablename__ = "identities"
+    __table_args__ = (
+        CheckConstraint(
+            "(voiceprint_embedding IS NULL AND voiceprint_embedding_dimension IS NULL "
+            "AND voiceprint_model IS NULL AND voiceprint_enrolled_at IS NULL) OR "
+            "(voiceprint_embedding IS NOT NULL AND voiceprint_embedding_dimension > 0 "
+            "AND octet_length(voiceprint_embedding) = voiceprint_embedding_dimension * 4 "
+            "AND voiceprint_model IS NOT NULL AND voiceprint_enrolled_at IS NOT NULL)",
+            name="ck_identities_voiceprint_complete",
+        ),
+    )
 
     identity_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
@@ -52,6 +62,10 @@ class IdentityRow(Base):
     status: Mapped[str] = mapped_column(
         String(32), default=IdentityStatus.ACTIVE.value, nullable=False
     )
+    voiceprint_embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
+    voiceprint_embedding_dimension: Mapped[int | None] = mapped_column(Integer)
+    voiceprint_model: Mapped[str | None] = mapped_column(String(160))
+    voiceprint_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -79,6 +93,7 @@ def _identity(row: IdentityRow) -> Identity:
         relationship=row.relationship,
         avatar=row.avatar,
         status=IdentityStatus(row.status),
+        voiceprint_enrolled_at=row.voiceprint_enrolled_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -191,6 +206,22 @@ class SqlAlchemyIdentityStore:
                 )
             ).all()
             return [_identity(row) for row in rows]
+
+    async def get_identity(
+        self, *, device_id: str, identity_id: str
+    ) -> Identity | None:
+        try:
+            parsed_id = UUID(identity_id)
+        except ValueError:
+            return None
+        async with self._sessions() as session:
+            row = await session.scalar(
+                select(IdentityRow).where(
+                    IdentityRow.identity_id == parsed_id,
+                    IdentityRow.device_id == device_id,
+                )
+            )
+            return _identity(row) if row else None
 
     async def create_identity(
         self,

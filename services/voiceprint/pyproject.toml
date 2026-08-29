@@ -3,34 +3,33 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "newtalk"
-version = "0.8.0"
-description = "Web-first multimodal companion runtime"
-readme = "README.md"
-requires-python = ">=3.11"
+name = "newtalk-voiceprint"
+version = "0.1.0"
+description = "Independent speaker embedding service for Newtalk"
+requires-python = ">=3.10,<3.13"
 dependencies = [
-    "alembic>=1.13,<2",
     "asyncpg>=0.29,<1",
     "fastapi>=0.110,<1",
-    "httpx>=0.27,<1",
     "numpy>=1.26,<3",
-    "onnxruntime>=1.16,<2",
-    "openai>=2,<3",
-    "python-dotenv>=1,<2",
     "python-multipart>=0.0.9,<1",
     "sqlalchemy[asyncio]>=2.0,<3",
     "uvicorn[standard]>=0.29,<1",
-    "websockets>=14,<18",
 ]
 
 [project.optional-dependencies]
+campplus = [
+    "modelscope[datasets]>=1.13,<2",
+    "soundfile>=0.12,<1",
+    "torch>=2.2,<3",
+    "torchaudio>=2.2,<3",
+]
 dev = [
-    "httpx2>=2,<3",
+    "httpx>=0.27,<1",
     "pytest>=8,<10",
 ]
 
 [project.scripts]
-newtalk = "newtalk.app:main"
+newtalk-voiceprint = "newtalk_voiceprint.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -40,6 +39,5 @@ addopts = "-q"
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
-    "integration: starts the real application server and uses network sockets",
-    "live: calls a real external provider and is skipped unless explicitly enabled",
+    "integration: requires the migrated PostgreSQL test database",
 ]

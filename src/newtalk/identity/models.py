@@ -33,5 +33,6 @@ class Identity:
     relationship: str | None
     avatar: str | None
     status: IdentityStatus
+    voiceprint_enrolled_at: datetime | None
     created_at: datetime
     updated_at: datetime

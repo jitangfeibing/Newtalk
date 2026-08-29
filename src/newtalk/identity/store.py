@@ -37,6 +37,10 @@ class IdentityStore(Protocol):
 
     async def list_identities(self, device_id: str) -> Sequence[Identity]: ...
 
+    async def get_identity(
+        self, *, device_id: str, identity_id: str
+    ) -> Identity | None: ...
+
     async def create_identity(
         self,
         *,

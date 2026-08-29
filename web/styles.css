@@ -306,6 +306,53 @@ h1 {
     border-top: 1px solid var(--line);
 }
 
+.voiceprint-enrollment {
+    grid-column: 1 / -1;
+    width: 100%;
+    padding: 18px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--paper) 82%, var(--signal) 18%);
+}
+
+.voiceprint-enrollment p {
+    margin: 7px 0 14px;
+    color: var(--muted);
+}
+
+.voiceprint-progress,
+.voiceprint-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    align-items: center;
+}
+
+.voiceprint-progress {
+    margin-bottom: 14px;
+}
+
+.voiceprint-progress span {
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    font-size: 0.76rem;
+    letter-spacing: 0.04em;
+}
+
+.voiceprint-progress span[data-state="recording"] {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
+.voiceprint-progress span[data-state="complete"] {
+    border-color: var(--online);
+    color: var(--online);
+}
+
+.voiceprint-progress span[data-state="error"] {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
 .member-avatar {
     display: grid;
     width: 44px;

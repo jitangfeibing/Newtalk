@@ -40,6 +40,7 @@ DEFAULT_DEVICE_COOKIE_SECURE = False
 DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS = 365
 DEFAULT_RECOVERY_MAX_ATTEMPTS = 5
 DEFAULT_RECOVERY_WINDOW_SECONDS = 900
+DEFAULT_VOICEPRINT_TIMEOUT_SECONDS = 30.0
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
@@ -94,6 +95,9 @@ class AppConfig:
     device_cookie_max_age_days: int = DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS
     recovery_max_attempts: int = DEFAULT_RECOVERY_MAX_ATTEMPTS
     recovery_window_seconds: int = DEFAULT_RECOVERY_WINDOW_SECONDS
+    voiceprint_url: str | None = None
+    voiceprint_api_token: str | None = field(default=None, repr=False)
+    voiceprint_timeout_seconds: float = DEFAULT_VOICEPRINT_TIMEOUT_SECONDS
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -336,6 +340,21 @@ class AppConfig:
             "NEWTALK_RECOVERY_WINDOW_SECONDS",
             DEFAULT_RECOVERY_WINDOW_SECONDS,
         )
+        voiceprint_url = _optional_value(values.get("NEWTALK_VOICEPRINT_URL"))
+        voiceprint_api_token = _optional_value(
+            values.get("NEWTALK_VOICEPRINT_API_TOKEN")
+        )
+        voiceprint_timeout_seconds = _positive_float_value(
+            values,
+            "NEWTALK_VOICEPRINT_TIMEOUT_SECONDS",
+            DEFAULT_VOICEPRINT_TIMEOUT_SECONDS,
+        )
+        if voiceprint_url and not voiceprint_url.startswith(("http://", "https://")):
+            raise ConfigError("NEWTALK_VOICEPRINT_URL must be an HTTP URL")
+        if voiceprint_url and not voiceprint_api_token:
+            raise ConfigError(
+                "NEWTALK_VOICEPRINT_API_TOKEN is required when VoicePrint is enabled"
+            )
 
         return cls(
             host=host,
@@ -379,6 +398,9 @@ class AppConfig:
             device_cookie_max_age_days=device_cookie_max_age_days,
             recovery_max_attempts=recovery_max_attempts,
             recovery_window_seconds=recovery_window_seconds,
+            voiceprint_url=voiceprint_url,
+            voiceprint_api_token=voiceprint_api_token,
+            voiceprint_timeout_seconds=voiceprint_timeout_seconds,
         )
 
 

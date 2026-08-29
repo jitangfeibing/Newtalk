@@ -23,6 +23,7 @@ dist/
 logs/
 tmp/
 audio_output/
+services/voiceprint/models/
 *.log
 
 # Local configuration and secrets

@@ -538,6 +538,10 @@ pingButton.addEventListener('click', () => {
     appendProtocolEvent('outgoing', event);
 });
 stopAudioButton.addEventListener('click', () => audioPlayer.stop());
+window.addEventListener('newtalk:voiceprint-recording', async () => {
+    audioPlayer.stop();
+    await microphone.stop();
+});
 micButton.addEventListener('click', async () => {
     if (microphone.active) {
         await microphone.stop();
