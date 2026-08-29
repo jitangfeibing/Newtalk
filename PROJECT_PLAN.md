@@ -34,7 +34,9 @@ D:\Desktop\Newtalk\
 ├── tests\
 ├── docs\
 ├── config\
-└── docker\
+├── docker\
+└── services\
+    └── voiceprint\
 ```
 
 GitHub Remote 必须绑定用户自己的仓库，不使用临时或代建仓库：
@@ -166,13 +168,22 @@ Web 图片/摄像头帧 ------------------------------+       |
                                             |
                     +-----------------------+-----------------------+
                     |                       |                       |
-               Identity                Memory 查询            Vision 理解
-                    |                  有数量和超时限制         按需或使用缓存
+               Identity                 Dialogue              Vision 理解
+                    |                       |                  按需或使用缓存
                     +-----------------------+-----------------------+
                                             |
-                                      Context 组装
+                                  Member Profile Snapshot
                                             |
-                                      LLM 流式输出
+                                         主 LLM
+                              +-------------+-------------+
+                              |                           |
+                         直接流式回答                memory_search Tool
+                              |                           |
+                              |                    MemOS 限时查询
+                              |                           |
+                              +-------------+-------------+
+                                            |
+                                      最终流式文本
                                             |
                               +-------------+-------------+
                               |                           |
@@ -339,19 +350,25 @@ VAD 放在浏览器、服务端或两端配合，在 P5 根据真实音频格式
 
 目标：建立家庭陪伴核心能力。
 
-P7 的 Session、Device、Identity、Dialogue、Guest 和长期数据边界已进入独立讨论文档；已确认内容和待决策项见 [`docs/P7_DESIGN.md`](docs/P7_DESIGN.md)。该文档描述设计状态，不表示功能已经实现。
+P7 的 Session、Device、Identity、Dialogue、Guest、Memory 和 Profile 设计均记录在 [`docs/P7_DESIGN.md`](docs/P7_DESIGN.md)。该文档描述设计状态，不表示功能已经实现。
 
 工作内容：
 
-- 声纹结果映射到稳定 `user_id`。
+- 声纹结果映射到稳定 `identity_id`，不使用成员显示名作为数据主键。
 - 未识别成员使用 Guest 身份。
-- Memory Retrieval 设置超时、Top-K 和字符上限。
-- Memory 查询使用真正异步 I/O，不阻塞主事件循环。
-- 当前回答结束后后台保存长期记忆。
-- 从对话中后台提取稳定画像，不把所有聊天直接当画像。
-- Profile 保存字段来源、置信度和更新时间。
+- Web 使用服务端签发的随机 MAC 样式 `device_id` 和设备凭据，并通过家庭恢复码重新绑定原家庭。
+- 使用 PostgreSQL、SQLAlchemy 和 Alembic 保存 Device、Identity、声纹映射和持久化状态。
+- 在同一仓库的独立 `services/voiceprint` 进程中实现 3D-Speaker/CAM++ 声纹注册、识别和删除。
+- Member Session 启动时加载 Profile Snapshot，并持续提供给主 LLM。
+- 主 LLM 按需调用 `memory_search` 查询 MemOS，不增加独立 Memory Router。
+- Memory 查询使用真正异步 I/O，并设置超时、结果上限、字符预算和 Tool Call 上限。
+- 当前回答结束后通过后台 Memory Pipeline 将已完成的 Member Turn 写入 MemOS。
+- 第一版使用 MemOS Profile Template 从写入内容中自动更新稳定画像，不增加额外画像提取 LLM，也不把所有聊天直接当画像。
+- Profile 保存字段来源、更新时间和锁定状态，MemOS 自动更新不能覆盖锁定字段。
+- 提供 Memory Center，让成员查看、搜索、编辑、删除、纠正记忆和锁定 Profile 字段。
+- Memory 可通过配置关闭；关闭后不加载 Profile、不注册 Memory Tool、不执行长期写入。
 
-完成标准：不同家庭成员的 Context、Memory 和 Profile 不串数据；关闭 Memory 不影响聊天主链。
+完成标准：不同家庭成员的 Context、Memory 和 Profile 不串数据；普通聊天不承担 MemOS 查询延迟；MemOS 失败和关闭 Memory 均不影响聊天主链；用户可以看见并纠正系统保存的内容。
 
 ### P8：统一 Vision 输入
 
@@ -365,7 +382,7 @@ P7 的 Session、Device、Identity、Dialogue、Guest 和长期数据边界已�
 - 明确视觉问题才等待 VLLM。
 - 视觉结果默认不写入长期 Memory。
 
-完成标准：一句话和一张图片只产生一个 Turn，Memos 中不再自动出现临时画面描述。
+完成标准：一句话和一张图片只产生一个 Turn，MemOS 中不再自动出现临时画面描述。
 
 ### P9：少量 Tool
 
@@ -433,11 +450,15 @@ vad_speech_start
 vad_speech_end
 asr_final
 context_ready
-memory_ready_or_timeout
+memory_tool_started          # 仅实际调用 memory_search 时产生
+memory_tool_completed
+memory_tool_failed_or_timeout
 llm_first_token
 tts_first_frame
 browser_play_start
 turn_complete
+memory_write_enqueued        # 回答完成后的后台路径
+memory_write_completed
 ```
 
 文本输入不产生音频、VAD 和 ASR 指标；语音输入必须记录这些阶段，便于区分采集、端点检测、识别、模型和合成各自的延迟。
@@ -464,22 +485,12 @@ codex/p2-text-turn
 codex/p3-real-llm
 codex/p4-tts-stream
 codex/p5-asr-barge-in
-codex/p7-identity-memory
+codex/p6-dialogue-context
+codex/p7-1-device-members
+codex/p7-2-voiceprint
+codex/p7-3-runtime-identity
+codex/p7-4-profile
+codex/p7-5-memory-pipeline
+codex/p7-6-memory-center
 codex/p8-vision-input
 ```
-
-## 11. 第一执行批次
-
-第一批只做：
-
-1. 确认用户 GitHub 仓库 URL。
-2. 初始化 `D:\Desktop\Newtalk` 独立 Git 仓库。
-3. 排除 `.idea/` 和 `xiaozhi-esp32-server-main/`。
-4. 建立最小 Python 项目和测试框架。
-5. 完成 `/health`。
-6. 完成 WebSocket `hello`。
-7. 完成 Fake LLM 文本流式闭环。
-
-第一批明确不接入 ASR、TTS、Vision、Memory、声纹和 Tool。
-
-只有 P2 文本 Turn 稳定后，才进入第一个真实 LLM 的接口定义。

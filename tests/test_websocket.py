@@ -8,9 +8,24 @@ from newtalk.asr import AsrFinal, FakeASR
 from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
 from newtalk.chat import ChatMessage, ChatService, FakeLLM
 from newtalk.config import AppConfig
+from newtalk.identity import IdentityService, InMemoryIdentityStore
 
 
-client = TestClient(create_app(AppConfig()))
+def make_client(**app_options) -> TestClient:
+    identity_service = IdentityService(InMemoryIdentityStore())
+    test_client = TestClient(
+        create_app(
+            AppConfig(),
+            identity_service=identity_service,
+            **app_options,
+        )
+    )
+    response = test_client.post("/api/device")
+    assert response.status_code == 201
+    return test_client
+
+
+client = make_client()
 
 
 def receive_turn(websocket) -> tuple[dict, list[dict], dict, list[dict], list[bytes]]:
@@ -37,8 +52,9 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.4"
+        assert hello["protocol_version"] == "0.5"
         assert hello["session_id"]
+        assert hello["device_id"]
         assert hello["audio"] == {
             "input": {
                 "codec": "pcm_s16le",
@@ -170,7 +186,7 @@ class RecordingModel:
 
 def test_completed_turns_are_sent_as_dialogue_context() -> None:
     model = RecordingModel()
-    context_client = TestClient(create_app(chat_service=ChatService(model)))
+    context_client = make_client(chat_service=ChatService(model))
 
     with context_client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
@@ -193,7 +209,7 @@ def test_completed_turns_are_sent_as_dialogue_context() -> None:
 
 def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
     model = RecordingModel(delay_seconds=0.1)
-    context_client = TestClient(create_app(chat_service=ChatService(model)))
+    context_client = make_client(chat_service=ChatService(model))
 
     with context_client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
@@ -217,7 +233,7 @@ def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
 
 def test_websocket_connections_do_not_share_dialogue_context() -> None:
     model = RecordingModel()
-    isolated_client = TestClient(create_app(chat_service=ChatService(model)))
+    isolated_client = make_client(chat_service=ChatService(model))
 
     for event_id, text in (("session-a", "甲的问题"), ("session-b", "乙的问题")):
         with isolated_client.websocket_connect("/ws") as websocket:
@@ -274,8 +290,8 @@ class FailingLLM(FakeLLM):
 
 
 def test_chat_failure_keeps_websocket_available() -> None:
-    failing_client = TestClient(
-        create_app(chat_service=ChatService(FailingLLM(chunk_delay_seconds=0)))
+    failing_client = make_client(
+        chat_service=ChatService(FailingLLM(chunk_delay_seconds=0))
     )
 
     with failing_client.websocket_connect("/ws") as websocket:
@@ -300,8 +316,8 @@ def test_chat_failure_keeps_websocket_available() -> None:
 
 
 def test_disconnect_during_stream_keeps_application_healthy() -> None:
-    slow_client = TestClient(
-        create_app(chat_service=ChatService(FakeLLM(chunk_delay_seconds=0.1)))
+    slow_client = make_client(
+        chat_service=ChatService(FakeLLM(chunk_delay_seconds=0.1))
     )
 
     with slow_client.websocket_connect("/ws") as websocket:
@@ -364,12 +380,9 @@ def audio_input_start(capture_id: str = "capture-1") -> dict:
 
 
 def test_microphone_audio_creates_one_voice_turn() -> None:
-    voice_client = TestClient(
-        create_app(
-            AppConfig(),
-            vad=ScriptedVad(),
-            recognizer=FakeASR("语音测试"),
-        )
+    voice_client = make_client(
+        vad=ScriptedVad(),
+        recognizer=FakeASR("语音测试"),
     )
     with voice_client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
@@ -400,13 +413,10 @@ def test_microphone_audio_creates_one_voice_turn() -> None:
 
 
 def test_vad_speech_start_cancels_the_active_turn() -> None:
-    barge_in_client = TestClient(
-        create_app(
-            AppConfig(),
-            chat_service=ChatService(FakeLLM(chunk_delay_seconds=0.2)),
-            vad=ScriptedVad(),
-            recognizer=FakeASR(),
-        )
+    barge_in_client = make_client(
+        chat_service=ChatService(FakeLLM(chunk_delay_seconds=0.2)),
+        vad=ScriptedVad(),
+        recognizer=FakeASR(),
     )
     with barge_in_client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
@@ -434,12 +444,9 @@ def test_vad_speech_start_cancels_the_active_turn() -> None:
 
 
 def test_asr_failure_is_reported_without_closing_websocket() -> None:
-    failing_asr_client = TestClient(
-        create_app(
-            AppConfig(),
-            vad=ScriptedVad(),
-            recognizer=FailingASR(),
-        )
+    failing_asr_client = make_client(
+        vad=ScriptedVad(),
+        recognizer=FailingASR(),
     )
     with failing_asr_client.websocket_connect("/ws") as websocket:
         websocket.receive_json()

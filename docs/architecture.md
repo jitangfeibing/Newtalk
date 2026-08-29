@@ -1,8 +1,13 @@
-# P6 Architecture
+# P7.1 Architecture
 
-P6 在完整语音链路上加入连接级 Session 和有限 Dialogue Context。Session 历史属于 `ConnectionRuntime`，不会放进全局 `ChatService`，因此并发 WebSocket 不共享上下文。
+P7.1 在 P6 语音和 Dialogue 链路之前增加 Device 认证与成员持久化。Session 历史仍属于 `ConnectionRuntime`，不会放进全局 `ChatService`。
 
 ```text
+Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
+                |                                    |-> PostgreSQL (runtime)
+                `-> HttpOnly device cookie           `-> InMemory (unit tests only)
+
+Browser cookie -> authenticated WebSocket
 Browser text_input -------------------------------+
 Browser microphone -> recorder AudioWorklet       |
        -> 16k mono PCM -> WebSocket binary        |
@@ -21,6 +26,10 @@ all server output -> one ConnectionRuntime send queue -> WebSocket
 ## 当前职责
 
 - `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
+- `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要。
+- `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
+- `newtalk.identity.store.IdentityStore` 是持久化契约；正式进程使用异步 SQLAlchemy/PostgreSQL，内存实现只用于自动测试。
+- Alembic migration 是 schema 唯一建立方式，应用启动不会隐式创建数据表。
 - `newtalk.transport.websocket` 只接受连接、解析帧类型和分派协议事件。
 - `newtalk.transport.runtime.ConnectionRuntime` 保存单连接的 session、活动 Turn、采集会话、任务和发送队列。
 - `newtalk.chat.session.DialogueSession` 只保存当前连接内成功完成的用户/助手交换，并按轮数和字符数构建连续窗口。
@@ -49,6 +58,7 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 - 浏览器启用系统回声消除、降噪和自动增益；服务端 AEC 尚未实现，真实扬声器场景仍需手工测试。
 - Silero 模型固定为 v6.2.1 并随仓库保存，运行时不联网下载。
 - 浏览器“停止播放”仍是本地操作；`audio_stop` 才表示服务端 Turn 已取消。
-- 长期 Memory、Identity、Vision 和 Tool 仍未进入当前运行链。
+- Device 和 Identity 基础资料已经持久化，但声纹识别与 Turn 的 `speaker_identity_id` 映射要到 P7.2/P7.3 才进入聊天链。
+- 长期 Memory、Profile、Vision 和 Tool 仍未进入当前运行链。
 - Session 当前与 WebSocket 连接同生命周期，刷新页面后历史清空；跨连接恢复和长期 Memory 尚未实现。
 - 当前消息角色只有 `user` 和 `assistant`；Tool 消息等到 P9 出现真实 Tool 调用时再扩展契约。

@@ -8,6 +8,7 @@ from newtalk.audio import INPUT_AUDIO_FORMAT
 from newtalk.transport.protocol import PROTOCOL_VERSION
 from newtalk.transport.runtime import ConnectionRuntime
 from newtalk.transport.text_chat import handle_text_input
+from newtalk.identity import DeviceAuthenticationError
 
 
 router = APIRouter()
@@ -16,9 +17,23 @@ logger = logging.getLogger(__name__)
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    config = websocket.app.state.config
+    try:
+        device = await websocket.app.state.identity_service.authenticate_device(
+            websocket.cookies.get(config.device_cookie_name)
+        )
+    except DeviceAuthenticationError:
+        logger.warning("websocket_rejected reason=device_authentication")
+        await websocket.close(code=4401, reason="device registration required")
+        return
+
     await websocket.accept()
     session_id = str(uuid4())
-    logger.info("websocket_connected session_id=%s", session_id)
+    logger.info(
+        "websocket_connected session_id=%s device_id=%s",
+        session_id,
+        device.device_id,
+    )
     runtime = ConnectionRuntime(
         websocket,
         session_id=session_id,
@@ -35,6 +50,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "type": "hello",
             "protocol_version": PROTOCOL_VERSION,
             "session_id": session_id,
+            "device_id": device.device_id,
             "audio": {
                 "input": {
                     "codec": INPUT_AUDIO_FORMAT.codec,

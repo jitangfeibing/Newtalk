@@ -1,3 +1,5 @@
+import {initializeIdentity} from './identity.js';
+
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
 const endpointElement = document.querySelector('#endpoint');
@@ -552,4 +554,4 @@ micButton.addEventListener('click', async () => {
 });
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
-connect();
+initializeIdentity(() => connect());
