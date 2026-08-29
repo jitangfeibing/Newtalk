@@ -19,6 +19,23 @@ jobs:
     name: tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: newtalk_test
+          POSTGRES_USER: newtalk
+          POSTGRES_PASSWORD: newtalk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U newtalk -d newtalk_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      NEWTALK_DATABASE_URL: postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk_test
+      NEWTALK_TEST_DATABASE_URL: postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk_test
 
     steps:
       - name: Checkout repository
@@ -36,6 +53,9 @@ jobs:
 
       - name: Check dependencies
         run: python -m pip check
+
+      - name: Apply database migrations
+        run: alembic upgrade head
 
       - name: Run tests
         run: python -m pytest

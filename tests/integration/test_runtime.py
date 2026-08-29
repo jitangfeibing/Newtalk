@@ -9,7 +9,7 @@ import sys
 import time
 from collections.abc import Iterator
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 import websockets
@@ -59,7 +59,18 @@ def running_newtalk(port: int) -> Iterator[None]:
         }
     )
     process = subprocess.Popen(
-        [sys.executable, "-m", "newtalk"],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "tests.integration.runtime_app:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "info",
+        ],
         cwd=PROJECT_ROOT,
         env=environment,
         stdout=subprocess.PIPE,
@@ -79,12 +90,16 @@ def running_newtalk(port: int) -> Iterator[None]:
             process.wait(timeout=5)
 
 
-async def assert_websocket_lifecycle(port: int) -> None:
-    async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
+async def assert_websocket_lifecycle(port: int, cookie: str) -> None:
+    async with websockets.connect(
+        f"ws://127.0.0.1:{port}/ws",
+        additional_headers={"Cookie": cookie},
+    ) as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.4"
+        assert hello["protocol_version"] == "0.5"
         assert hello["session_id"]
+        assert hello["device_id"]
         assert hello["audio"]["input"]["codec"] == "pcm_s16le"
         assert hello["audio"]["output"]["codec"] == "pcm_s16le"
 
@@ -144,10 +159,18 @@ def test_real_server_serves_web_and_websocket_hello() -> None:
     port = find_available_port()
 
     with running_newtalk(port):
+        request = Request(
+            f"http://127.0.0.1:{port}/api/device",
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            assert response.status == 201
+            cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+
         with urlopen(f"http://127.0.0.1:{port}/", timeout=2) as response:
             page = response.read().decode("utf-8")
             assert response.status == 200
             assert "Newtalk Voice Console" in page
             assert 'id="chatForm"' in page
 
-        asyncio.run(assert_websocket_lifecycle(port))
+        asyncio.run(assert_websocket_lifecycle(port, cookie))

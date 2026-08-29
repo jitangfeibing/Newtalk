@@ -359,11 +359,48 @@ text_input
 - 没有摘要和 Token 级压缩；P6 只使用有限轮次和字符预算。
 - 没有长期 Memory、User Profile、Identity 或 Tool 消息。
 
+## P7.1：Device、PostgreSQL 与成员管理
+
+### 已实现
+
+- 使用 PostgreSQL、异步 SQLAlchemy 和 Alembic 建立 `devices`、`identities` schema。
+- Web Device 使用随机 MAC 样式 `device_id`；设备凭据和恢复码只在服务端保存摘要。
+- HttpOnly Cookie 承载设备凭据，家庭恢复和恢复码轮换都会使旧值失效。
+- 恢复接口按客户端地址限速；成员 API 的每次查询和修改都限定当前 `device_id`。
+- Web 增加创建家庭、恢复家庭、恢复码一次性展示和成员新增/编辑/删除界面。
+- WebSocket 建连前验证设备 Cookie，并在 `hello` 中声明当前 `device_id`。
+- 新增 `/ready` 数据库就绪检查；应用不会在启动时隐式建表。
+- CI 增加 PostgreSQL Service、Alembic migration 和真实 Store 隔离测试。
+
+### 当前边界
+
+- P7.1 删除成员时还没有 VoicePrint、Profile 或 MemOS 外部数据，因此只删除本地成员记录；完整跨服务删除在 P7.6 实现。
+- 文本 Turn 尚未选择成员，语音 Turn 尚未执行声纹识别；P7.1 只建立可靠数据归属。
+- 本机已安装 PostgreSQL 17.11，并完成正式库和测试库 migration；普通单元测试仍使用内存 Store，不使用 SQLite。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7 当前仍处于设计讨论阶段。已经确认的边界和仍待决策的问题记录在 [`P7_DESIGN.md`](P7_DESIGN.md)，尚未开始功能实现。
+P7.1 完成后进入 P7.2 独立 VoicePrint 服务。P7 总体边界和需要通过真实环境验证的参数记录在 [`P7_DESIGN.md`](P7_DESIGN.md)。
+
+P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
+
+- Dialogue 负责当前 Session 的短期上下文。
+- Profile 保存稳定资料，Member Session 启动时加载并在 Session 中驻留。
+- 主 LLM 按需调用 `memory_search` 查询 MemOS，不增加独立 Memory Router。
+- Turn 完成后由后台 Memory Pipeline 写入 MemOS 和更新 Profile。
+- 增加 Memory Center，用于查看、搜索、编辑、删除、纠正和锁定资料。
+- Memory 可关闭，Guest 和关闭 Memory 的聊天链路都不依赖 MemOS。
+- Legacy 只接入了 Add Message、Search Memory 和异步任务轮询；当前官方文档的完整能力已在后续讨论中核对。
+
+后续讨论又确认：
+
+- Web `device_id` 延续小智概念，使用服务端签发的随机 MAC 样式标识；浏览器数据清除后使用家庭恢复码重新绑定。
+- P7 持久化数据库直接使用 PostgreSQL，不先以 SQLite 作为正式数据库。
+- 成员删除的产品语义为删除声纹、Profile、MemOS 记忆和本地成员数据。
+- 声纹能力在 Newtalk 同一仓库内重新实现为独立进程，参考 3D-Speaker/CAM++，不继续依赖外部 voiceprint-api 项目或其 MySQL。
+- MemOS 官方文档已确认 Get、Update、Delete、Profile Template 绑定、字段编辑/锁定和 Profile 删除 API，能够支撑规划中的 Memory Center 和 Profile 自动维护。
 
 ## 变更记录
 
@@ -377,3 +414,4 @@ P7 当前仍处于设计讨论阶段。已经确认的边界和仍待决策的�
 | 2026-08-18 | P5-A | 增加麦克风、Silero VAD、Fake ASR、可取消 Turn 和服务端 barge-in | 63 项通过；Silero 静音推理与协议集成测试通过 |
 | 2026-08-18 | P5-B | 增加豆包双向流式 ASR 协议、partial/final、失败反馈和耗时日志 | 76 项通过，2 项 live 跳过；真实 Chrome 中文识别通过 |
 | 2026-08-27 | P6 | 增加连接级 DialogueSession、有限上下文窗口和完成轮次提交 | 87 项通过，2 项 live 跳过；真实浏览器多轮上下文验收通过 |
+| 2026-08-29 | P7.1 | 增加 PostgreSQL/Alembic、Device Cookie/恢复码、成员隔离 CRUD 与管理页面 | 真实 PostgreSQL 下 95 项通过、2 项 live 跳过；正式 `/ready` 数据库检查、浏览器桌面交互与 390px 移动布局通过 |

@@ -54,6 +54,12 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_ASR_PACKET_DURATION_MS": "120",
             "NEWTALK_ASR_TIMEOUT_SECONDS": "8.5",
             "NEWTALK_ASR_USE_SYSTEM_PROXY": "true",
+            "NEWTALK_DATABASE_URL": "postgresql+asyncpg://user:pass@db.test/newtalk",
+            "NEWTALK_DEVICE_COOKIE_NAME": "test_device",
+            "NEWTALK_DEVICE_COOKIE_SECURE": "true",
+            "NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS": "30",
+            "NEWTALK_RECOVERY_MAX_ATTEMPTS": "3",
+            "NEWTALK_RECOVERY_WINDOW_SECONDS": "120",
         }
     )
 
@@ -90,6 +96,12 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.asr_packet_duration_ms == 120
     assert config.asr_timeout_seconds == 8.5
     assert config.asr_use_system_proxy is True
+    assert config.database_url == "postgresql+asyncpg://user:pass@db.test/newtalk"
+    assert config.device_cookie_name == "test_device"
+    assert config.device_cookie_secure is True
+    assert config.device_cookie_max_age_days == 30
+    assert config.recovery_max_attempts == 3
+    assert config.recovery_window_seconds == 120
     assert "test-secret" not in repr(config)
     assert "tts-secret" not in repr(config)
     assert "asr-secret" not in repr(config)

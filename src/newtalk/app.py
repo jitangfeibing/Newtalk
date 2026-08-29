@@ -4,7 +4,7 @@ from functools import lru_cache
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
 from newtalk import __version__
@@ -13,6 +13,8 @@ from newtalk.audio import SileroVad, VoiceActivityDetector
 from newtalk.chat import ChatService, FakeLLM, OpenAICompatibleChatModel
 from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
+from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
+from newtalk.identity.api import RecoveryRateLimiter, router as identity_router
 from newtalk.transport import websocket_router
 from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
 
@@ -103,6 +105,10 @@ def create_chat_service(config: AppConfig) -> ChatService:
     )
 
 
+def create_identity_service(config: AppConfig) -> IdentityService:
+    return IdentityService(SqlAlchemyIdentityStore(config.database_url))
+
+
 def create_app(
     config: AppConfig | None = None,
     *,
@@ -110,6 +116,7 @@ def create_app(
     chat_service: ChatService | None = None,
     vad: VoiceActivityDetector | None = None,
     recognizer: SpeechRecognizer | None = None,
+    identity_service: IdentityService | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -119,24 +126,28 @@ def create_app(
     resolved_chat_service = chat_service or create_chat_service(config)
     resolved_vad = vad or create_vad(config)
     resolved_recognizer = recognizer or create_recognizer(config)
+    resolved_identity_service = identity_service or create_identity_service(config)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        logger.info(
-            "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s",
-            config.host,
-            config.port,
-            config.web_root,
-            config.llm_backend,
-            config.llm_model or "fake",
-            config.tts_backend,
-            config.asr_backend,
-        )
         try:
+            await resolved_identity_service.start()
+            logger.info(
+                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s identity_service=%s",
+                config.host,
+                config.port,
+                config.web_root,
+                config.llm_backend,
+                config.llm_model or "fake",
+                config.tts_backend,
+                config.asr_backend,
+                type(resolved_identity_service).__name__,
+            )
             yield
         finally:
             await resolved_chat_service.aclose()
             await resolved_recognizer.aclose()
+            await resolved_identity_service.close()
             logger.info("service_stopped")
 
     app = FastAPI(title="Newtalk", version=__version__, lifespan=lifespan)
@@ -144,6 +155,11 @@ def create_app(
     app.state.chat_service = resolved_chat_service
     app.state.vad = resolved_vad
     app.state.recognizer = resolved_recognizer
+    app.state.identity_service = resolved_identity_service
+    app.state.recovery_rate_limiter = RecoveryRateLimiter(
+        max_attempts=config.recovery_max_attempts,
+        window_seconds=config.recovery_window_seconds,
+    )
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
@@ -153,6 +169,16 @@ def create_app(
             "version": __version__,
         }
 
+    @app.get("/ready", tags=["system"])
+    async def readiness() -> dict[str, str]:
+        try:
+            await resolved_identity_service.ping()
+        except Exception as exc:
+            logger.warning("readiness_failed dependency=database error_type=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="database unavailable") from exc
+        return {"status": "ready", "database": "ok"}
+
+    app.include_router(identity_router)
     app.include_router(websocket_router)
 
     app.mount(
@@ -166,7 +192,10 @@ def create_app(
 
 runtime_config = load_config()
 configure_logging(runtime_config.log_level)
-app = create_app(runtime_config)
+app = create_app(
+    runtime_config,
+    identity_service=create_identity_service(runtime_config),
+)
 
 
 def main() -> None:

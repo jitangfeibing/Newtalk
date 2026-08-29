@@ -1,0 +1,1 @@
+"""Newtalk automated tests."""

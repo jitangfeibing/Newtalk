@@ -32,6 +32,14 @@ DEFAULT_ASR_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 DEFAULT_ASR_PACKET_DURATION_MS = 100
 DEFAULT_ASR_TIMEOUT_SECONDS = 30.0
 DEFAULT_ASR_USE_SYSTEM_PROXY = False
+DEFAULT_DATABASE_URL = (
+    "postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk"
+)
+DEFAULT_DEVICE_COOKIE_NAME = "newtalk_device"
+DEFAULT_DEVICE_COOKIE_SECURE = False
+DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS = 365
+DEFAULT_RECOVERY_MAX_ATTEMPTS = 5
+DEFAULT_RECOVERY_WINDOW_SECONDS = 900
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
@@ -80,6 +88,12 @@ class AppConfig:
     asr_packet_duration_ms: int = DEFAULT_ASR_PACKET_DURATION_MS
     asr_timeout_seconds: float = DEFAULT_ASR_TIMEOUT_SECONDS
     asr_use_system_proxy: bool = DEFAULT_ASR_USE_SYSTEM_PROXY
+    database_url: str = field(default=DEFAULT_DATABASE_URL, repr=False)
+    device_cookie_name: str = DEFAULT_DEVICE_COOKIE_NAME
+    device_cookie_secure: bool = DEFAULT_DEVICE_COOKIE_SECURE
+    device_cookie_max_age_days: int = DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS
+    recovery_max_attempts: int = DEFAULT_RECOVERY_MAX_ATTEMPTS
+    recovery_window_seconds: int = DEFAULT_RECOVERY_WINDOW_SECONDS
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -286,6 +300,43 @@ class AppConfig:
                         f"{name} is required when NEWTALK_ASR_BACKEND=doubao"
                     )
 
+        database_url = values.get(
+            "NEWTALK_DATABASE_URL", DEFAULT_DATABASE_URL
+        ).strip()
+        if not database_url.startswith("postgresql+asyncpg://"):
+            raise ConfigError(
+                "NEWTALK_DATABASE_URL must use postgresql+asyncpg://"
+            )
+        device_cookie_name = values.get(
+            "NEWTALK_DEVICE_COOKIE_NAME", DEFAULT_DEVICE_COOKIE_NAME
+        ).strip()
+        if not device_cookie_name or any(
+            character.isspace() for character in device_cookie_name
+        ):
+            raise ConfigError(
+                "NEWTALK_DEVICE_COOKIE_NAME must be a non-empty cookie name"
+            )
+        device_cookie_secure = _boolean_value(
+            values.get("NEWTALK_DEVICE_COOKIE_SECURE"),
+            default=DEFAULT_DEVICE_COOKIE_SECURE,
+            name="NEWTALK_DEVICE_COOKIE_SECURE",
+        )
+        device_cookie_max_age_days = _positive_int_value(
+            values,
+            "NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS",
+            DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS,
+        )
+        recovery_max_attempts = _positive_int_value(
+            values,
+            "NEWTALK_RECOVERY_MAX_ATTEMPTS",
+            DEFAULT_RECOVERY_MAX_ATTEMPTS,
+        )
+        recovery_window_seconds = _positive_int_value(
+            values,
+            "NEWTALK_RECOVERY_WINDOW_SECONDS",
+            DEFAULT_RECOVERY_WINDOW_SECONDS,
+        )
+
         return cls(
             host=host,
             port=port,
@@ -322,6 +373,12 @@ class AppConfig:
             asr_packet_duration_ms=asr_packet_duration_ms,
             asr_timeout_seconds=asr_timeout_seconds,
             asr_use_system_proxy=asr_use_system_proxy,
+            database_url=database_url,
+            device_cookie_name=device_cookie_name,
+            device_cookie_secure=device_cookie_secure,
+            device_cookie_max_age_days=device_cookie_max_age_days,
+            recovery_max_attempts=recovery_max_attempts,
+            recovery_window_seconds=recovery_window_seconds,
         )
 
 

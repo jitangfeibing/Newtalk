@@ -3,9 +3,15 @@ import pytest
 
 from newtalk.app import create_app
 from newtalk.config import AppConfig
+from newtalk.identity import IdentityService, InMemoryIdentityStore
 
 
-client = TestClient(create_app(AppConfig()))
+client = TestClient(
+    create_app(
+        AppConfig(),
+        identity_service=IdentityService(InMemoryIdentityStore()),
+    )
+)
 
 
 def test_health() -> None:
@@ -15,7 +21,7 @@ def test_health() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "newtalk",
-        "version": "0.6.0",
+        "version": "0.7.0",
     }
 
 
@@ -28,6 +34,8 @@ def test_web_page_is_served() -> None:
     assert 'id="messageInput"' in response.text
     assert 'id="stopAudioButton"' in response.text
     assert 'id="micButton"' in response.text
+    assert 'id="deviceOnboarding"' in response.text
+    assert 'id="memberForm"' in response.text
 
 
 def test_app_fails_fast_when_web_root_is_missing(tmp_path) -> None:

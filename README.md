@@ -6,9 +6,27 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
 
-## 当前阶段：P6
+文档口径：
 
-P6 在完整语音闭环上增加连接级 Session 和有限多轮 Context：
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前已经实现的 P7.1 运行时。
+- `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1 已进入实现。
+- `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
+
+## 当前阶段：P7.1
+
+P7.1 在 P6 完整语音闭环和有限多轮 Context 上增加家庭设备与成员基础：
+
+- PostgreSQL 保存 Device 和 Identity，SQLAlchemy 提供数据访问，Alembic 管理 schema。
+- Web 首次使用时主动创建家庭空间，获得随机 MAC 样式 `device_id` 和 HttpOnly 设备 Cookie。
+- 家庭恢复码只在创建或主动轮换时返回，服务端只保存摘要。
+- 家庭恢复会轮换设备凭据，使旧浏览器 Cookie 立即失效。
+- 成员 API 和页面支持查看、新增、编辑和删除，并按 `device_id` 强制隔离。
+- `GET /ready` 验证持久化服务是否可用。
+- WebSocket 必须携带有效设备 Cookie，`hello` 返回当前 `device_id`。
+- GitHub Actions 使用真实 PostgreSQL 执行 migration 和数据隔离集成测试。
+
+继承能力包括：
 
 - `GET /health` 健康检查。
 - `WS /ws` WebSocket 握手、文本聊天和正常关闭。
@@ -37,7 +55,7 @@ P6 在完整语音闭环上增加连接级 Session 和有限多轮 Context：
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段仍不包含跨连接 Session 恢复、长期 Memory、Vision 和 Provider Registry。
+当前阶段仍不包含跨连接 Session 恢复、声纹录入/识别、Turn 成员映射、长期 Memory、Vision 和 Provider Registry。
 
 ## 本地启动
 
@@ -45,13 +63,30 @@ P6 在完整语音闭环上增加连接级 Session 和有限多轮 Context：
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
+docker compose up -d postgres
+alembic upgrade head
 newtalk
 ```
+
+如果本机没有 Docker，可以安装独立 PostgreSQL，并让 `NEWTALK_DATABASE_URL` 指向已经创建好的数据库。Newtalk 正式进程不会使用 SQLite 或内存数据库代替 PostgreSQL。
 
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P6 对话窗口配置：
+P7.1 数据库和设备配置：
+
+```dotenv
+NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk
+NEWTALK_DEVICE_COOKIE_NAME=newtalk_device
+NEWTALK_DEVICE_COOKIE_SECURE=false
+NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS=365
+NEWTALK_RECOVERY_MAX_ATTEMPTS=5
+NEWTALK_RECOVERY_WINDOW_SECONDS=900
+```
+
+生产 HTTPS 环境必须将 `NEWTALK_DEVICE_COOKIE_SECURE` 设为 `true`。仓库中的 Docker 密码只用于本地开发。
+
+对话窗口配置：
 
 ```dotenv
 NEWTALK_DIALOGUE_MAX_TURNS=8

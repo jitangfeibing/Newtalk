@@ -1,8 +1,21 @@
-# P6 WebSocket 协议
+# P7.1 HTTP 与 WebSocket 协议
 
-Endpoint：`GET /ws`，协议版本 `0.4`。WebSocket 是全双工连接：客户端 JSON 帧传控制事件，客户端二进制帧传麦克风 PCM；服务端 JSON 帧传对话事件，服务端二进制帧传 TTS PCM。二进制帧的含义由发送方向区分。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.5`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
-P6 没有增加客户端消息类型。`hello.session_id` 同时标识当前内存 Dialogue Session；同一连接内成功完成的文本或语音 Turn 会自动进入后续 LLM Context，断线后不恢复。
+WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增加聊天消息类型；`hello.session_id` 仍标识当前内存 Dialogue Session，断线后不恢复。
+
+## Device 与成员 HTTP API
+
+- `GET /api/device`：读取当前 Cookie 对应的 Device，未注册返回 `401`。
+- `POST /api/device`：创建家庭空间并设置 Cookie；恢复码只在首次创建响应中出现。
+- `POST /api/device/recover`：使用恢复码重新绑定家庭并轮换设备凭据。
+- `POST /api/device/recovery-code`：轮换恢复码，旧码立即失效。
+- `GET /api/members`：列出当前 `device_id` 的成员。
+- `POST /api/members`：创建成员。
+- `PATCH /api/members/{identity_id}`：修改当前家庭成员。
+- `DELETE /api/members/{identity_id}`：P7.1 删除当前仅有的本地成员资料；跨 VoicePrint/MemOS 完整删除在 P7.6 接入。
+
+所有成员读写都由服务端从 Cookie 解析 `device_id`，客户端不能在请求体中指定其他家庭。
 
 ## 建连
 
@@ -11,8 +24,9 @@ P6 没有增加客户端消息类型。`hello.session_id` 同时标识当前内�
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.4",
+  "protocol_version": "0.5",
   "session_id": "generated UUID",
+  "device_id": "02:11:22:33:44:55",
   "audio": {
     "input": {"codec":"pcm_s16le","sample_rate":16000,"channels":1,"frame_duration_ms":20},
     "output": {"codec":"pcm_s16le","sample_rate":24000,"channels":1}

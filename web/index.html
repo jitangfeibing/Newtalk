@@ -10,7 +10,7 @@
     <main class="shell">
         <header class="masthead">
             <div>
-                <p class="eyebrow">NEWTALK / PART 05</p>
+                <p class="eyebrow">NEWTALK / PART 07.1</p>
                 <h1>Voice Console</h1>
             </div>
             <div class="status" data-state="offline" id="connectionStatus">
@@ -24,10 +24,79 @@
             <div>
                 <h2>文字流动，<br>声音随行。</h2>
                 <p class="hero-copy">
-                    当前页面验证麦克风 PCM、Silero VAD、语音 Turn、流式 LLM/TTS 与打断。
-                    P5 先使用 Fake ASR 固定文本，真实流式 ASR 在链路稳定后接入。
+                    当前页面验证家庭设备隔离、成员管理、麦克风 PCM、流式 ASR/LLM/TTS 与打断。
                 </p>
             </div>
+        </section>
+
+        <section class="identity-panel" aria-labelledby="familyTitle">
+            <header class="panel-header">
+                <div>
+                    <span class="label">FAMILY IDENTITY</span>
+                    <h3 id="familyTitle">家庭与成员</h3>
+                </div>
+                <code id="deviceIdLabel">尚未绑定设备</code>
+            </header>
+
+            <div class="identity-loading" id="identityLoading">正在读取设备身份...</div>
+
+            <div class="device-onboarding" id="deviceOnboarding" hidden>
+                <div>
+                    <span class="label">NEW FAMILY</span>
+                    <h4>创建新的家庭空间</h4>
+                    <p>服务器会签发设备凭据，并只展示一次家庭恢复码。</p>
+                    <button type="button" class="button" id="createDeviceButton">创建家庭空间</button>
+                </div>
+                <form id="recoveryForm">
+                    <span class="label">RECOVER</span>
+                    <h4>恢复已有家庭</h4>
+                    <label for="recoveryCodeInput">家庭恢复码</label>
+                    <input id="recoveryCodeInput" autocomplete="off" placeholder="NT-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" required>
+                    <button type="submit" class="button secondary">恢复绑定</button>
+                </form>
+            </div>
+
+            <div class="device-workspace" id="deviceWorkspace" hidden>
+                <div class="recovery-notice" id="recoveryNotice" hidden>
+                    <div>
+                        <span class="label">RECOVERY CODE / ONLY SHOWN NOW</span>
+                        <strong id="recoveryCodeLabel"></strong>
+                        <p>请离线保存。清除浏览器数据或更换浏览器后，需要它恢复这个家庭。</p>
+                    </div>
+                    <button type="button" class="button secondary" id="copyRecoveryButton">复制</button>
+                </div>
+
+                <div class="member-layout">
+                    <form class="member-form" id="memberForm">
+                        <span class="label">MEMBER PROFILE</span>
+                        <h4 id="memberFormTitle">添加家庭成员</h4>
+                        <label for="displayNameInput">姓名 *</label>
+                        <input id="displayNameInput" maxlength="80" required>
+                        <label for="nicknameInput">称呼</label>
+                        <input id="nicknameInput" maxlength="80">
+                        <label for="relationshipInput">关系</label>
+                        <input id="relationshipInput" maxlength="80" placeholder="例如：爸爸、女儿、朋友">
+                        <label for="avatarInput">头像地址</label>
+                        <input id="avatarInput" maxlength="500" inputmode="url">
+                        <div class="member-form-actions">
+                            <button type="submit" class="button" id="saveMemberButton">添加成员</button>
+                            <button type="button" class="button secondary" id="cancelMemberButton" hidden>取消编辑</button>
+                        </div>
+                    </form>
+
+                    <div class="member-directory">
+                        <div class="directory-heading">
+                            <div>
+                                <span class="label">DIRECTORY</span>
+                                <h4>当前家庭成员</h4>
+                            </div>
+                            <button type="button" class="text-button" id="rotateRecoveryButton">更换恢复码</button>
+                        </div>
+                        <ol class="member-list" id="memberList"></ol>
+                    </div>
+                </div>
+            </div>
+            <p class="identity-feedback" id="identityFeedback" role="status"></p>
         </section>
 
         <div class="workspace">
