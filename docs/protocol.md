@@ -1,4 +1,4 @@
-# P7.1 HTTP 与 WebSocket 协议
+# P7.2 HTTP、VoicePrint 与 WebSocket 协议
 
 WebSocket Endpoint 为 `GET /ws`，协议版本 `0.5`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
@@ -13,9 +13,22 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增�
 - `GET /api/members`：列出当前 `device_id` 的成员。
 - `POST /api/members`：创建成员。
 - `PATCH /api/members/{identity_id}`：修改当前家庭成员。
-- `DELETE /api/members/{identity_id}`：P7.1 删除当前仅有的本地成员资料；跨 VoicePrint/MemOS 完整删除在 P7.6 接入。
+- `DELETE /api/members/{identity_id}`：删除成员行时一并删除同一行的声纹模板；跨 MemOS/Profile 完整删除任务在 P7.6 接入。
+- `POST /api/members/{identity_id}/voiceprint`：上传名为 `samples` 的三个 WAV multipart part，录入或覆盖当前成员模板。
+- `DELETE /api/members/{identity_id}/voiceprint`：删除声纹模板但保留成员资料。
 
 所有成员读写都由服务端从 Cookie 解析 `device_id`，客户端不能在请求体中指定其他家庭。
+
+## 内部 VoicePrint API
+
+内部接口使用 Bearer Token，不直接暴露给浏览器：
+
+- `GET /health`：数据库和服务状态。
+- `POST /v1/templates`：`device_id`、`identity_id` 和三个 `samples`，生成平均模板。
+- `POST /v1/identify`：`device_id` 和一个 `sample`，只匹配当前家庭模板。
+- `DELETE /v1/templates/{identity_id}?device_id=...`：按家庭和成员双重条件删除。
+
+录音格式固定为 16kHz、单声道、PCM16 WAV，每段默认 2～15 秒。原始 WAV 不持久化；PostgreSQL 只保存归一化 float32 Embedding、维度、模型名和录入时间。
 
 ## 建连
 

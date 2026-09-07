@@ -17,6 +17,8 @@ from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
 from newtalk.identity.api import RecoveryRateLimiter, router as identity_router
 from newtalk.transport import websocket_router
 from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
+from newtalk.voiceprint import DisabledVoicePrintClient, HttpVoicePrintClient, VoicePrintClient
+from newtalk.voiceprint.api import router as voiceprint_router
 
 
 logger = logging.getLogger(__name__)
@@ -109,6 +111,18 @@ def create_identity_service(config: AppConfig) -> IdentityService:
     return IdentityService(SqlAlchemyIdentityStore(config.database_url))
 
 
+def create_voiceprint_client(config: AppConfig) -> VoicePrintClient:
+    if not config.voiceprint_url:
+        return DisabledVoicePrintClient()
+    if not config.voiceprint_api_token:
+        raise RuntimeError("VoicePrint configuration is incomplete")
+    return HttpVoicePrintClient(
+        base_url=config.voiceprint_url,
+        api_token=config.voiceprint_api_token,
+        timeout_seconds=config.voiceprint_timeout_seconds,
+    )
+
+
 def create_app(
     config: AppConfig | None = None,
     *,
@@ -117,6 +131,7 @@ def create_app(
     vad: VoiceActivityDetector | None = None,
     recognizer: SpeechRecognizer | None = None,
     identity_service: IdentityService | None = None,
+    voiceprint_client: VoicePrintClient | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -127,6 +142,7 @@ def create_app(
     resolved_vad = vad or create_vad(config)
     resolved_recognizer = recognizer or create_recognizer(config)
     resolved_identity_service = identity_service or create_identity_service(config)
+    resolved_voiceprint_client = voiceprint_client or create_voiceprint_client(config)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -148,6 +164,7 @@ def create_app(
             await resolved_chat_service.aclose()
             await resolved_recognizer.aclose()
             await resolved_identity_service.close()
+            await resolved_voiceprint_client.aclose()
             logger.info("service_stopped")
 
     app = FastAPI(title="Newtalk", version=__version__, lifespan=lifespan)
@@ -156,6 +173,7 @@ def create_app(
     app.state.vad = resolved_vad
     app.state.recognizer = resolved_recognizer
     app.state.identity_service = resolved_identity_service
+    app.state.voiceprint_client = resolved_voiceprint_client
     app.state.recovery_rate_limiter = RecoveryRateLimiter(
         max_attempts=config.recovery_max_attempts,
         window_seconds=config.recovery_window_seconds,
@@ -179,6 +197,7 @@ def create_app(
         return {"status": "ready", "database": "ok"}
 
     app.include_router(identity_router)
+    app.include_router(voiceprint_router)
     app.include_router(websocket_router)
 
     app.mount(

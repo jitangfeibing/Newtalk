@@ -142,10 +142,20 @@ class InMemoryIdentityStore:
                 relationship=relationship,
                 avatar=avatar,
                 status=IdentityStatus.ACTIVE,
+                voiceprint_enrolled_at=None,
                 created_at=now,
                 updated_at=now,
             )
             self._identities[identity.identity_id] = identity
+            return identity
+
+    async def get_identity(
+        self, *, device_id: str, identity_id: str
+    ) -> Identity | None:
+        async with self._lock:
+            identity = self._identities.get(identity_id)
+            if identity is None or identity.device_id != device_id:
+                return None
             return identity
 
     async def update_identity(

@@ -99,6 +99,15 @@ class IdentityService:
     async def list_identities(self, device_id: str) -> Sequence[Identity]:
         return await self._store.list_identities(device_id)
 
+    async def get_identity(self, *, device_id: str, identity_id: str) -> Identity:
+        identity = await self._store.get_identity(
+            device_id=device_id,
+            identity_id=identity_id,
+        )
+        if identity is None:
+            raise IdentityNotFoundError(identity_id)
+        return identity
+
     async def create_identity(
         self,
         *,

@@ -1,3 +1,5 @@
+import {recordVoiceprintSample} from './voiceprint-recorder.js';
+
 const loading = document.querySelector('#identityLoading');
 const onboarding = document.querySelector('#deviceOnboarding');
 const workspace = document.querySelector('#deviceWorkspace');
@@ -22,13 +24,14 @@ const identityFeedback = document.querySelector('#identityFeedback');
 
 let editingIdentityId = null;
 let deviceReadyCallback = null;
+let enrollment = null;
 
 async function api(path, options = {}) {
     const response = await fetch(path, {
         credentials: 'same-origin',
         ...options,
         headers: {
-            ...(options.body ? {'Content-Type': 'application/json'} : {}),
+            ...(options.body && !(options.body instanceof FormData) ? {'Content-Type': 'application/json'} : {}),
             ...options.headers,
         },
     });
@@ -90,6 +93,95 @@ function beginEdit(member) {
     displayNameInput.focus();
 }
 
+function closeEnrollment() {
+    enrollment = null;
+    document.querySelector('.voiceprint-enrollment')?.remove();
+}
+
+function showVoiceprintEnrollment(member, item) {
+    closeEnrollment();
+    enrollment = {identityId: member.identity_id, samples: []};
+    const panel = document.createElement('div');
+    const title = document.createElement('strong');
+    const guidance = document.createElement('p');
+    const progress = document.createElement('div');
+    const recordButton = document.createElement('button');
+    const uploadButton = document.createElement('button');
+    const cancelButton = document.createElement('button');
+
+    panel.className = 'voiceprint-enrollment';
+    title.textContent = `录入 ${member.display_name} 的声纹`;
+    guidance.textContent = '请在安静环境自然朗读。每段 4 秒，共录制三段不同内容。';
+    progress.className = 'voiceprint-progress';
+    const steps = [0, 1, 2].map((index) => {
+        const step = document.createElement('span');
+        step.textContent = `第 ${index + 1} 段`;
+        progress.append(step);
+        return step;
+    });
+    recordButton.type = 'button';
+    recordButton.className = 'button secondary';
+    recordButton.textContent = '录制第 1 段';
+    uploadButton.type = 'button';
+    uploadButton.className = 'button';
+    uploadButton.textContent = '提交三段声纹';
+    uploadButton.disabled = true;
+    cancelButton.type = 'button';
+    cancelButton.className = 'text-button';
+    cancelButton.textContent = '取消';
+
+    recordButton.addEventListener('click', async () => {
+        const index = enrollment?.samples.length ?? 0;
+        if (!enrollment || index >= 3) return;
+        recordButton.disabled = true;
+        steps[index].dataset.state = 'recording';
+        recordButton.textContent = `正在录制第 ${index + 1} 段 0%`;
+        try {
+            const sample = await recordVoiceprintSample((value) => {
+                recordButton.textContent = `正在录制第 ${index + 1} 段 ${Math.round(value * 100)}%`;
+            });
+            enrollment.samples.push(sample);
+            steps[index].dataset.state = 'complete';
+            const next = enrollment.samples.length + 1;
+            recordButton.textContent = next <= 3 ? `录制第 ${next} 段` : '三段录音已完成';
+            recordButton.disabled = enrollment.samples.length >= 3;
+            uploadButton.disabled = enrollment.samples.length !== 3;
+        } catch (error) {
+            steps[index].dataset.state = 'error';
+            recordButton.textContent = `重新录制第 ${index + 1} 段`;
+            recordButton.disabled = false;
+            setFeedback(error.message, 'error');
+        }
+    });
+
+    uploadButton.addEventListener('click', async () => {
+        if (!enrollment || enrollment.samples.length !== 3) return;
+        uploadButton.disabled = true;
+        const form = new FormData();
+        enrollment.samples.forEach((sample, index) => {
+            form.append('samples', sample, `voiceprint-${index + 1}.wav`);
+        });
+        try {
+            await api(`/api/members/${member.identity_id}/voiceprint`, {
+                method: 'POST',
+                body: form,
+            });
+            closeEnrollment();
+            await loadMembers();
+            setFeedback(`${member.display_name} 的声纹已录入。`, 'success');
+        } catch (error) {
+            uploadButton.disabled = false;
+            setFeedback(error.message, 'error');
+        }
+    });
+    cancelButton.addEventListener('click', closeEnrollment);
+    const actions = document.createElement('div');
+    actions.className = 'voiceprint-actions';
+    actions.append(recordButton, uploadButton, cancelButton);
+    panel.append(title, guidance, progress, actions);
+    item.append(panel);
+}
+
 function renderMembers(members) {
     memberList.replaceChildren();
     if (!members.length) {
@@ -109,18 +201,24 @@ function renderMembers(members) {
         const actions = document.createElement('div');
         const editButton = document.createElement('button');
         const deleteButton = document.createElement('button');
+        const voiceprintButton = document.createElement('button');
 
         item.className = 'member-card';
         avatar.className = 'member-avatar';
         avatar.textContent = member.display_name.slice(0, 1).toUpperCase();
         title.textContent = member.display_name;
-        metadata.textContent = [member.nickname, member.relationship].filter(Boolean).join(' · ') || '正式家庭成员';
+        const memberMetadata = [member.nickname, member.relationship].filter(Boolean).join(' · ') || '正式家庭成员';
+        metadata.textContent = `${memberMetadata} · ${member.voiceprint_enrolled ? '声纹已录入' : '未录入声纹'}`;
         details.append(title, metadata);
         actions.className = 'member-actions';
         editButton.type = 'button';
         editButton.className = 'text-button';
         editButton.textContent = '编辑';
         editButton.addEventListener('click', () => beginEdit(member));
+        voiceprintButton.type = 'button';
+        voiceprintButton.className = 'text-button';
+        voiceprintButton.textContent = member.voiceprint_enrolled ? '重新录入' : '录入声纹';
+        voiceprintButton.addEventListener('click', () => showVoiceprintEnrollment(member, item));
         deleteButton.type = 'button';
         deleteButton.className = 'text-button danger';
         deleteButton.textContent = '删除';
@@ -135,13 +233,33 @@ function renderMembers(members) {
                 setFeedback(error.message, 'error');
             }
         });
-        actions.append(editButton, deleteButton);
+        actions.append(editButton, voiceprintButton);
+        if (member.voiceprint_enrolled) {
+            const removeVoiceprintButton = document.createElement('button');
+            removeVoiceprintButton.type = 'button';
+            removeVoiceprintButton.className = 'text-button danger';
+            removeVoiceprintButton.textContent = '删除声纹';
+            removeVoiceprintButton.addEventListener('click', async () => {
+                if (!window.confirm(`确认删除“${member.display_name}”的声纹模板？成员资料会保留。`)) return;
+                try {
+                    await api(`/api/members/${member.identity_id}/voiceprint`, {method: 'DELETE'});
+                    closeEnrollment();
+                    await loadMembers();
+                    setFeedback(`${member.display_name} 的声纹已删除。`, 'success');
+                } catch (error) {
+                    setFeedback(error.message, 'error');
+                }
+            });
+            actions.append(removeVoiceprintButton);
+        }
+        actions.append(deleteButton);
         item.append(avatar, details, actions);
         memberList.append(item);
     }
 }
 
 async function loadMembers() {
+    closeEnrollment();
     const members = await api('/api/members');
     renderMembers(members);
 }

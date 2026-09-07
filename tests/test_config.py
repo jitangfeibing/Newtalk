@@ -60,6 +60,9 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS": "30",
             "NEWTALK_RECOVERY_MAX_ATTEMPTS": "3",
             "NEWTALK_RECOVERY_WINDOW_SECONDS": "120",
+            "NEWTALK_VOICEPRINT_URL": "http://voiceprint.test:8010",
+            "NEWTALK_VOICEPRINT_API_TOKEN": "voiceprint-secret",
+            "NEWTALK_VOICEPRINT_TIMEOUT_SECONDS": "7.5",
         }
     )
 
@@ -102,9 +105,13 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.device_cookie_max_age_days == 30
     assert config.recovery_max_attempts == 3
     assert config.recovery_window_seconds == 120
+    assert config.voiceprint_url == "http://voiceprint.test:8010"
+    assert config.voiceprint_api_token == "voiceprint-secret"
+    assert config.voiceprint_timeout_seconds == 7.5
     assert "test-secret" not in repr(config)
     assert "tts-secret" not in repr(config)
     assert "asr-secret" not in repr(config)
+    assert "voiceprint-secret" not in repr(config)
 
 
 @pytest.mark.parametrize(
@@ -139,6 +146,7 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_ASR_PACKET_DURATION_MS", "1001"),
         ("NEWTALK_ASR_TIMEOUT_SECONDS", "0"),
         ("NEWTALK_ASR_USE_SYSTEM_PROXY", "sometimes"),
+        ("NEWTALK_VOICEPRINT_TIMEOUT_SECONDS", "0"),
     ],
 )
 def test_config_rejects_invalid_values(name: str, value: str) -> None:
@@ -203,6 +211,19 @@ def test_doubao_asr_config_requires_provider_values(missing_name: str) -> None:
 
     with pytest.raises(ConfigError, match=missing_name):
         load_config(values)
+
+
+def test_voiceprint_config_requires_http_url_and_token() -> None:
+    with pytest.raises(ConfigError, match="HTTP URL"):
+        load_config(
+            {
+                "NEWTALK_VOICEPRINT_URL": "voiceprint:8010",
+                "NEWTALK_VOICEPRINT_API_TOKEN": "token",
+            }
+        )
+
+    with pytest.raises(ConfigError, match="NEWTALK_VOICEPRINT_API_TOKEN"):
+        load_config({"NEWTALK_VOICEPRINT_URL": "http://voiceprint:8010"})
 
 
 def test_logging_configures_newtalk_namespace() -> None:

@@ -8,14 +8,14 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 文档口径：
 
-- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前已经实现的 P7.1 运行时。
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.2 运行时。
 - `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
-- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1 已进入实现。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.2 已完成，P7.3 开始实现。
 - `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
 
-## 当前阶段：P7.1
+## 当前阶段：P7.2 已完成
 
-P7.1 在 P6 完整语音闭环和有限多轮 Context 上增加家庭设备与成员基础：
+P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声纹服务：
 
 - PostgreSQL 保存 Device 和 Identity，SQLAlchemy 提供数据访问，Alembic 管理 schema。
 - Web 首次使用时主动创建家庭空间，获得随机 MAC 样式 `device_id` 和 HttpOnly 设备 Cookie。
@@ -25,6 +25,12 @@ P7.1 在 P6 完整语音闭环和有限多轮 Context 上增加家庭设备与�
 - `GET /ready` 验证持久化服务是否可用。
 - WebSocket 必须携带有效设备 Cookie，`hello` 返回当前 `device_id`。
 - GitHub Actions 使用真实 PostgreSQL 执行 migration 和数据隔离集成测试。
+- `services/voiceprint` 是独立 FastAPI 进程和依赖环境，主服务不导入 Torch/ModelScope。
+- 每个成员保存一个声纹模板；三段 16kHz 单声道 PCM WAV 分别提取并归一化后取平均。
+- 浏览器提供三段 4 秒录音、录入、重新录入和删除声纹入口。
+- Newtalk 使用内部 HTTP Client 调用声纹服务，浏览器不能直接指定 `device_id`。
+- 声纹服务故障只影响录入/删除，聊天主链和 `/health` 保持可用。
+- `deterministic` 仅用于 CI；正式声纹识别使用 3D-Speaker CAM++。
 
 继承能力包括：
 
@@ -55,7 +61,7 @@ P7.1 在 P6 完整语音闭环和有限多轮 Context 上增加家庭设备与�
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段仍不包含跨连接 Session 恢复、声纹录入/识别、Turn 成员映射、长期 Memory、Vision 和 Provider Registry。
+当前阶段尚未把声纹识别接入语音 Turn。ASR/VoicePrint 汇合、Guest 映射和多人 Dialogue 属于 P7.3；长期 Memory、Vision 和 Provider Registry 也未进入当前运行链。
 
 ## 本地启动
 
@@ -73,7 +79,7 @@ newtalk
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P7.1 数据库和设备配置：
+P7.2 数据库、设备和声纹客户端配置：
 
 ```dotenv
 NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk
@@ -82,7 +88,27 @@ NEWTALK_DEVICE_COOKIE_SECURE=false
 NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS=365
 NEWTALK_RECOVERY_MAX_ATTEMPTS=5
 NEWTALK_RECOVERY_WINDOW_SECONDS=900
+NEWTALK_VOICEPRINT_URL=http://127.0.0.1:8010
+NEWTALK_VOICEPRINT_API_TOKEN=local-voiceprint-token
+NEWTALK_VOICEPRINT_TIMEOUT_SECONDS=30
 ```
+
+CI 和接口联调使用轻量测试后端：
+
+```powershell
+docker compose up -d postgres voiceprint
+```
+
+真实声纹录入必须构建 CAM++ 环境：
+
+```powershell
+$env:VOICEPRINT_EXTRAS="campplus"
+$env:VOICEPRINT_BACKEND="campplus"
+docker compose build voiceprint
+docker compose up -d postgres voiceprint
+```
+
+首次启动会下载 `iic/speech_campplus_sv_zh-cn_3dspeaker_16k`，模型缓存保存在 Docker Volume。`deterministic` 后端不具备真实说话人识别能力，不能用于产品演示。
 
 生产 HTTPS 环境必须将 `NEWTALK_DEVICE_COOKIE_SECURE` 设为 `true`。仓库中的 Docker 密码只用于本地开发。
 
@@ -144,6 +170,7 @@ NEWTALK_ASR_USE_SYSTEM_PROXY=false
 
 ```powershell
 pytest
+pytest services/voiceprint/tests
 ```
 
 普通测试不会调用真实 Provider。显式执行真实 Provider 冒烟测试：

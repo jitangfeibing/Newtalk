@@ -378,11 +378,31 @@ text_input
 - 文本 Turn 尚未选择成员，语音 Turn 尚未执行声纹识别；P7.1 只建立可靠数据归属。
 - 本机已安装 PostgreSQL 17.11，并完成正式库和测试库 migration；普通单元测试仍使用内存 Store，不使用 SQLite。
 
+## P7.2：独立 VoicePrint 服务（已完成）
+
+### 已实现
+
+- `services/voiceprint` 使用独立 FastAPI 进程、依赖配置和 Dockerfile，主服务不加载 Torch/ModelScope。
+- CAM++ Embedder 按服务生命周期加载 `iic/speech_campplus_sv_zh-cn_3dspeaker_16k`，测试使用明确标注的 Deterministic Embedder。
+- 三段 16kHz、单声道、PCM16 WAV 分别提取归一化 Embedding，取平均后再次归一化，每个 Identity 只保留一个模板。
+- PostgreSQL 模板更新、查询和删除都同时限定 `device_id`、`identity_id` 与 Active 状态。
+- Newtalk 增加可关闭的内部 HTTP Client；声纹服务不可用时仅声纹操作返回 `503`，聊天不受影响。
+- Web 成员卡增加三段 4 秒录音、录入、重新录入和删除入口；录音前停止聊天麦克风和当前 TTS。
+- 自动测试覆盖服务 Token、音频格式、三段注册、家庭隔离、识别、删除、主服务成员归属和故障降级。
+
+### 真实环境验收
+
+- 本机 `.venv` 已安装 ModelScope、PyTorch 和音频依赖，真实 CAM++ 模型完成下载并在 CPU 启动。
+- 浏览器已完成三段家庭录音；PostgreSQL 已保存对应成员的 512 维 CAM++ 模板。
+- Docker Desktop 当前不是本地运行前提；容器镜像构建留待 Docker 运行时恢复后复验。
+- 相似度分数、阈值和有限汇合期限将在 P7.3 使用真实识别样本继续校准。
+- P7.2 不把识别结果写入 Turn；ASR/VoicePrint 有限期限汇合属于 P7.3。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.1 完成后进入 P7.2 独立 VoicePrint 服务。P7 总体边界和需要通过真实环境验证的参数记录在 [`P7_DESIGN.md`](P7_DESIGN.md)。
+P7.2 已完成，下一阶段进入 P7.3：把同一段语音的 ASR Final 与 VoicePrint 识别结果按 `utterance_id` 汇合，并建立 Member/Guest Dialogue 边界。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -415,3 +435,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-08-18 | P5-B | 增加豆包双向流式 ASR 协议、partial/final、失败反馈和耗时日志 | 76 项通过，2 项 live 跳过；真实 Chrome 中文识别通过 |
 | 2026-08-27 | P6 | 增加连接级 DialogueSession、有限上下文窗口和完成轮次提交 | 87 项通过，2 项 live 跳过；真实浏览器多轮上下文验收通过 |
 | 2026-08-29 | P7.1 | 增加 PostgreSQL/Alembic、Device Cookie/恢复码、成员隔离 CRUD 与管理页面 | 真实 PostgreSQL 下 95 项通过、2 项 live 跳过；正式 `/ready` 数据库检查、浏览器桌面交互与 390px 移动布局通过 |
+| 2026-08-29 | P7.2 | 增加独立 VoicePrint 服务、三段声纹录入/删除、家庭范围模板和 Web 录音界面 | 主项目 99 项通过、3 项 live/环境跳过；声纹服务测试通过；真实 CAM++ CPU 加载和 512 维家庭模板写入通过 |

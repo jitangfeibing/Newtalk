@@ -113,6 +113,8 @@ class IdentityResponse(BaseModel):
     relationship: str | None
     avatar: str | None
     status: str
+    voiceprint_enrolled: bool
+    voiceprint_enrolled_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -141,6 +143,8 @@ def _identity_response(identity: Identity) -> IdentityResponse:
         relationship=identity.relationship,
         avatar=identity.avatar,
         status=identity.status.value,
+        voiceprint_enrolled=identity.voiceprint_enrolled_at is not None,
+        voiceprint_enrolled_at=identity.voiceprint_enrolled_at,
         created_at=identity.created_at,
         updated_at=identity.updated_at,
     )

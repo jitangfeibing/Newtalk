@@ -15,5 +15,30 @@ services:
     volumes:
       - newtalk-postgres:/var/lib/postgresql/data
 
+  voiceprint:
+    build:
+      context: .
+      dockerfile: services/voiceprint/Dockerfile
+      args:
+        VOICEPRINT_EXTRAS: ${VOICEPRINT_EXTRAS:-}
+    environment:
+      VOICEPRINT_DATABASE_URL: postgresql+asyncpg://newtalk:newtalk@postgres:5432/newtalk
+      VOICEPRINT_API_TOKEN: local-voiceprint-token
+      VOICEPRINT_BACKEND: ${VOICEPRINT_BACKEND:-deterministic}
+      VOICEPRINT_SIMILARITY_THRESHOLD: "0.72"
+    ports:
+      - "127.0.0.1:8010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - newtalk-voiceprint-models:/root/.cache/modelscope
+
 volumes:
   newtalk-postgres:
+  newtalk-voiceprint-models:
