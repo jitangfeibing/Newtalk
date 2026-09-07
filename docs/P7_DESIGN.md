@@ -123,7 +123,7 @@ Device
 - Profile 属于明确的 Identity，并与 Memory 保持不同概念。
 - 不同 `device_id` 下即使成员同名，也不能共享长期数据。
 - Dialogue 保存当前 Session 的短期上下文。
-- Profile 保存稳定、长期、经常使用的成员信息，并在 Member Session 中驻留。
+- Profile 保存稳定、长期、经常使用的成员信息；Session 建连后后台预取当前家庭成员，并按 `identity_id` 分别缓存 Snapshot。
 - MemOS 保存更具体、更久以前的历史记忆。
 - 主 LLM 按需调用 `memory_search`，P7 不增加独立 Memory Router，也不在每轮 LLM 前强制查询 MemOS。
 - Member Turn 完成后在后台写入长期记忆和更新 Profile，不阻塞当前回答。
@@ -208,11 +208,13 @@ Dialogue 继续沿用 P6 的有限窗口，负责承接当前 Session 刚发生�
 
 Profile 保存姓名、称呼、喜好、兴趣、家庭关系、长期目标和当前长期项目等稳定信息：
 
-- Member Session 启动时加载一次 Profile Snapshot，并在 Session 内驻留。
-- 每一轮主 LLM 都可以看到当前成员的 Profile Snapshot。
+- Session 建连后在后台并行预取当前家庭 Active Identity 的 Profile Snapshot，不阻塞 WebSocket `hello` 和聊天接收循环。
+- 同一 Session 可以出现多个 Member，运行时维护 `identity_id -> ProfileSnapshot`，成员切换时不得复用上一位成员的 Snapshot。
+- 每个 Member Turn 只向主 LLM 提供当前 `speaker_identity_id` 对应且已经就绪的 Profile Snapshot；Family Dialogue 仍保留其他说话人的带标签历史。
+- Profile 尚未预取完成、超时或失败时，当前 Turn 不等待远程 MemOS，直接按无 Profile 降级；后续 Turn 可使用已经完成的缓存。
 - 新的稳定信息在回答结束后由后台处理，不阻塞当前回复。
-- MemOS 自动更新在当前 Session 中不主动轮询；新的 Profile 默认在下一次 Session 启动时加载。
-- 用户在 Memory Center 手工编辑 Profile 时，当前 Session 的 Snapshot 同步更新。
+- MemOS 自动更新在当前 Session 中不主动轮询；新的 Profile 默认在下一次 Session 建连后的后台预取中重新加载。
+- 用户在 Memory Center 手工编辑 Profile 时，只同步更新当前 Session 中对应 `identity_id` 的 Snapshot。
 - Session 结束时可以补充校正，但不能作为唯一保存时机，因为异常断线不保证执行。
 - 用户锁定的 Profile 字段不能被后台自动更新覆盖。
 
@@ -359,11 +361,11 @@ MemOS 官方 Profile 能力已确认：用户绑定 Profile Template 后，`add/
 Member Turn 完成
 -> 后台 add/message(async_mode=true)
 -> MemOS 提取事实、偏好、Profile 和事件
--> 下一次 Session 启动时加载新值
+-> 下一次 Session 建连后后台预取新值
 
 Memory Center 手工编辑 Profile
 -> 更新 MemOS Profile
--> 同步更新当前 Session 的 Profile Snapshot
+-> 同步更新当前 Session 中该 identity_id 的 Profile Snapshot
 ```
 
 Profile Template 在 MemOS 控制台创建。实现到该阶段时，通过环境变量配置 API Key、Base URL 和 `profile_template_id`。
@@ -546,7 +548,7 @@ P7 按以下顺序交付，每个子阶段单独形成可运行、可测试的 P
 P7.1：PostgreSQL、Device 凭据、家庭恢复与成员管理页面
 P7.2：独立 VoicePrint 服务、声纹录入、删除与服务测试
 P7.3：ASR/VoicePrint 汇合、Identity/Guest 映射和多人 Dialogue
-P7.4：Profile Template 绑定、Session Profile Snapshot 与关闭 Memory 降级
+P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 降级
 P7.5：主 LLM Tool Calling、memory_search 和 PostgreSQL 后台写入任务
 P7.6：Memory Center、Profile 锁定、记忆编辑删除和成员完整删除
 ```
