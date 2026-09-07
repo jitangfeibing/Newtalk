@@ -359,7 +359,7 @@ P7 的 Session、Device、Identity、Dialogue、Guest、Memory 和 Profile 设�
 - Web 使用服务端签发的随机 MAC 样式 `device_id` 和设备凭据，并通过家庭恢复码重新绑定原家庭。
 - 使用 PostgreSQL、SQLAlchemy 和 Alembic 保存 Device、Identity、声纹映射和持久化状态。
 - 在同一仓库的独立 `services/voiceprint` 进程中实现 3D-Speaker/CAM++ 声纹注册、识别和删除。
-- Member Session 启动时加载 Profile Snapshot，并持续提供给主 LLM。
+- Session 建连后在后台预取当前家庭成员的 Profile Snapshot，并按 `identity_id` 分别缓存；每个 Turn 只向主 LLM 提供当前说话人的已就绪 Profile，预取未完成或失败时不阻塞聊天。
 - 主 LLM 按需调用 `memory_search` 查询 MemOS，不增加独立 Memory Router。
 - Memory 查询使用真正异步 I/O，并设置超时、结果上限、字符预算和 Tool Call 上限。
 - 当前回答结束后通过后台 Memory Pipeline 将已完成的 Member Turn 写入 MemOS。

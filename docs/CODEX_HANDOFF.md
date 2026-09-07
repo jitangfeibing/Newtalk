@@ -38,7 +38,15 @@ PR：https://github.com/jitangfeibing/Newtalk/pull/10
 合并提交：69e2a64 Merge pull request #10 ... P7.2
 ```
 
-P7.3 通过 `codex/p7-3-speaker-turn` 交付。本文是 P7.3 交付内容的一部分；从远端 `main` 阅读本文时，应先用下列命令核对最新状态和对应 PR：
+P7.3 交付记录：
+
+```text
+提交：629db35 feat: complete P7.3 speaker-aware turns
+PR：https://github.com/jitangfeibing/Newtalk/pull/11
+合并提交：f5c1247 Merge pull request #11 ... P7.3
+```
+
+本文是 P7.3 交付内容的一部分；从远端 `main` 阅读本文时，应先用下列命令核对最新状态：
 
 ```powershell
 git status --short --branch
@@ -80,11 +88,11 @@ gh pr list --state all --limit 20
 - 已完成真实 CAM++ CPU 加载、浏览器三段录入和 PostgreSQL 512 维模板写入验证。
 - `deterministic` 后端仅供自动测试和 CI，不能作为产品声纹识别结果。
 
-## 4. P7.3 当前实现
+## 4. P7.3 已完成实现
 
 P7.3 目标是把声纹识别正式写入 Turn 身份，并建立 Member 与 Guest 的对话边界。
 
-当前代码已经实现：
+当前 `main` 已经实现：
 
 - 文本输入可显式选择家庭成员或 Guest。
 - 语音输入的同一段 PCM 同时送给流式 ASR 和 VoicePrint。
@@ -280,7 +288,7 @@ git diff --check
 已经确认的后续拆分：
 
 ```text
-P7.4：Profile Template 绑定、Session Profile Snapshot、关闭 Memory 时正常降级
+P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级
 P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务
 P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除
 ```
@@ -289,13 +297,15 @@ Memory 基线不可改回旧小智的“每轮先查 Memory 再调用 LLM”：
 
 ```text
 Dialogue -> 当前 Session 短期上下文
-Profile  -> 稳定资料，Member Session 加载并驻留
+Profile  -> 稳定资料，Session 建连后后台预取并按 Identity 缓存
 MemOS    -> 主 LLM 按需调用 memory_search 查询长期情景记忆
 ```
 
 规则：
 
 - Guest 只有 Dialogue，不读取或写入 Profile/MemOS。
+- 同一 Session 可以出现多个 Member，Profile Snapshot 必须使用 `identity_id` 分别缓存；每个 Turn 只能向 LLM 注入当前 `speaker_identity_id` 对应且已经就绪的 Profile。
+- Profile 预取不能阻塞 WebSocket `hello` 或 Turn 主链；尚未完成、超时或失败时，本轮按无 Profile 继续聊天。
 - Member Turn 成功完成后，后台异步写入长期记忆，不阻塞当前回复。
 - 普通聊天不强制查询 MemOS。
 - `device_id` 和 `identity_id` 必须由服务端绑定到 Memory Scope，不能信任 LLM 或浏览器传入的数据范围。
@@ -303,6 +313,26 @@ MemOS    -> 主 LLM 按需调用 memory_search 查询长期情景记忆
 - 第一版使用 MemOS 已有 Add/Search/Profile 能力，不自建 Embedding、Rerank、知识图谱或通用 Agent Framework。
 
 详细设计见 `docs/P7_DESIGN.md`。实现 P7.4 前先核对 MemOS 真实账号、Profile Template 和 API 响应，不根据文档猜测最终 Python 接口。
+
+### P7.4 开始编码前
+
+下一位 Codex 应先从用户处确认或通过真实 Live Test 得到：
+
+- MemOS API Base URL 和本地 `.env` 中的 API Key；密钥不能写入本文、测试夹具或 Git。
+- MemOS 控制台创建的 `profile_template_id`。
+- 第一版 Profile Template 的字段树，以及哪些字段允许算法更新、哪些字段默认锁定。
+- `bind/profile_template`、Profile 查询和编辑接口的真实成功/失败响应样例。
+- 已存在 Identity 的补绑定策略：Session 后台预取时懒绑定，或一次性后台补齐。不能只处理 P7.4 以后新增的成员。
+
+P7.4 的最小完成边界：
+
+- Memory 默认可关闭；关闭时不调用 MemOS，现有文本和语音聊天测试继续通过。
+- 开启后按 `device_id + identity_id` 建立服务端 Scope，但映射到 MemOS 的 `user_id` 必须由后端生成，不能接受浏览器指定。
+- Session 建连后异步预取当前家庭所有 Active Identity，且不阻塞 `hello`；新建成员应触发该 Identity 的后台预取。
+- 每个 Identity 的 Profile Snapshot 独立缓存；成员切换测试必须证明 A 的画像不会注入 B 的 Turn。
+- Guest 不绑定 Profile Template、不加载 Profile，也不获得任何长期 Memory 能力。
+- Profile 尚未就绪、MemOS 超时、鉴权失败或服务不可用时，本轮聊天降级为无 Profile，不得阻塞或终止 Turn。
+- P7.4 只实现 Profile 绑定、读取与缓存，不提前实现 P7.5 的 `memory_search`、Tool Calling 或后台记忆写入。
 
 ## 10. 文档阅读顺序
 

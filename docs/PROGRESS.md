@@ -421,12 +421,12 @@ text_input
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.3 已完成，下一阶段进入 P7.4：绑定 Profile Template、加载 Session Profile Snapshot，并保证关闭 Memory 时聊天正常降级。
+P7.3 已完成，下一阶段进入 P7.4：绑定 Profile Template、后台预取并按 `identity_id` 缓存 Profile Snapshot，同时保证关闭 Memory 或预取失败时聊天正常降级。同一 Session 的不同 Member 不能复用画像。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
 - Dialogue 负责当前 Session 的短期上下文。
-- Profile 保存稳定资料，Member Session 启动时加载并在 Session 中驻留。
+- Profile 保存稳定资料，Session 建连后在后台按 `identity_id` 分别预取和缓存；Turn 不等待远程 Profile 查询。
 - 主 LLM 按需调用 `memory_search` 查询 MemOS，不增加独立 Memory Router。
 - Turn 完成后由后台 Memory Pipeline 写入 MemOS 和更新 Profile。
 - 增加 Memory Center，用于查看、搜索、编辑、删除、纠正和锁定资料。
