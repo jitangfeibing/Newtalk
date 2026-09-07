@@ -41,4 +41,19 @@ async def handle_text_input(
         )
         return
 
-    await runtime.start_turn(text=text, event_id=event_id)
+    raw_identity_id = event.get("identity_id")
+    if raw_identity_id is not None and (
+        not isinstance(raw_identity_id, str) or not raw_identity_id.strip()
+    ):
+        await runtime.send_error(
+            code="invalid_identity_id",
+            message="identity_id must be a non-empty string or null",
+            event_id=event_id,
+        )
+        return
+
+    await runtime.start_text_turn(
+        text=text,
+        event_id=event_id,
+        identity_id=raw_identity_id.strip() if isinstance(raw_identity_id, str) else None,
+    )

@@ -4,6 +4,7 @@ from newtalk.voiceprint.client import (
     VoicePrintClient,
     VoicePrintEnrollment,
     VoicePrintError,
+    VoicePrintIdentification,
     VoicePrintUnavailableError,
 )
 
@@ -13,6 +14,6 @@ __all__ = [
     "VoicePrintClient",
     "VoicePrintEnrollment",
     "VoicePrintError",
+    "VoicePrintIdentification",
     "VoicePrintUnavailableError",
 ]
-

@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P6 Session 和有限 Dialogue Context |
-| 阶段状态 | 已完成：代码、自动测试和真实浏览器多轮验收通过 |
-| 开发分支 | `codex/p6-session-context` |
-| 项目版本 | `0.6.0` |
+| 当前阶段 | P7.3 ASR/VoicePrint 汇合和说话人 Turn |
+| 阶段状态 | 已完成：代码、协议文档和自动测试通过 |
+| 开发分支 | `codex/p7-3-speaker-turn` |
+| 项目版本 | `0.9.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 87 项通过，2 项 live 默认跳过 |
+| 自动测试 | 主项目 105 项通过、3 项 live/环境跳过；声纹服务 3 项通过、1 项 CAM++ live 跳过 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
-| 最后更新 | 2026-08-27 |
+| 最后更新 | 2026-08-29 |
 
 ## P1：基础运行骨架
 
@@ -398,11 +398,30 @@ text_input
 - 相似度分数、阈值和有限汇合期限将在 P7.3 使用真实识别样本继续校准。
 - P7.2 不把识别结果写入 Turn；ASR/VoicePrint 有限期限汇合属于 P7.3。
 
+## P7.3：说话人汇合与多人 Dialogue（已完成）
+
+### 已实现
+
+- 同一 `utterance_id` 的 PCM 同时进入流式 ASR 和 VoicePrint，ASR partial/final 不等待声纹即可展示。
+- ASR Final 创建 Turn 前有限等待声纹；匹配成功映射为当前家庭 Member，超时、低分、过短、服务失败或身份不存在降级为 Guest。
+- VoicePrint 结果由服务端按 `device_id` 再次读取 Identity，客户端不能为语音 Turn 指定身份。
+- Member 共享 Family Dialogue，用户消息带姓名和家庭关系标签；Guest 使用独立 Dialogue，互不读取历史。
+- 文本输入提供 Member/Guest 显式选择，并使用与语音相同的 Turn 身份字段和 Dialogue 边界。
+- `turn_started` 返回固定 speaker，`speaker_resolved` 返回匹配结果、原因和识别耗时。
+- 自动测试覆盖 Member 匹配、Guest 超时降级、家庭 Dialogue 共享、Guest 隔离、无效身份拒绝和停止录音时 utterance 收尾。
+
+### 验证与当前边界
+
+- 主项目自动测试为 105 项通过、3 项 live/环境跳过；VoicePrint 服务为 3 项通过、1 项 CAM++ 环境测试跳过。
+- P7.2 已验证真实 CAM++ CPU 加载、浏览器三段录入和 512 维模板写入；真实家庭环境的同人/异人分数、阈值和 `1.5s` 汇合期限保留为持续校准项。
+- Family/Guest Dialogue 仍与当前 WebSocket 同生命周期，刷新恢复属于后续 Session 持久化阶段。
+- Profile 和长期 Memory 尚未接入，P7.3 只保证 Turn 的身份和短期上下文归属正确。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.2 已完成，下一阶段进入 P7.3：把同一段语音的 ASR Final 与 VoicePrint 识别结果按 `utterance_id` 汇合，并建立 Member/Guest Dialogue 边界。
+P7.3 已完成，下一阶段进入 P7.4：绑定 Profile Template、加载 Session Profile Snapshot，并保证关闭 Memory 时聊天正常降级。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -436,3 +455,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-08-27 | P6 | 增加连接级 DialogueSession、有限上下文窗口和完成轮次提交 | 87 项通过，2 项 live 跳过；真实浏览器多轮上下文验收通过 |
 | 2026-08-29 | P7.1 | 增加 PostgreSQL/Alembic、Device Cookie/恢复码、成员隔离 CRUD 与管理页面 | 真实 PostgreSQL 下 95 项通过、2 项 live 跳过；正式 `/ready` 数据库检查、浏览器桌面交互与 390px 移动布局通过 |
 | 2026-08-29 | P7.2 | 增加独立 VoicePrint 服务、三段声纹录入/删除、家庭范围模板和 Web 录音界面 | 主项目 99 项通过、3 项 live/环境跳过；声纹服务测试通过；真实 CAM++ CPU 加载和 512 维家庭模板写入通过 |
+| 2026-09-07 | P7.3 | 增加 ASR/VoicePrint 有限汇合、Member/Guest Turn 映射和多人 Dialogue | 主项目 105 项通过、3 项跳过；声纹服务 3 项通过、1 项跳过；协议和前端语法检查通过 |

@@ -4,16 +4,16 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 项目采用按 Part 逐步构建的方式，每个阶段都必须可运行、可测试、可演示。原小智项目仅作为只读参考，不作为 Newtalk 的运行时依赖。
 
-详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
+详细规划见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，实际开发进度见 [docs/PROGRESS.md](docs/PROGRESS.md)，Codex 接手状态见 [docs/CODEX_HANDOFF.md](docs/CODEX_HANDOFF.md)，默认协作方式见 [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)。
 
 文档口径：
 
-- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.2 运行时。
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.3 运行时。
 - `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
-- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.2 已完成，P7.3 开始实现。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.3 已完成。
 - `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
 
-## 当前阶段：P7.2 已完成
+## 当前阶段：P7.3 已完成
 
 P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声纹服务：
 
@@ -31,6 +31,15 @@ P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声�
 - Newtalk 使用内部 HTTP Client 调用声纹服务，浏览器不能直接指定 `device_id`。
 - 声纹服务故障只影响录入/删除，聊天主链和 `/health` 保持可用。
 - `deterministic` 仅用于 CI；正式声纹识别使用 3D-Speaker CAM++。
+
+P7.3 把声纹识别正式接入对话 Turn：
+
+- 同一段语音的 PCM 同时交给流式 ASR 和 VoicePrint，并使用 `utterance_id` 汇合结果。
+- ASR Final 立即显示；创建聊天 Turn 前最多等待声纹有限时间，超时、低分、过短或服务失败统一降级为 Guest。
+- 有效声纹匹配由服务端再次解析为当前家庭成员，浏览器不能伪造语音身份。
+- Member 使用家庭共享 Dialogue，并在发给 LLM 的每条用户消息中标注说话人；Guest 使用独立 Dialogue。
+- 文本输入可以显式选择当前家庭成员或 Guest，同样遵守 Family/Guest Dialogue 边界。
+- `Turn` 固定保存 `device_id` 和说话人信息，创建后不接受迟到声纹结果修改。
 
 继承能力包括：
 
@@ -61,7 +70,7 @@ P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声�
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未把声纹识别接入语音 Turn。ASR/VoicePrint 汇合、Guest 映射和多人 Dialogue 属于 P7.3；长期 Memory、Vision 和 Provider Registry 也未进入当前运行链。
+当前阶段尚未接入长期 Memory、Profile、Vision 和 Provider Registry。P7.3 的自动测试已覆盖 ASR/VoicePrint 汇合、Guest 降级和多人 Dialogue；真实家庭环境中的 CAM++ 分数、阈值和延迟属于后续持续校准项。
 
 ## 本地启动
 
@@ -79,7 +88,7 @@ newtalk
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P7.2 数据库、设备和声纹客户端配置：
+P7.3 数据库、设备和声纹客户端配置：
 
 ```dotenv
 NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk
@@ -91,6 +100,7 @@ NEWTALK_RECOVERY_WINDOW_SECONDS=900
 NEWTALK_VOICEPRINT_URL=http://127.0.0.1:8010
 NEWTALK_VOICEPRINT_API_TOKEN=local-voiceprint-token
 NEWTALK_VOICEPRINT_TIMEOUT_SECONDS=30
+NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS=1.5
 ```
 
 CI 和接口联调使用轻量测试后端：

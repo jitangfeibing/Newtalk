@@ -97,7 +97,7 @@ async def assert_websocket_lifecycle(port: int, cookie: str) -> None:
     ) as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.5"
+        assert hello["protocol_version"] == "0.6"
         assert hello["session_id"]
         assert hello["device_id"]
         assert hello["audio"]["input"]["codec"] == "pcm_s16le"

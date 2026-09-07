@@ -18,6 +18,25 @@ class Turn:
     user_text: str
     messages: tuple[ChatMessage, ...]
     created_at: datetime
+    device_id: str = "unknown"
+    speaker_identity_id: str | None = None
+    speaker_display_name: str = "Guest"
+    speaker_relationship: str | None = None
+
+
+def format_user_message(
+    text: str,
+    *,
+    speaker_identity_id: str | None,
+    speaker_display_name: str,
+    speaker_relationship: str | None,
+) -> str:
+    if speaker_identity_id is None:
+        return f"[说话人：Guest（未识别访客）]\n{text}"
+    relationship = (
+        f"；家庭关系：{speaker_relationship}" if speaker_relationship else ""
+    )
+    return f"[说话人：{speaker_display_name}{relationship}]\n{text}"
 
 
 @dataclass(frozen=True, slots=True)

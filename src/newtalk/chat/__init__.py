@@ -10,6 +10,7 @@ from newtalk.chat.models import (
     Turn,
     TurnCompleted,
     TurnOutput,
+    format_user_message,
 )
 from newtalk.chat.openai_compatible import OpenAICompatibleChatModel
 from newtalk.chat.session import DialogueExchange, DialogueSession
@@ -32,4 +33,5 @@ __all__ = [
     "Turn",
     "TurnCompleted",
     "TurnOutput",
+    "format_user_message",
 ]

@@ -1,8 +1,8 @@
-# P7.2 HTTP、VoicePrint 与 WebSocket 协议
+# P7.3 HTTP、VoicePrint 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.5`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.6`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
-WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增加聊天消息类型；`hello.session_id` 仍标识当前内存 Dialogue Session，断线后不恢复。
+WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前连接运行时；Family Dialogue 和 Guest Dialogue 当前都在断线后清空。
 
 ## Device 与成员 HTTP API
 
@@ -37,7 +37,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增�
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.5",
+  "protocol_version": "0.6",
   "session_id": "generated UUID",
   "device_id": "02:11:22:33:44:55",
   "audio": {
@@ -74,7 +74,23 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增�
 {"type":"asr_final","utterance_id":"UUID","text":"最终文本"}
 ```
 
-只有非空 `asr_final` 创建一个新 Turn。Fake ASR 只产生固定 final；豆包 ASR 会产生去重后的 partial 和唯一 final。
+ASR 和 VoicePrint 使用相同 `utterance_id`。非空 `asr_final` 会先发给浏览器，再在配置的有限期限内等待声纹结果：
+
+```json
+{
+  "type": "speaker_resolved",
+  "utterance_id": "UUID",
+  "identity_id": "member UUID or null",
+  "display_name": "小明 or Guest",
+  "matched": true,
+  "score": 0.82,
+  "reason": "matched",
+  "provider_elapsed_ms": 153.4,
+  "elapsed_ms": 160.2
+}
+```
+
+`reason` 可能为 `matched`、`no_match`、`timeout`、`unavailable`、`invalid_audio`、`failed` 或 `identity_missing`。只有 `matched` 创建 Member Turn，其他结果均安全降级为 Guest；声纹失败不会关闭连接或阻止聊天。
 
 识别失败不会关闭客户端连接：
 
@@ -92,7 +108,28 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增�
 
 ## Turn 和打断
 
-文本仍使用 `text_input`。文本或 ASR Final 都进入相同的 Turn 流，依次可能产生 `turn_started`、`text_delta`、`audio_start`、服务端二进制 PCM、`audio_end` 和 `turn_completed`。
+文本通过可选 `identity_id` 显式选择当前家庭成员；`null` 表示 Guest：
+
+```json
+{"type":"text_input","event_id":"client ID","text":"你好","identity_id":"member UUID or null"}
+```
+
+服务端会验证成员属于当前 `device_id`。文本或完成说话人汇合后的 ASR Final 都进入相同 Turn 流，依次可能产生 `turn_started`、`text_delta`、`audio_start`、服务端二进制 PCM、`audio_end` 和 `turn_completed`。
+
+```json
+{
+  "type": "turn_started",
+  "turn_id": "UUID",
+  "source": "voice",
+  "speaker": {
+    "identity_id": "member UUID or null",
+    "display_name": "小明 or Guest",
+    "guest": false
+  }
+}
+```
+
+Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名和家庭关系；Guest Turn 使用独立 Guest Dialogue。说话人字段在 Turn 创建后固定，迟到声纹结果不能修改当前回复归属。
 
 新文本输入或 VAD 说话开始取消旧 Turn：
 
@@ -110,10 +147,12 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。P7.1 没有增�
 - PCM 字节数不是 2 的倍数：`invalid_audio_frame`。
 - Provider 鉴权、超时或协议失败：`asr_failed`。
 - 同一连接重复开始采集：`audio_input_active`。
+- 文本 `identity_id` 类型错误：`invalid_identity_id`。
+- 文本选择了当前家庭不存在的成员：`identity_not_found`。
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
 - `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
 
-## P6 调用链
+## P7.3 调用链
 
 ```text
 Browser getUserMedia
@@ -121,12 +160,14 @@ Browser getUserMedia
 -> WebSocket binary frames
 -> AudioInputSession -> SileroVadStream
    |-> speech_start -> cancel old Turn -> turn_cancelled + audio_stop
-   `-> speech_end   -> finish ASR utterance
--> SpeechRecognizer.stream
-   |-> FakeASR (test/CI)
-   `-> DoubaoStreamingASR (100ms packets -> partial/final)
--> ConnectionRuntime.start_turn
--> DialogueSession.messages_for -> immutable Turn.messages
+   `-> same utterance PCM
+       |-> SpeechRecognizer.stream -> ASR partial/final
+       `-> WAV -> VoicePrint /v1/identify
+-> utterance_id join with bounded wait
+   |-> matched active member -> Member Turn -> Family Dialogue
+   `-> timeout/no-match/failure -> Guest Turn -> Guest Dialogue
+-> ConnectionRuntime.start_turn with immutable device/speaker
+-> DialogueSession.messages_for -> speaker-labelled immutable Turn.messages
 -> ChatService.stream_turn
 -> text_delta + TTS binary PCM -> PcmPlayer / AudioWorklet
 -> turn_completed -> DialogueSession.commit

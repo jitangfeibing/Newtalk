@@ -20,6 +20,14 @@ class VoicePrintEnrollment:
     enrolled_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class VoicePrintIdentification:
+    identity_id: str | None
+    score: float
+    matched: bool
+    elapsed_ms: float
+
+
 class VoicePrintClient(Protocol):
     async def register(
         self,
@@ -28,6 +36,13 @@ class VoicePrintClient(Protocol):
         identity_id: str,
         samples: list[bytes],
     ) -> VoicePrintEnrollment: ...
+
+    async def identify(
+        self,
+        *,
+        device_id: str,
+        sample: bytes,
+    ) -> VoicePrintIdentification: ...
 
     async def delete(self, *, device_id: str, identity_id: str) -> None: ...
 
@@ -42,6 +57,14 @@ class DisabledVoicePrintClient:
         identity_id: str,
         samples: list[bytes],
     ) -> VoicePrintEnrollment:
+        raise VoicePrintUnavailableError("VoicePrint service is disabled")
+
+    async def identify(
+        self,
+        *,
+        device_id: str,
+        sample: bytes,
+    ) -> VoicePrintIdentification:
         raise VoicePrintUnavailableError("VoicePrint service is disabled")
 
     async def delete(self, *, device_id: str, identity_id: str) -> None:
@@ -86,6 +109,29 @@ class HttpVoicePrintClient:
             enrolled_at=datetime.fromisoformat(payload["enrolled_at"]),
         )
 
+    async def identify(
+        self,
+        *,
+        device_id: str,
+        sample: bytes,
+    ) -> VoicePrintIdentification:
+        try:
+            response = await self._client.post(
+                "/v1/identify",
+                data={"device_id": device_id},
+                files={"sample": ("utterance.wav", sample, "audio/wav")},
+            )
+        except httpx.HTTPError as exc:
+            raise VoicePrintUnavailableError("VoicePrint service is unavailable") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+        return VoicePrintIdentification(
+            identity_id=payload.get("identity_id"),
+            score=float(payload["score"]),
+            matched=bool(payload["matched"]),
+            elapsed_ms=float(payload["elapsed_ms"]),
+        )
+
     async def delete(self, *, device_id: str, identity_id: str) -> None:
         try:
             response = await self._client.delete(
@@ -111,4 +157,3 @@ class HttpVoicePrintClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
-

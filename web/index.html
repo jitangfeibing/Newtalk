@@ -10,7 +10,7 @@
     <main class="shell">
         <header class="masthead">
             <div>
-                <p class="eyebrow">NEWTALK / PART 07.1</p>
+                <p class="eyebrow">NEWTALK / PART 07.3</p>
                 <h1>Voice Console</h1>
             </div>
             <div class="status" data-state="offline" id="connectionStatus">
@@ -124,7 +124,12 @@
                         rows="2"
                     ></textarea>
                     <div class="composer-footer">
-                        <span>最多 4000 字符 · PCM 低延迟播放</span>
+                        <label class="speaker-selector" for="textSpeakerSelect">
+                            <span>文字说话人</span>
+                            <select id="textSpeakerSelect">
+                                <option value="">Guest（访客）</option>
+                            </select>
+                        </label>
                         <div class="composer-actions">
                             <button type="button" class="button secondary" id="micButton" disabled>开启麦克风</button>
                             <button type="button" class="button secondary" id="stopAudioButton" disabled>停止播放</button>

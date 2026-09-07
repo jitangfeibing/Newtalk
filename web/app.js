@@ -1,4 +1,4 @@
-import {initializeIdentity} from './identity.js';
+import {initializeIdentity, selectedTextSpeaker} from './identity.js';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
@@ -22,6 +22,7 @@ let advertisedInputFormat = null;
 const pendingEvents = new Set();
 const messagesByTurn = new Map();
 const turnStartedAt = new Map();
+const voiceMessagesByUtterance = new Map();
 
 class PcmPlayer {
     constructor() {
@@ -306,6 +307,7 @@ function appendMessage(role, text, meta) {
     item.className = `message ${role}`;
     heading.className = 'message-heading';
     roleLabel.textContent = role === 'user' ? 'YOU' : 'NEWTALK';
+    roleLabel.className = 'message-role';
     metaLabel.textContent = meta;
     content.className = 'message-content';
     content.textContent = text;
@@ -357,8 +359,26 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'asr_final') {
-        if (payload.text) appendMessage('user', payload.text, payload.utterance_id.slice(0, 8));
-        microphone.setStatus('listening', '麦克风监听中');
+        if (payload.text) {
+            const message = appendMessage('user', payload.text, payload.utterance_id.slice(0, 8));
+            voiceMessagesByUtterance.set(payload.utterance_id, message);
+        }
+        microphone.setStatus('listening', '正在确认说话人');
+        return;
+    }
+
+    if (payload.type === 'speaker_resolved') {
+        const message = voiceMessagesByUtterance.get(payload.utterance_id);
+        if (message) {
+            message.querySelector('.message-role').textContent = payload.matched
+                ? payload.display_name
+                : 'GUEST';
+            voiceMessagesByUtterance.delete(payload.utterance_id);
+        }
+        microphone.setStatus(
+            'listening',
+            payload.matched ? `已识别：${payload.display_name}` : '未匹配成员，按 Guest 对话',
+        );
         return;
     }
 
@@ -513,9 +533,12 @@ chatForm.addEventListener('submit', async (event) => {
         type: 'text_input',
         event_id: nextEventId('text'),
         text,
+        identity_id: selectedTextSpeaker()?.identity_id ?? null,
     };
     pendingEvents.add(payload.event_id);
-    appendMessage('user', text, payload.event_id.split('-').slice(-2).join('-'));
+    const speaker = selectedTextSpeaker();
+    const userMessage = appendMessage('user', text, payload.event_id.split('-').slice(-2).join('-'));
+    userMessage.querySelector('.message-role').textContent = speaker?.display_name ?? 'GUEST';
     socket.send(JSON.stringify(payload));
     appendProtocolEvent('outgoing', payload);
     messageInput.value = '';

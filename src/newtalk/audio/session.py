@@ -26,6 +26,7 @@ class AudioInputSession:
         on_boundary: Callable[[SpeechBoundary], Awaitable[None]],
         on_asr_event: Callable[[str, AsrEvent], Awaitable[None]],
         on_asr_error: Callable[[str, Exception], Awaitable[None]] | None = None,
+        on_utterance_audio: Callable[[str, bytes], Awaitable[None]] | None = None,
         pre_roll_ms: int = 300,
     ) -> None:
         self._vad_stream = vad_stream
@@ -33,6 +34,7 @@ class AudioInputSession:
         self._on_boundary = on_boundary
         self._on_asr_event = on_asr_event
         self._on_asr_error = on_asr_error
+        self._on_utterance_audio = on_utterance_audio
         self._pre_roll_limit = int(
             INPUT_AUDIO_FORMAT.bytes_per_second * pre_roll_ms / 1000
         )
@@ -40,6 +42,7 @@ class AudioInputSession:
         self._pre_roll_bytes = 0
         self._active_queue: asyncio.Queue[bytes | object] | None = None
         self._active_utterance_id: str | None = None
+        self._active_audio_chunks: list[bytes] | None = None
         self._recognition_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
 
@@ -54,6 +57,8 @@ class AudioInputSession:
         queue_at_start = self._active_queue
         if queue_at_start is not None:
             await queue_at_start.put(pcm)
+            if self._active_audio_chunks is not None:
+                self._active_audio_chunks.append(pcm)
         self._append_pre_roll(pcm)
 
         for event in self._vad_stream.process(pcm):
@@ -68,10 +73,16 @@ class AudioInputSession:
         for event in self._vad_stream.flush():
             if event.kind == "speech_end":
                 await self._finish_utterance(event.probability, event.audio_ms)
-        if self._active_queue is not None:
-            await self._active_queue.put(_AUDIO_END)
+        if self._active_queue is not None and self._active_utterance_id is not None:
+            queue = self._active_queue
+            utterance_id = self._active_utterance_id
+            audio_chunks = self._active_audio_chunks or []
             self._active_queue = None
             self._active_utterance_id = None
+            self._active_audio_chunks = None
+            await queue.put(_AUDIO_END)
+            if self._on_utterance_audio is not None and audio_chunks:
+                await self._on_utterance_audio(utterance_id, b"".join(audio_chunks))
 
     async def close(self) -> None:
         if self._closed:
@@ -89,6 +100,7 @@ class AudioInputSession:
         queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=128)
         self._active_queue = queue
         self._active_utterance_id = utterance_id
+        self._active_audio_chunks = list(self._pre_roll)
         task = asyncio.create_task(self._recognize(utterance_id, queue))
         self._recognition_tasks.add(task)
         task.add_done_callback(self._recognition_finished)
@@ -109,8 +121,10 @@ class AudioInputSession:
             return
         queue = self._active_queue
         utterance_id = self._active_utterance_id
+        audio_chunks = self._active_audio_chunks or []
         self._active_queue = None
         self._active_utterance_id = None
+        self._active_audio_chunks = None
         await self._on_boundary(
             SpeechBoundary(
                 kind="speech_end",
@@ -120,6 +134,8 @@ class AudioInputSession:
             )
         )
         await queue.put(_AUDIO_END)
+        if self._on_utterance_audio is not None and audio_chunks:
+            await self._on_utterance_audio(utterance_id, b"".join(audio_chunks))
 
     async def _recognize(
         self,

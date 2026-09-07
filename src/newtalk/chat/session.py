@@ -1,7 +1,7 @@
 from collections import deque
 from dataclasses import dataclass
 
-from newtalk.chat.models import ChatMessage, Turn
+from newtalk.chat.models import ChatMessage, Turn, format_user_message
 
 
 @dataclass(frozen=True, slots=True)
@@ -9,6 +9,9 @@ class DialogueExchange:
     turn_id: str
     user_text: str
     assistant_text: str
+    speaker_identity_id: str | None
+    speaker_display_name: str
+    speaker_relationship: str | None
 
 
 class DialogueSession:
@@ -32,8 +35,23 @@ class DialogueSession:
     def exchanges(self) -> tuple[DialogueExchange, ...]:
         return tuple(self._exchanges)
 
-    def messages_for(self, user_text: str) -> tuple[ChatMessage, ...]:
-        current = ChatMessage(role="user", content=user_text)
+    def messages_for(
+        self,
+        user_text: str,
+        *,
+        speaker_identity_id: str | None = None,
+        speaker_display_name: str = "Guest",
+        speaker_relationship: str | None = None,
+    ) -> tuple[ChatMessage, ...]:
+        current = ChatMessage(
+            role="user",
+            content=format_user_message(
+                user_text,
+                speaker_identity_id=speaker_identity_id,
+                speaker_display_name=speaker_display_name,
+                speaker_relationship=speaker_relationship,
+            ),
+        )
         remaining_chars = max(0, self.max_chars - len(user_text))
         selected: list[DialogueExchange] = []
 
@@ -48,7 +66,15 @@ class DialogueSession:
         for exchange in reversed(selected):
             messages.extend(
                 (
-                    ChatMessage(role="user", content=exchange.user_text),
+                    ChatMessage(
+                        role="user",
+                        content=format_user_message(
+                            exchange.user_text,
+                            speaker_identity_id=exchange.speaker_identity_id,
+                            speaker_display_name=exchange.speaker_display_name,
+                            speaker_relationship=exchange.speaker_relationship,
+                        ),
+                    ),
                     ChatMessage(role="assistant", content=exchange.assistant_text),
                 )
             )
@@ -67,5 +93,8 @@ class DialogueSession:
                 turn_id=turn.turn_id,
                 user_text=turn.user_text,
                 assistant_text=assistant_text,
+                speaker_identity_id=turn.speaker_identity_id,
+                speaker_display_name=turn.speaker_display_name,
+                speaker_relationship=turn.speaker_relationship,
             )
         )

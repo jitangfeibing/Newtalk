@@ -1,6 +1,15 @@
 import pytest
 
-from newtalk.chat import ChatMessage, ChatService, DialogueSession
+from newtalk.chat import ChatMessage, ChatService, DialogueSession, format_user_message
+
+
+def guest(text: str) -> str:
+    return format_user_message(
+        text,
+        speaker_identity_id=None,
+        speaker_display_name="Guest",
+        speaker_relationship=None,
+    )
 
 
 def _completed_turn(service: ChatService, session: DialogueSession, text: str):
@@ -18,9 +27,9 @@ def test_dialogue_session_builds_context_from_completed_turns() -> None:
     session.commit(first, "你好，小明")
 
     assert session.messages_for("我叫什么？") == (
-        ChatMessage("user", "我叫小明"),
+        ChatMessage("user", guest("我叫小明")),
         ChatMessage("assistant", "你好，小明"),
-        ChatMessage("user", "我叫什么？"),
+        ChatMessage("user", guest("我叫什么？")),
     )
 
 
@@ -36,11 +45,11 @@ def test_dialogue_session_keeps_only_the_latest_turns() -> None:
         "用户2",
     ]
     assert session.messages_for("当前") == (
-        ChatMessage("user", "用户1"),
+        ChatMessage("user", guest("用户1")),
         ChatMessage("assistant", "助手1"),
-        ChatMessage("user", "用户2"),
+        ChatMessage("user", guest("用户2")),
         ChatMessage("assistant", "助手2"),
-        ChatMessage("user", "当前"),
+        ChatMessage("user", guest("当前")),
     )
 
 
@@ -52,11 +61,11 @@ def test_dialogue_session_applies_a_contiguous_character_window() -> None:
         session.commit(turn, assistant)
 
     assert session.messages_for("now") == (
-        ChatMessage("user", "22"),
+        ChatMessage("user", guest("22")),
         ChatMessage("assistant", "bb"),
-        ChatMessage("user", "3"),
+        ChatMessage("user", guest("3")),
         ChatMessage("assistant", "c"),
-        ChatMessage("user", "now"),
+        ChatMessage("user", guest("now")),
     )
 
 

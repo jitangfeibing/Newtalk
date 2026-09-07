@@ -6,16 +6,18 @@ from fastapi.testclient import TestClient
 from newtalk.app import create_app
 from newtalk.asr import AsrFinal, FakeASR
 from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
-from newtalk.chat import ChatMessage, ChatService, FakeLLM
+from newtalk.chat import ChatMessage, ChatService, FakeLLM, format_user_message
 from newtalk.config import AppConfig
 from newtalk.identity import IdentityService, InMemoryIdentityStore
+from newtalk.voiceprint import VoicePrintIdentification
 
 
 def make_client(**app_options) -> TestClient:
     identity_service = IdentityService(InMemoryIdentityStore())
+    config = app_options.pop("config", AppConfig())
     test_client = TestClient(
         create_app(
-            AppConfig(),
+            config,
             identity_service=identity_service,
             **app_options,
         )
@@ -23,6 +25,15 @@ def make_client(**app_options) -> TestClient:
     response = test_client.post("/api/device")
     assert response.status_code == 201
     return test_client
+
+
+def guest(text: str) -> str:
+    return format_user_message(
+        text,
+        speaker_identity_id=None,
+        speaker_display_name="Guest",
+        speaker_relationship=None,
+    )
 
 
 client = make_client()
@@ -52,7 +63,7 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.5"
+        assert hello["protocol_version"] == "0.6"
         assert hello["session_id"]
         assert hello["device_id"]
         assert hello["audio"] == {
@@ -133,6 +144,11 @@ def test_text_input_streams_one_turn() -> None:
             "session_id": hello["session_id"],
             "turn_id": started["turn_id"],
             "event_id": "text-1",
+            "speaker": {
+                "identity_id": None,
+                "display_name": "Guest",
+                "guest": True,
+            },
         }
         assert [event["delta"] for event in deltas] == ["我收到了：", "你好"]
         assert [event["sequence"] for event in deltas] == [1, 2]
@@ -184,6 +200,34 @@ class RecordingModel:
         return None
 
 
+class IdentifyingVoicePrintClient:
+    def __init__(self, *, delay_seconds: float = 0) -> None:
+        self.identity_id = None
+        self.delay_seconds = delay_seconds
+        self.samples: list[bytes] = []
+
+    async def register(self, **kwargs):
+        raise AssertionError("registration is not used in this test")
+
+    async def identify(self, *, device_id, sample):
+        del device_id
+        self.samples.append(sample)
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+        return VoicePrintIdentification(
+            identity_id=self.identity_id,
+            score=0.91 if self.identity_id else 0.2,
+            matched=self.identity_id is not None,
+            elapsed_ms=12.5,
+        )
+
+    async def delete(self, **kwargs):
+        return None
+
+    async def aclose(self):
+        return None
+
+
 def test_completed_turns_are_sent_as_dialogue_context() -> None:
     model = RecordingModel()
     context_client = make_client(chat_service=ChatService(model))
@@ -198,13 +242,99 @@ def test_completed_turns_are_sent_as_dialogue_context() -> None:
             assert completed["type"] == "turn_completed"
 
     assert model.requests == [
-        (ChatMessage("user", "我叫小明"),),
+        (ChatMessage("user", guest("我叫小明")),),
         (
-            ChatMessage("user", "我叫小明"),
-            ChatMessage("assistant", "回复：我叫小明"),
-            ChatMessage("user", "我叫什么？"),
+            ChatMessage("user", guest("我叫小明")),
+            ChatMessage("assistant", f"回复：{guest('我叫小明')}"),
+            ChatMessage("user", guest("我叫什么？")),
         ),
     ]
+
+
+def test_member_text_and_guest_use_separate_dialogue_windows() -> None:
+    model = RecordingModel()
+    identity_client = make_client(chat_service=ChatService(model))
+    member = identity_client.post(
+        "/api/members",
+        json={"display_name": "小明", "relationship": "儿子"},
+    ).json()
+
+    with identity_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "member-1",
+                "text": "这是成员内容",
+                "identity_id": member["identity_id"],
+            }
+        )
+        member_started, _, _, _, _ = receive_turn(websocket)
+        assert member_started["speaker"] == {
+            "identity_id": member["identity_id"],
+            "display_name": "小明",
+            "guest": False,
+        }
+
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "guest-1",
+                "text": "这是访客内容",
+                "identity_id": None,
+            }
+        )
+        guest_started, _, _, _, _ = receive_turn(websocket)
+        assert guest_started["speaker"]["guest"] is True
+
+    assert model.requests[0][-1].content == "[说话人：小明；家庭关系：儿子]\n这是成员内容"
+    assert model.requests[1] == (ChatMessage("user", guest("这是访客内容")),)
+
+
+def test_two_members_share_family_dialogue_with_speaker_labels() -> None:
+    model = RecordingModel()
+    family_client = make_client(chat_service=ChatService(model))
+    first = family_client.post(
+        "/api/members", json={"display_name": "小明", "relationship": "儿子"}
+    ).json()
+    second = family_client.post(
+        "/api/members", json={"display_name": "妈妈", "relationship": "母亲"}
+    ).json()
+
+    with family_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        for event_id, text, member in (
+            ("first-member", "我明天考试", first),
+            ("second-member", "他刚才说什么", second),
+        ):
+            websocket.send_json(
+                {
+                    "type": "text_input",
+                    "event_id": event_id,
+                    "text": text,
+                    "identity_id": member["identity_id"],
+                }
+            )
+            receive_turn(websocket)
+
+    assert model.requests[1][0].content == "[说话人：小明；家庭关系：儿子]\n我明天考试"
+    assert model.requests[1][-1].content == "[说话人：妈妈；家庭关系：母亲]\n他刚才说什么"
+
+
+def test_unknown_text_member_is_rejected_without_starting_turn() -> None:
+    identity_client = make_client()
+    with identity_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "unknown-member",
+                "text": "越界成员",
+                "identity_id": "missing",
+            }
+        )
+        error = websocket.receive_json()
+    assert error["code"] == "identity_not_found"
 
 
 def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
@@ -228,7 +358,7 @@ def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
                 event_types.append(json.loads(frame["text"])["type"])
 
     assert "turn_cancelled" in event_types
-    assert model.requests[-1] == (ChatMessage("user", "新的问题"),)
+    assert model.requests[-1] == (ChatMessage("user", guest("新的问题")),)
 
 
 def test_websocket_connections_do_not_share_dialogue_context() -> None:
@@ -245,8 +375,8 @@ def test_websocket_connections_do_not_share_dialogue_context() -> None:
             assert completed["type"] == "turn_completed"
 
     assert model.requests == [
-        (ChatMessage("user", "甲的问题"),),
-        (ChatMessage("user", "乙的问题"),),
+        (ChatMessage("user", guest("甲的问题")),),
+        (ChatMessage("user", guest("乙的问题")),),
     ]
 
 
@@ -407,9 +537,79 @@ def test_microphone_audio_creates_one_voice_turn() -> None:
             if event["type"] == "turn_completed":
                 final_text = event["text"]
 
-        assert event_types[:3] == ["vad_speech_end", "asr_final", "turn_started"]
+        assert event_types[:4] == [
+            "vad_speech_end",
+            "asr_final",
+            "speaker_resolved",
+            "turn_started",
+        ]
         assert turn_started_count == 1
         assert final_text == "我收到了：语音测试"
+
+
+def test_microphone_voiceprint_match_becomes_member_turn() -> None:
+    provider = IdentifyingVoicePrintClient()
+    model = RecordingModel()
+    voice_client = make_client(
+        chat_service=ChatService(model),
+        vad=ScriptedVad(),
+        recognizer=FakeASR("你知道我是谁吗"),
+        voiceprint_client=provider,
+    )
+    member = voice_client.post(
+        "/api/members",
+        json={"display_name": "小明", "relationship": "儿子"},
+    ).json()
+    provider.identity_id = member["identity_id"]
+
+    with voice_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        websocket.receive_json()
+        websocket.send_bytes(bytes(640))
+        websocket.receive_json()
+        websocket.send_bytes(bytes(640))
+        events = []
+        while not any(event["type"] == "turn_started" for event in events):
+            frame = websocket.receive()
+            if frame.get("bytes") is None:
+                events.append(json.loads(frame["text"]))
+
+    resolved = next(event for event in events if event["type"] == "speaker_resolved")
+    started = next(event for event in events if event["type"] == "turn_started")
+    assert resolved["identity_id"] == member["identity_id"]
+    assert resolved["reason"] == "matched"
+    assert started["speaker"]["display_name"] == "小明"
+    assert provider.samples[0].startswith(b"RIFF")
+    assert model.requests[0][-1].content == "[说话人：小明；家庭关系：儿子]\n你知道我是谁吗"
+
+
+def test_voiceprint_timeout_degrades_to_guest_turn() -> None:
+    provider = IdentifyingVoicePrintClient(delay_seconds=0.1)
+    voice_client = make_client(
+        config=AppConfig(voiceprint_join_timeout_seconds=0.01),
+        vad=ScriptedVad(),
+        recognizer=FakeASR("超时也继续聊天"),
+        voiceprint_client=provider,
+    )
+    with voice_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        websocket.receive_json()
+        websocket.send_bytes(bytes(640))
+        websocket.receive_json()
+        websocket.send_bytes(bytes(640))
+        events = []
+        while not any(event["type"] == "turn_started" for event in events):
+            frame = websocket.receive()
+            if frame.get("bytes") is None:
+                events.append(json.loads(frame["text"]))
+
+    resolved = next(event for event in events if event["type"] == "speaker_resolved")
+    started = next(event for event in events if event["type"] == "turn_started")
+    assert resolved["reason"] == "timeout"
+    assert resolved["matched"] is False
+    assert started["speaker"]["guest"] is True
 
 
 def test_vad_speech_start_cancels_the_active_turn() -> None:

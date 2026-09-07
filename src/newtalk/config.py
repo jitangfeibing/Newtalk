@@ -41,6 +41,7 @@ DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS = 365
 DEFAULT_RECOVERY_MAX_ATTEMPTS = 5
 DEFAULT_RECOVERY_WINDOW_SECONDS = 900
 DEFAULT_VOICEPRINT_TIMEOUT_SECONDS = 30.0
+DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS = 1.5
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
@@ -98,6 +99,7 @@ class AppConfig:
     voiceprint_url: str | None = None
     voiceprint_api_token: str | None = field(default=None, repr=False)
     voiceprint_timeout_seconds: float = DEFAULT_VOICEPRINT_TIMEOUT_SECONDS
+    voiceprint_join_timeout_seconds: float = DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -349,6 +351,11 @@ class AppConfig:
             "NEWTALK_VOICEPRINT_TIMEOUT_SECONDS",
             DEFAULT_VOICEPRINT_TIMEOUT_SECONDS,
         )
+        voiceprint_join_timeout_seconds = _positive_float_value(
+            values,
+            "NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS",
+            DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS,
+        )
         if voiceprint_url and not voiceprint_url.startswith(("http://", "https://")):
             raise ConfigError("NEWTALK_VOICEPRINT_URL must be an HTTP URL")
         if voiceprint_url and not voiceprint_api_token:
@@ -401,6 +408,7 @@ class AppConfig:
             voiceprint_url=voiceprint_url,
             voiceprint_api_token=voiceprint_api_token,
             voiceprint_timeout_seconds=voiceprint_timeout_seconds,
+            voiceprint_join_timeout_seconds=voiceprint_join_timeout_seconds,
         )
 
 
