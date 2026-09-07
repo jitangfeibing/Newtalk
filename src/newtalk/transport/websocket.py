@@ -37,12 +37,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     runtime = ConnectionRuntime(
         websocket,
         session_id=session_id,
+        device_id=device.device_id,
         chat_service=websocket.app.state.chat_service,
+        identity_service=websocket.app.state.identity_service,
+        voiceprint_client=websocket.app.state.voiceprint_client,
         vad=websocket.app.state.vad,
         recognizer=websocket.app.state.recognizer,
         vad_pre_roll_ms=websocket.app.state.config.vad_pre_roll_ms,
         dialogue_max_turns=websocket.app.state.config.dialogue_max_turns,
         dialogue_max_chars=websocket.app.state.config.dialogue_max_chars,
+        voiceprint_join_timeout_seconds=(
+            websocket.app.state.config.voiceprint_join_timeout_seconds
+        ),
     )
     await runtime.start()
     await runtime.send_json(

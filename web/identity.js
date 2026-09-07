@@ -21,10 +21,12 @@ const saveMemberButton = document.querySelector('#saveMemberButton');
 const cancelMemberButton = document.querySelector('#cancelMemberButton');
 const memberList = document.querySelector('#memberList');
 const identityFeedback = document.querySelector('#identityFeedback');
+const textSpeakerSelect = document.querySelector('#textSpeakerSelect');
 
 let editingIdentityId = null;
 let deviceReadyCallback = null;
 let enrollment = null;
+let currentMembers = [];
 
 async function api(path, options = {}) {
     const response = await fetch(path, {
@@ -258,10 +260,32 @@ function renderMembers(members) {
     }
 }
 
+function renderSpeakerOptions(members) {
+    const selected = textSpeakerSelect.value;
+    textSpeakerSelect.replaceChildren();
+    const guest = document.createElement('option');
+    guest.value = '';
+    guest.textContent = 'Guest（访客）';
+    textSpeakerSelect.append(guest);
+    for (const member of members) {
+        const option = document.createElement('option');
+        option.value = member.identity_id;
+        option.textContent = member.nickname
+            ? `${member.display_name}（${member.nickname}）`
+            : member.display_name;
+        textSpeakerSelect.append(option);
+    }
+    textSpeakerSelect.value = members.some((member) => member.identity_id === selected)
+        ? selected
+        : '';
+}
+
 async function loadMembers() {
     closeEnrollment();
     const members = await api('/api/members');
+    currentMembers = members;
     renderMembers(members);
+    renderSpeakerOptions(members);
 }
 
 createDeviceButton.addEventListener('click', async () => {
@@ -356,4 +380,8 @@ export async function initializeIdentity(onDeviceReady) {
         loading.textContent = `设备身份读取失败：${error.message}`;
         loading.dataset.state = 'error';
     }
+}
+
+export function selectedTextSpeaker() {
+    return currentMembers.find((member) => member.identity_id === textSpeakerSelect.value) ?? null;
 }

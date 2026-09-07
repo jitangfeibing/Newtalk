@@ -225,6 +225,18 @@ def test_voiceprint_config_requires_http_url_and_token() -> None:
     with pytest.raises(ConfigError, match="NEWTALK_VOICEPRINT_API_TOKEN"):
         load_config({"NEWTALK_VOICEPRINT_URL": "http://voiceprint:8010"})
 
+    config = load_config(
+        {
+            "NEWTALK_VOICEPRINT_URL": "http://voiceprint:8010",
+            "NEWTALK_VOICEPRINT_API_TOKEN": "token",
+            "NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS": "0.75",
+        }
+    )
+    assert config.voiceprint_join_timeout_seconds == 0.75
+
+    with pytest.raises(ConfigError, match="NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS"):
+        load_config({"NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS": "0"})
+
 
 def test_logging_configures_newtalk_namespace() -> None:
     logger = configure_logging("DEBUG")

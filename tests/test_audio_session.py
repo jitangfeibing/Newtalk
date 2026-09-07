@@ -28,6 +28,7 @@ def test_audio_session_routes_one_utterance_to_asr() -> None:
     async def run() -> None:
         boundaries: list[SpeechBoundary] = []
         recognized: list[tuple[str, AsrFinal]] = []
+        utterance_audio: list[tuple[str, bytes]] = []
 
         async def on_boundary(event: SpeechBoundary) -> None:
             boundaries.append(event)
@@ -36,11 +37,15 @@ def test_audio_session_routes_one_utterance_to_asr() -> None:
             assert isinstance(event, AsrFinal)
             recognized.append((utterance_id, event))
 
+        async def on_utterance_audio(utterance_id: str, pcm: bytes) -> None:
+            utterance_audio.append((utterance_id, pcm))
+
         session = AudioInputSession(
             vad_stream=BoundaryVadStream(),
             recognizer=FakeASR("识别结果"),
             on_boundary=on_boundary,
             on_asr_event=on_asr_event,
+            on_utterance_audio=on_utterance_audio,
             pre_roll_ms=20,
         )
         await session.push(bytes(640))
@@ -51,6 +56,40 @@ def test_audio_session_routes_one_utterance_to_asr() -> None:
         assert len(recognized) == 1
         assert recognized[0][0] == boundaries[0].utterance_id
         assert recognized[0][1].text == "识别结果"
+        assert utterance_audio == [(boundaries[0].utterance_id, bytes(1280))]
+
+    asyncio.run(run())
+
+
+def test_audio_session_flushes_voiceprint_audio_when_capture_stops_mid_speech() -> None:
+    class OpenEndedVadStream(BoundaryVadStream):
+        def process(self, pcm: bytes) -> list[VadEvent]:
+            del pcm
+            self.calls += 1
+            return [VadEvent("speech_start", 0.8, 20.0)] if self.calls == 1 else []
+
+    async def run() -> None:
+        captured: list[bytes] = []
+
+        async def ignore(*args) -> None:
+            del args
+
+        async def on_utterance_audio(utterance_id: str, pcm: bytes) -> None:
+            del utterance_id
+            captured.append(pcm)
+
+        session = AudioInputSession(
+            vad_stream=OpenEndedVadStream(),
+            recognizer=FakeASR("识别结果"),
+            on_boundary=ignore,
+            on_asr_event=ignore,
+            on_utterance_audio=on_utterance_audio,
+            pre_roll_ms=20,
+        )
+        await session.push(bytes(640))
+        await session.close()
+
+        assert captured == [bytes(640)]
 
     asyncio.run(run())
 

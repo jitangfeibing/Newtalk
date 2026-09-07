@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import aclosing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from time import perf_counter
 from typing import Any
@@ -13,6 +13,7 @@ from newtalk.audio import (
     AudioInputSession,
     SpeechBoundary,
     VoiceActivityDetector,
+    pcm_s16le_to_wav,
 )
 from newtalk.chat import (
     AudioCompleted,
@@ -23,6 +24,13 @@ from newtalk.chat import (
     DialogueSession,
     TextDelta,
     TurnCompleted,
+)
+from newtalk.identity import Identity, IdentityNotFoundError, IdentityService
+from newtalk.voiceprint import (
+    VoicePrintClient,
+    VoicePrintError,
+    VoicePrintIdentification,
+    VoicePrintUnavailableError,
 )
 
 
@@ -37,6 +45,23 @@ class _OutboundFrame:
     delivered: asyncio.Future[None]
 
 
+@dataclass(slots=True)
+class _VoiceJoinState:
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task[VoicePrintIdentification] | None = None
+    failure_reason: str | None = None
+    started_at: float = field(default_factory=perf_counter)
+
+
+@dataclass(frozen=True, slots=True)
+class _SpeakerResolution:
+    identity: Identity | None
+    score: float
+    reason: str
+    provider_elapsed_ms: float | None
+    elapsed_ms: float
+
+
 class ConnectionRuntime:
     """Owns the short-lived state and tasks for one WebSocket connection."""
 
@@ -45,24 +70,38 @@ class ConnectionRuntime:
         websocket: WebSocket,
         *,
         session_id: str,
+        device_id: str,
         chat_service: ChatService,
+        identity_service: IdentityService,
+        voiceprint_client: VoicePrintClient,
         vad: VoiceActivityDetector,
         recognizer: SpeechRecognizer,
         vad_pre_roll_ms: int,
         dialogue_max_turns: int,
         dialogue_max_chars: int,
+        voiceprint_join_timeout_seconds: float,
     ) -> None:
         self.websocket = websocket
         self.session_id = session_id
+        self.device_id = device_id
         self._chat_service = chat_service
+        self._identity_service = identity_service
+        self._voiceprint_client = voiceprint_client
         self._vad = vad
         self._recognizer = recognizer
         self._vad_pre_roll_ms = vad_pre_roll_ms
-        self._dialogue = DialogueSession(
+        self._family_dialogue = DialogueSession(
             session_id,
             max_turns=dialogue_max_turns,
             max_chars=dialogue_max_chars,
         )
+        self._guest_dialogue = DialogueSession(
+            session_id,
+            max_turns=dialogue_max_turns,
+            max_chars=dialogue_max_chars,
+        )
+        self._voiceprint_join_timeout_seconds = voiceprint_join_timeout_seconds
+        self._voice_joins: dict[str, _VoiceJoinState] = {}
         self._seen_event_ids: set[str] = set()
         self._outbound: asyncio.Queue[_OutboundFrame] = asyncio.Queue(maxsize=256)
         self._sender_task: asyncio.Task[None] | None = None
@@ -114,14 +153,56 @@ class ConnectionRuntime:
         self._seen_event_ids.add(event_id)
         return True
 
-    async def start_turn(self, *, text: str, event_id: str) -> None:
+    async def start_text_turn(
+        self,
+        *,
+        text: str,
+        event_id: str,
+        identity_id: str | None,
+    ) -> None:
+        identity = None
+        if identity_id is not None:
+            try:
+                identity = await self._identity_service.get_identity(
+                    device_id=self.device_id,
+                    identity_id=identity_id,
+                )
+            except IdentityNotFoundError:
+                await self.send_error(
+                    code="identity_not_found",
+                    message="Selected member does not belong to this device",
+                    event_id=event_id,
+                )
+                return
+        await self.start_turn(text=text, event_id=event_id, identity=identity)
+
+    async def start_turn(
+        self,
+        *,
+        text: str,
+        event_id: str,
+        identity: Identity | None,
+    ) -> None:
         await self.cancel_turn(reason="superseded")
         context_started_at = perf_counter()
-        messages = self._dialogue.messages_for(text)
+        dialogue = self._family_dialogue if identity is not None else self._guest_dialogue
+        speaker_display_name = identity.display_name if identity is not None else "Guest"
+        speaker_relationship = identity.relationship if identity is not None else None
+        speaker_identity_id = identity.identity_id if identity is not None else None
+        messages = dialogue.messages_for(
+            text,
+            speaker_identity_id=speaker_identity_id,
+            speaker_display_name=speaker_display_name,
+            speaker_relationship=speaker_relationship,
+        )
         turn = self._chat_service.create_turn(
             session_id=self.session_id,
             user_text=text,
             messages=messages,
+            device_id=self.device_id,
+            speaker_identity_id=speaker_identity_id,
+            speaker_display_name=speaker_display_name,
+            speaker_relationship=speaker_relationship,
         )
         self._active_turn_id = turn.turn_id
         self._active_stream_id = None
@@ -135,7 +216,7 @@ class ConnectionRuntime:
             "context_ready session_id=%s turn_id=%s completed_turns=%s messages=%s chars=%s elapsed_ms=%.1f",
             self.session_id,
             turn.turn_id,
-            len(self._dialogue.exchanges),
+            len(dialogue.exchanges),
             len(messages),
             sum(len(message.content) for message in messages),
             (perf_counter() - context_started_at) * 1000,
@@ -146,11 +227,16 @@ class ConnectionRuntime:
                 "session_id": self.session_id,
                 "turn_id": turn.turn_id,
                 "event_id": event_id,
+                "speaker": {
+                    "identity_id": speaker_identity_id,
+                    "display_name": speaker_display_name,
+                    "guest": identity is None,
+                },
             },
             turn_id=turn.turn_id,
         )
         self._active_turn_task = asyncio.create_task(
-            self._stream_turn(turn, event_id=event_id)
+            self._stream_turn(turn, event_id=event_id, dialogue=dialogue)
         )
 
     async def cancel_turn(self, *, reason: str, notify: bool = True) -> None:
@@ -222,6 +308,7 @@ class ConnectionRuntime:
             on_boundary=self._on_speech_boundary,
             on_asr_event=self._on_asr_event,
             on_asr_error=self._on_asr_error,
+            on_utterance_audio=self._on_utterance_audio,
             pre_roll_ms=self._vad_pre_roll_ms,
         )
         await self.send_json(
@@ -285,6 +372,16 @@ class ConnectionRuntime:
             self._audio_session = None
             with suppress(Exception):
                 await session.close()
+        voiceprint_tasks = [
+            state.task
+            for state in self._voice_joins.values()
+            if state.task is not None and not state.task.done()
+        ]
+        for task in voiceprint_tasks:
+            task.cancel()
+        if voiceprint_tasks:
+            await asyncio.gather(*voiceprint_tasks, return_exceptions=True)
+        self._voice_joins.clear()
         await self.cancel_turn(reason="connection_closed", notify=False)
         if self._sender_task is not None and not self._sender_task.done():
             with suppress(Exception):
@@ -293,7 +390,13 @@ class ConnectionRuntime:
             with suppress(Exception):
                 await self._sender_task
 
-    async def _stream_turn(self, turn, *, event_id: str) -> None:
+    async def _stream_turn(
+        self,
+        turn,
+        *,
+        event_id: str,
+        dialogue: DialogueSession,
+    ) -> None:
         try:
             async with aclosing(self._chat_service.stream_turn(turn)) as outputs:
                 async for output in outputs:
@@ -347,12 +450,12 @@ class ConnectionRuntime:
                         )
                     elif isinstance(output, TurnCompleted):
                         if self._active_turn_id == turn.turn_id:
-                            self._dialogue.commit(turn, output.text)
+                            dialogue.commit(turn, output.text)
                             logger.info(
                                 "dialogue_committed session_id=%s turn_id=%s completed_turns=%s",
                                 self.session_id,
                                 turn.turn_id,
-                                len(self._dialogue.exchanges),
+                                len(dialogue.exchanges),
                             )
                         await self.send_json(
                             {
@@ -420,7 +523,23 @@ class ConnectionRuntime:
             elapsed_ms,
         )
         if event.kind == "speech_start":
+            self._voice_joins[event.utterance_id] = _VoiceJoinState()
             await self.cancel_turn(reason="barge_in")
+
+    async def _on_utterance_audio(self, utterance_id: str, pcm: bytes) -> None:
+        if self._closing:
+            return
+        state = self._voice_joins.setdefault(utterance_id, _VoiceJoinState())
+        try:
+            wav = pcm_s16le_to_wav(pcm)
+        except ValueError:
+            state.failure_reason = "invalid_audio"
+            state.ready.set()
+            return
+        state.task = asyncio.create_task(
+            self._voiceprint_client.identify(device_id=self.device_id, sample=wav)
+        )
+        state.ready.set()
 
     async def _on_asr_event(self, utterance_id: str, event) -> None:
         if self._closing:
@@ -453,7 +572,108 @@ class ConnectionRuntime:
             if text:
                 event_id = f"voice-{utterance_id}"
                 self._seen_event_ids.add(event_id)
-                await self.start_turn(text=text, event_id=event_id)
+                resolution = await self._resolve_voice_speaker(utterance_id)
+                await self.send_json(
+                    {
+                        "type": "speaker_resolved",
+                        "utterance_id": utterance_id,
+                        "identity_id": (
+                            resolution.identity.identity_id
+                            if resolution.identity is not None
+                            else None
+                        ),
+                        "display_name": (
+                            resolution.identity.display_name
+                            if resolution.identity is not None
+                            else "Guest"
+                        ),
+                        "matched": resolution.identity is not None,
+                        "score": round(resolution.score, 4),
+                        "reason": resolution.reason,
+                        "provider_elapsed_ms": (
+                            round(resolution.provider_elapsed_ms, 1)
+                            if resolution.provider_elapsed_ms is not None
+                            else None
+                        ),
+                        "elapsed_ms": round(resolution.elapsed_ms, 1),
+                    }
+                )
+                await self.start_turn(
+                    text=text,
+                    event_id=event_id,
+                    identity=resolution.identity,
+                )
+            else:
+                await self._discard_voice_join(utterance_id)
+
+    async def _resolve_voice_speaker(self, utterance_id: str) -> _SpeakerResolution:
+        state = self._voice_joins.setdefault(utterance_id, _VoiceJoinState())
+        deadline = asyncio.get_running_loop().time() + self._voiceprint_join_timeout_seconds
+        identification: VoicePrintIdentification | None = None
+        reason = state.failure_reason or "unavailable"
+        try:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            await asyncio.wait_for(state.ready.wait(), timeout=remaining)
+            if state.task is not None:
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                identification = await asyncio.wait_for(state.task, timeout=remaining)
+                reason = "matched" if identification.matched else "no_match"
+        except TimeoutError:
+            reason = "timeout"
+            if state.task is not None:
+                state.task.cancel()
+        except VoicePrintUnavailableError:
+            reason = "unavailable"
+        except VoicePrintError:
+            reason = "invalid_audio"
+        except Exception:
+            reason = "failed"
+            logger.exception(
+                "voiceprint_failed session_id=%s utterance_id=%s",
+                self.session_id,
+                utterance_id,
+            )
+
+        identity = None
+        if identification is not None and identification.matched and identification.identity_id:
+            try:
+                identity = await self._identity_service.get_identity(
+                    device_id=self.device_id,
+                    identity_id=identification.identity_id,
+                )
+            except IdentityNotFoundError:
+                reason = "identity_missing"
+        elapsed_ms = (perf_counter() - state.started_at) * 1000
+        await self._discard_voice_join(utterance_id, cancel=False)
+        logger.info(
+            "speaker_resolved session_id=%s utterance_id=%s identity_id=%s reason=%s score=%.4f elapsed_ms=%.1f",
+            self.session_id,
+            utterance_id,
+            identity.identity_id if identity is not None else "guest",
+            reason,
+            identification.score if identification is not None else 0.0,
+            elapsed_ms,
+        )
+        return _SpeakerResolution(
+            identity=identity,
+            score=identification.score if identification is not None else 0.0,
+            reason=reason,
+            provider_elapsed_ms=(
+                identification.elapsed_ms if identification is not None else None
+            ),
+            elapsed_ms=elapsed_ms,
+        )
+
+    async def _discard_voice_join(
+        self,
+        utterance_id: str,
+        *,
+        cancel: bool = True,
+    ) -> None:
+        state = self._voice_joins.pop(utterance_id, None)
+        if cancel and state is not None and state.task is not None and not state.task.done():
+            state.task.cancel()
+            await asyncio.gather(state.task, return_exceptions=True)
 
     async def _on_asr_error(self, utterance_id: str, error: Exception) -> None:
         if self._closing:
@@ -473,6 +693,7 @@ class ConnectionRuntime:
                 "message": "Unable to recognize speech",
             }
         )
+        await self._discard_voice_join(utterance_id)
 
     async def _enqueue(self, payload: dict[str, Any] | bytes | object, *, turn_id: str | None) -> None:
         if self._sender_task is None:

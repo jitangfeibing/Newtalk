@@ -14,6 +14,7 @@ from newtalk.chat import (
     TextDelta,
     TurnCompleted,
 )
+from newtalk.chat import format_user_message
 from newtalk.tts import AudioFormat, FakeTTS
 
 
@@ -33,7 +34,17 @@ def test_chat_service_creates_unique_turns() -> None:
     assert first.turn_id != second.turn_id
     assert first.session_id == second.session_id == "session"
     assert first.user_text == second.user_text == "你好"
-    assert first.messages == second.messages == (ChatMessage("user", "你好"),)
+    assert first.messages == second.messages == (
+        ChatMessage(
+            "user",
+            format_user_message(
+                "你好",
+                speaker_identity_id=None,
+                speaker_display_name="Guest",
+                speaker_relationship=None,
+            ),
+        ),
+    )
     assert first.created_at.tzinfo is not None
 
 

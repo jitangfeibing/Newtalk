@@ -18,6 +18,7 @@ from newtalk.chat.models import (
     Turn,
     TurnCompleted,
     TurnOutput,
+    format_user_message,
 )
 from newtalk.tts import AudioFormat, FakeTTS, StreamingTextSegmenter, TextToSpeech
 
@@ -47,12 +48,19 @@ class ChatService:
         session_id: str,
         user_text: str,
         messages: tuple[ChatMessage, ...] | None = None,
+        device_id: str = "unknown",
+        speaker_identity_id: str | None = None,
+        speaker_display_name: str = "Guest",
+        speaker_relationship: str | None = None,
     ) -> Turn:
-        resolved_messages = messages or (ChatMessage("user", user_text),)
-        if (
-            resolved_messages[-1].role != "user"
-            or resolved_messages[-1].content != user_text
-        ):
+        current_message = format_user_message(
+            user_text,
+            speaker_identity_id=speaker_identity_id,
+            speaker_display_name=speaker_display_name,
+            speaker_relationship=speaker_relationship,
+        )
+        resolved_messages = messages or (ChatMessage("user", current_message),)
+        if resolved_messages[-1].role != "user":
             raise ValueError("Turn messages must end with the current user input")
         return Turn(
             turn_id=str(uuid4()),
@@ -60,6 +68,10 @@ class ChatService:
             user_text=user_text,
             messages=resolved_messages,
             created_at=datetime.now(timezone.utc),
+            device_id=device_id,
+            speaker_identity_id=speaker_identity_id,
+            speaker_display_name=speaker_display_name,
+            speaker_relationship=speaker_relationship,
         )
 
     async def stream_reply(self, turn: Turn) -> AsyncIterator[str]:
