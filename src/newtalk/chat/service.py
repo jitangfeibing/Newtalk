@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from datetime import datetime, timezone
+import json
 import logging
 from time import perf_counter
 from uuid import uuid4
@@ -15,11 +16,14 @@ from newtalk.chat.models import (
     AudioStarted,
     TextDelta,
     ChatMessage,
+    ModelToolCall,
     Turn,
     TurnCompleted,
     TurnOutput,
     format_user_message,
 )
+from newtalk.memory import DisabledMemoryProvider, MemoryProvider
+from newtalk.profile import ProfileScope
 from newtalk.tts import AudioFormat, FakeTTS, StreamingTextSegmenter, TextToSpeech
 
 
@@ -27,6 +31,27 @@ logger = logging.getLogger(__name__)
 
 
 _TEXT_END = object()
+_MEMORY_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "memory_search",
+        "description": (
+            "仅当当前对话和用户画像不足以回答、且问题依赖这位成员更早的个人经历时，"
+            "检索当前成员的长期记忆。普通知识问题不要调用。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "需要回忆的过去信息的简洁描述。",
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 class ChatService:
@@ -34,9 +59,20 @@ class ChatService:
         self,
         model: ChatModel | None = None,
         synthesizer: TextToSpeech | None = None,
+        memory_provider: MemoryProvider | None = None,
+        *,
+        memory_search_limit: int = 5,
+        memory_search_relativity: float = 0.55,
+        memory_result_max_chars: int = 4000,
+        memory_query_max_chars: int = 500,
     ) -> None:
         self._model = model or FakeLLM()
         self._synthesizer = synthesizer or FakeTTS()
+        self._memory_provider = memory_provider or DisabledMemoryProvider()
+        self._memory_search_limit = memory_search_limit
+        self._memory_search_relativity = memory_search_relativity
+        self._memory_result_max_chars = memory_result_max_chars
+        self._memory_query_max_chars = memory_query_max_chars
 
     @property
     def audio_format(self) -> AudioFormat:
@@ -82,22 +118,66 @@ class ChatService:
         started_at = perf_counter()
         chunk_count = 0
         model_name = type(self._model).__name__
+        messages = turn.messages
+        tools: tuple[dict, ...] = (
+            (_MEMORY_SEARCH_TOOL,)
+            if self._memory_provider.enabled and turn.speaker_identity_id is not None
+            else ()
+        )
+        tool_used = False
         try:
-            async with aclosing(self._model.stream(turn.messages)) as model_stream:
-                async for chunk in model_stream:
-                    if not isinstance(chunk, str) or not chunk:
-                        raise ValueError("Chat model chunks must be non-empty strings")
-                    chunk_count += 1
-                    if chunk_count == 1:
-                        logger.info(
-                            "llm_first_token turn_id=%s model=%s elapsed_ms=%.1f",
-                            turn.turn_id,
-                            model_name,
-                            (perf_counter() - started_at) * 1000,
-                        )
-                    yield chunk
-            if chunk_count == 0:
-                raise ValueError("Chat model returned no text")
+            while True:
+                round_chunks = 0
+                tool_call: ModelToolCall | None = None
+                model_stream = (
+                    self._model.stream(messages, tools=tools)
+                    if tools
+                    else self._model.stream(messages)
+                )
+                async with aclosing(model_stream) as response_stream:
+                    async for event in response_stream:
+                        if isinstance(event, ModelToolCall):
+                            if tool_call is not None or round_chunks:
+                                raise ValueError("Model mixed text with a tool call")
+                            tool_call = event
+                            continue
+                        if not isinstance(event, str) or not event:
+                            raise ValueError(
+                                "Chat model events must be text or a tool call"
+                            )
+                        round_chunks += 1
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            logger.info(
+                                "llm_first_token turn_id=%s model=%s elapsed_ms=%.1f",
+                                turn.turn_id,
+                                model_name,
+                                (perf_counter() - started_at) * 1000,
+                            )
+                        yield event
+
+                if tool_call is None:
+                    if round_chunks == 0:
+                        raise ValueError("Chat model returned no text")
+                    break
+                if tool_used or not tools:
+                    raise ValueError("Model exceeded the memory tool call limit")
+                tool_used = True
+                result = await self._execute_memory_search(turn, tool_call)
+                messages = (
+                    *messages,
+                    ChatMessage(
+                        role="assistant",
+                        content="",
+                        tool_calls=(tool_call,),
+                    ),
+                    ChatMessage(
+                        role="tool",
+                        content=result,
+                        tool_call_id=tool_call.call_id,
+                    ),
+                )
+                tools = ()
         except Exception:
             logger.exception(
                 "llm_stream_failed turn_id=%s model=%s elapsed_ms=%.1f",
@@ -113,6 +193,57 @@ class ChatService:
             chunk_count,
             (perf_counter() - started_at) * 1000,
         )
+
+    async def _execute_memory_search(
+        self,
+        turn: Turn,
+        tool_call: ModelToolCall,
+    ) -> str:
+        started_at = perf_counter()
+        if tool_call.name != "memory_search":
+            return _tool_error("unsupported_tool", "不支持这个工具。")
+        try:
+            arguments = json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            return _tool_error("invalid_arguments", "记忆查询参数不是有效 JSON。")
+        query = arguments.get("query") if isinstance(arguments, dict) else None
+        if not isinstance(query, str) or not query.strip():
+            return _tool_error("invalid_arguments", "记忆查询缺少 query。")
+        query = query.strip()
+        if len(query) > self._memory_query_max_chars:
+            return _tool_error("invalid_arguments", "记忆查询超过长度限制。")
+        if turn.speaker_identity_id is None:
+            return _tool_error("guest_forbidden", "Guest 不能读取长期记忆。")
+        try:
+            result = await self._memory_provider.search(
+                ProfileScope(
+                    device_id=turn.device_id,
+                    identity_id=turn.speaker_identity_id,
+                ),
+                query=query,
+                conversation_id=turn.session_id,
+                limit=self._memory_search_limit,
+                relativity=self._memory_search_relativity,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "memory_search_failed turn_id=%s identity_id=%s error_type=%s elapsed_ms=%.1f",
+                turn.turn_id,
+                turn.speaker_identity_id,
+                type(exc).__name__,
+                (perf_counter() - started_at) * 1000,
+            )
+            return _tool_error("unavailable", "长期记忆暂时不可用。")
+        logger.info(
+            "memory_search_completed turn_id=%s identity_id=%s results=%s elapsed_ms=%.1f",
+            turn.turn_id,
+            turn.speaker_identity_id,
+            len(result.items),
+            (perf_counter() - started_at) * 1000,
+        )
+        return result.to_tool_content(max_chars=self._memory_result_max_chars)
 
     async def stream_turn(self, turn: Turn) -> AsyncIterator[TurnOutput]:
         started_at = perf_counter()
@@ -241,3 +372,11 @@ class ChatService:
             self._model.aclose(),
             self._synthesizer.aclose(),
         )
+
+
+def _tool_error(code: str, message: str) -> str:
+    return json.dumps(
+        {"status": "error", "code": code, "message": message},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )

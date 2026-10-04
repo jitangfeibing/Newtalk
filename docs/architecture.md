@@ -1,6 +1,6 @@
-# P7.4 Architecture
+# P7.5 Architecture
 
-P7.4 在 P7.3 的说话人边界上增加可选 Profile Provider。Profile 只以后台预取的 Identity Snapshot 进入 Member Turn，不成为聊天前置依赖。
+P7.5 在 Profile Snapshot 基础上增加按需长期记忆检索和后台写入。Profile 仍由连接后台预取；普通 Turn 不查询 MemOS，只有 Member 的主 LLM 主动调用 `memory_search` 时才进入检索链。
 
 ```text
 Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
@@ -14,7 +14,7 @@ Browser 3 x WAV -> authenticated member VoicePrint API
 
 Browser cookie -> authenticated WebSocket
        -> SessionProfileCache -> background MemosProfileProvider
-              |                    |-> get Profile only
+              |                    |-> get Profile
               |                    `-> bind missing Profile Template
               `-> identity_id scoped immutable Snapshot
 Browser text_input + selected identity -----------+
@@ -24,7 +24,11 @@ Browser microphone -> recorder AudioWorklet       |
 WebSocket receive loop -> ConnectionRuntime
                               |-> current Member Profile Snapshot
                               |-> Family Dialogue / Guest Dialogue -> immutable Turn
-                              |                                         `-> ChatService -> LLM/TTS
+                              |                                         `-> ChatService
+                              |                                              |-> LLM direct text -> TTS
+                              |                                              `-> memory_search Tool
+                              |                                                   -> MemOS Search
+                              |                                                   -> second LLM round -> TTS
                               `-> AudioInputSession
                                    |-> per-capture Silero state
                                    |-> SpeechRecognizer -> ASR partial/final -----+
@@ -33,12 +37,20 @@ WebSocket receive loop -> ConnectionRuntime
                                       utterance_id join -> Member or Guest --------+
 
 all server output -> one ConnectionRuntime send queue -> WebSocket
+
+completed current Member Turn
+       -> PostgreSQL memory_jobs Outbox
+       -> background MemoryWriteService
+       -> MemOS Add Message (async mode)
 ```
 
 ## 当前职责
 
 - `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
-- `newtalk.profile.provider.ProfileProvider` 是 P7.4 实际需要的最小 Profile 契约；默认实现关闭，MemOS 实现负责 Profile Template 懒绑定和读取。
+- `newtalk.memory.provider.MemoryProvider` 是 P7.5 实际需要的最小 Memory 契约，包含 Profile 准备、长期记忆查询和已完成 Turn 写入；默认实现关闭。
+- `newtalk.profile.memos.MemosProfileProvider` 当前同时实现上述契约，负责 Profile Template 懒绑定、Search Memory 和 Add Message 的 HTTP 协议细节。
+- `newtalk.chat.service.ChatService` 只给 Member 注册 `memory_search`，每个 Turn 最多执行一次，并使用 Turn 内不可变身份建立服务端 Scope。
+- `newtalk.memory.jobs.MemoryWriteService` 消费 PostgreSQL Outbox；本地入队按 `turn_id` 去重，任务领取使用租约，远端失败有限重试。
 - `newtalk.profile.session.SessionProfileCache` 在连接开始后异步预取成员 Profile，按 `identity_id` 保存 Snapshot；Turn 读取只访问内存，不等待 MemOS。
 - `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要。
 - `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
@@ -70,6 +82,10 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 
 只有当前活动 Turn 成功产生 `TurnCompleted` 时才提交 Dialogue History，并在提交后发送 `turn_completed`。取消、生成失败和旧 Turn 迟到结果不会提交，因此下一轮不会看到半截助手回复。
 
+同一个提交点还会把 Member Turn 写入 `memory_jobs`。Runtime 只等待一次本地数据库入队，不等待 MemOS；Guest 不进入队列。多个 Worker 通过 PostgreSQL `FOR UPDATE SKIP LOCKED` 竞争任务，租约过期后可由其他 Worker 恢复。该链路提供本地至少一次投递，MemOS 接收成功但本地完成标记失败时仍可能产生远端重复，后续需要结合真实 MemOS 幂等行为验收。
+
+主 LLM 调用 `memory_search` 时会增加一次 MemOS 查询和第二次 LLM 调用。查询超时或失败被转换为 Tool Result，第二轮模型仍可根据 Dialogue/Profile 回答；Tool Call 及 Tool Result 不进入 TTS，只有最终文本播放。
+
 ## 当前边界
 
 - 豆包 ASR 每个 utterance 新建一条 Provider WebSocket，尚未复用连接。
@@ -80,7 +96,8 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 - 浏览器“停止播放”仍是本地操作；`audio_stop` 才表示服务端 Turn 已取消。
 - 声纹录入、识别、`speaker_identity_id` 映射和 Guest 降级已进入主链。
 - `deterministic-test-v1` 只供 CI；真实 CAM++ 已完成模型加载和录入，识别分数、阈值与有限等待期限仍需在家庭样本中校准。
-- Profile Snapshot 已进入 Member Turn；长期 Memory 检索/写入、Vision 和 Tool 仍未进入当前运行链。
-- Session 当前与 WebSocket 连接同生命周期，刷新页面后历史清空；跨连接恢复和长期 Memory 尚未实现。
-- 当前消息角色为 `system`、`user` 和 `assistant`；动态 Profile 使用 `system`，Tool 消息等到出现真实 Tool 调用时再扩展契约。
+- Profile Snapshot、`memory_search` 和后台长期记忆写入已进入 Member 运行链；Memory Center、Vision 和其他实用 Tool 尚未实现。
+- Session 当前与 WebSocket 连接同生命周期，刷新页面后历史清空；跨连接恢复在 P7.7 实现。
+- 当前消息角色为 `system`、`user`、`assistant` 和内部 `tool`；WebSocket 不暴露中间 Tool 消息。
 - Profile 预取失败在当前 Session 内不会持续重试；该轮及后续轮次按无 Profile 聊天，重新连接后可再次预取。
+- 真实 MemOS Search/Add/Profile 尚未使用用户账号完成端到端验收，当前外部协议结论来自官方文档和 Mock 测试。

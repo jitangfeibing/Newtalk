@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P7.4 Identity Profile Snapshot |
-| 阶段状态 | 代码、协议文档和自动测试通过；待真实 MemOS 验收 |
-| 开发分支 | `codex/p7-4-profile-snapshots` |
-| 项目版本 | `0.10.0` |
+| 当前阶段 | P7.5 Memory Tool 与后台写入 |
+| 阶段状态 | 代码、协议文档、自动测试和 PostgreSQL 集成测试通过；待真实 MemOS 验收 |
+| 开发分支 | `codex/p7-5-memory-tools` |
+| 项目版本 | `0.11.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 主项目 118 项通过、3 项 live/环境跳过；声纹服务沿用 P7.3 验收结果 |
+| 自动测试 | 本机 PostgreSQL 下主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
-| 最后更新 | 2026-09-07 |
+| 最后更新 | 2026-10-04 |
 
 ## P1：基础运行骨架
 
@@ -437,11 +437,34 @@ text_input
 - 本轮尚未使用真实 MemOS API Key 和 Profile Template 验收，因此外部账号权限、真实字段树和响应内容仍待浏览器/日志联调。
 - P7.4 不包含 `memory_search`、Tool Calling、长期记忆写入、Profile 自动更新或 Memory Center。
 
+## P7.5：按需 Memory Tool 与后台长期写入（待真实验收）
+
+### 已实现
+
+- 扩展最小 `ChatModel` 契约，支持流式 `ModelToolCall`、内部 Tool Result 和第二轮模型调用。
+- OpenAI-compatible 适配器聚合分片 Tool Call 参数，并拒绝文字与 Tool Call 混合、多个 Tool Call 或不完整调用。
+- 只有 Memory 已开启的 Member Turn 才注册 `memory_search`；Guest 和关闭 Memory 时模型看不到该工具。
+- 每个 Turn 最多查询一次，第二轮不再提供 Tool；只有最终文本进入 TTS。
+- 查询 Scope 只使用不可变 Turn 的 `device_id + speaker_identity_id`，模型参数只能提供 `query`。
+- MemOS Search 结果只包含事实、偏好和事件，按相关度排序并受条数与字符预算限制。
+- 查询失败转为受控 Tool Result，不关闭 WebSocket，也不让 Memory 成为普通聊天硬依赖。
+- 成功提交 Dialogue 的 Member Turn 写入 PostgreSQL `memory_jobs`；Guest、取消、失败和旧 Turn 不入队。
+- 后台 Worker 使用 `FOR UPDATE SKIP LOCKED`、领取租约、有限重试和 `turn_id` 唯一约束调用 MemOS Add Message 异步模式。
+- Alembic 新增 `20261004_03_memory_jobs`；应用生命周期负责启动与停止 Worker。
+
+### 自动验证与当前边界
+
+- 本机 PostgreSQL 应用到 `20261004_03 (head)`，主项目 137 项中 135 项通过、2 项付费 Provider live 测试跳过。
+- VoicePrint 4 项测试在同一真实 PostgreSQL 上全部通过；`pip check` 和 Python compileall 通过。
+- 测试覆盖 Tool 分片、Scope 防伪、Guest 隔离、Memory 失败降级、写入去重、最终失败、PostgreSQL 领取与租约恢复。
+- 真实 MemOS API Key/Profile Template 尚未配置，因此真实 Profile/Search/Add Message、任务状态和远端幂等仍待联调。
+- P7.5 不包含 Memory Center、Profile 字段锁定、记忆人工编辑删除、成员跨服务完整删除和 Session 恢复。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.4 合并后进入 P7.5：扩展主 LLM 的最小 Tool Calling 契约，接入按需 `memory_search`，并增加不阻塞回复的长期记忆后台写入任务。P7.6 完成 Memory Center 后，P7.7 再实现页面刷新后的 Session/Dialogue 恢复；该能力已经确认纳入 P7，但不混入 P7.4。
+P7.5 合并后进入 P7.6：实现 Memory Center、Profile 锁定、记忆编辑删除和成员跨服务完整删除。P7.7 再实现页面刷新后的 Session/Dialogue 恢复。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -477,3 +500,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-08-29 | P7.2 | 增加独立 VoicePrint 服务、三段声纹录入/删除、家庭范围模板和 Web 录音界面 | 主项目 99 项通过、3 项 live/环境跳过；声纹服务测试通过；真实 CAM++ CPU 加载和 512 维家庭模板写入通过 |
 | 2026-09-07 | P7.3 | 增加 ASR/VoicePrint 有限汇合、Member/Guest Turn 映射和多人 Dialogue | 主项目 105 项通过、3 项跳过；声纹服务 3 项通过、1 项跳过；协议和前端语法检查通过 |
 | 2026-09-07 | P7.4 | 增加 MemOS Profile 懒绑定、连接后台预取、Identity Snapshot 隔离和无阻塞降级 | 主项目 118 项通过、3 项跳过；真实 MemOS 账号验收待完成 |
+| 2026-10-04 | P7.5 | 增加主 LLM `memory_search`、服务端 Scope、PostgreSQL Outbox 和 MemOS 后台写入 | 主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过；真实 MemOS 账号验收待完成 |

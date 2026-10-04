@@ -8,12 +8,12 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 文档口径：
 
-- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.4 运行时。
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.5 运行时。
 - `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
-- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.4 已完成代码和自动测试。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.5 已完成代码和自动测试。
 - `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
 
-## 当前阶段：P7.4 待真实 MemOS 验收
+## 当前阶段：P7.5 长期记忆读写已完成，待真实 MemOS 验收
 
 P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声纹服务：
 
@@ -49,7 +49,18 @@ P7.4 增加按成员隔离的稳定 Profile：
 - 未绑定的既有成员会懒绑定到配置的 Profile Template，再读取 Profile Snapshot。
 - 每个 Member Turn 只注入当前 `speaker_identity_id` 已就绪的 Profile；不同成员不会共用 Snapshot。
 - Guest、预取尚未完成、MemOS 超时或失败均按无 Profile 继续聊天。
-- 本阶段没有实现 `memory_search`、长期记忆写入或 Memory Center。
+- Profile 读取仍采用连接后台预取，不阻塞 `hello` 或普通 Turn。
+
+P7.5 增加按需长期记忆读写：
+
+- OpenAI-compatible `ChatModel` 支持流式 Tool Call 和 Tool Result；每个 Turn 最多调用一次 `memory_search`。
+- 只有 Member 且 Memory 已开启时，主 LLM 才能看到 `memory_search`；Guest 和关闭 Memory 时不注册工具。
+- Memory Scope 固定来自服务端 Turn 的 `device_id + speaker_identity_id`，不接受浏览器或模型指定身份范围。
+- MemOS 查询失败会作为受控 Tool Result 返回主 LLM，普通聊天不因 Memory 故障而中止。
+- 只有成功提交 Dialogue 的 Member Turn 才写入长期记忆；Guest、取消、失败和旧 Turn 均不写入。
+- 写入先落 PostgreSQL `memory_jobs` Outbox，再由后台 Worker 调用 MemOS Add Message，不把远程写入延迟放进当前回复。
+- `turn_id` 唯一约束避免本地重复入队；数据库任务使用领取租约和有限重试，支持服务重启和多 Worker 竞争。
+- P7.5 尚未实现 Memory Center、Profile 字段锁定或跨服务成员完整删除。
 
 继承能力包括：
 
@@ -80,7 +91,7 @@ P7.4 增加按成员隔离的稳定 Profile：
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未接入长期 Memory 检索/写入、Vision 和通用 Provider Registry。P7.4 自动测试已覆盖 Profile 绑定、成员隔离、Guest 跳过和失败降级；真实 MemOS API Key、Profile Template 和返回数据仍需本地验收。
+当前阶段尚未接入 Memory Center、Vision 和通用 Provider Registry。P7.5 自动测试与 PostgreSQL 集成测试已覆盖 Tool Call、成员 Scope、Guest 隔离、查询降级、写入去重、重试和任务租约；真实 MemOS API Key、Profile Template、Search/Add 返回数据仍需本地验收。
 
 ## 本地启动
 
@@ -98,7 +109,7 @@ newtalk
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P7.4 数据库、设备、声纹和可选 Profile 配置：
+P7.5 数据库、设备、声纹和可选 Memory 配置：
 
 ```dotenv
 NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk
@@ -122,7 +133,14 @@ NEWTALK_MEMOS_API_KEY=replace-with-local-secret
 NEWTALK_MEMOS_PROFILE_TEMPLATE_ID=replace-with-profile-template-id
 NEWTALK_MEMOS_TIMEOUT_SECONDS=5
 NEWTALK_PROFILE_MAX_CHARS=2000
+NEWTALK_MEMORY_SEARCH_LIMIT=5
+NEWTALK_MEMORY_SEARCH_RELATIVITY=0.55
+NEWTALK_MEMORY_RESULT_MAX_CHARS=4000
+NEWTALK_MEMORY_JOB_POLL_SECONDS=1
+NEWTALK_MEMORY_JOB_MAX_ATTEMPTS=3
 ```
+
+启用 Memory 前必须先运行 `alembic upgrade head` 创建 `memory_jobs`。普通回答只使用 Dialogue 与 Profile；只有主 LLM 明确调用 `memory_search` 时才产生 MemOS 查询和第二次模型调用。长期写入在回复完成后进入 PostgreSQL 队列，外部写入失败不会回滚已经完成的聊天。
 
 CI 和接口联调使用轻量测试后端：
 

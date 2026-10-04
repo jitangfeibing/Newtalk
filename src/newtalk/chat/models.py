@@ -6,9 +6,18 @@ from newtalk.tts import AudioFormat
 
 
 @dataclass(frozen=True, slots=True)
+class ModelToolCall:
+    call_id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
-    role: Literal["system", "user", "assistant"]
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
+    tool_calls: tuple[ModelToolCall, ...] = ()
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

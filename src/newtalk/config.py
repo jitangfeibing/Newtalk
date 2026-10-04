@@ -46,6 +46,11 @@ DEFAULT_MEMORY_BACKEND = "disabled"
 DEFAULT_MEMOS_BASE_URL = "https://memos.memtensor.cn/api/openmem/v1"
 DEFAULT_MEMOS_TIMEOUT_SECONDS = 5.0
 DEFAULT_PROFILE_MAX_CHARS = 2000
+DEFAULT_MEMORY_SEARCH_LIMIT = 5
+DEFAULT_MEMORY_SEARCH_RELATIVITY = 0.55
+DEFAULT_MEMORY_RESULT_MAX_CHARS = 4000
+DEFAULT_MEMORY_JOB_POLL_SECONDS = 1.0
+DEFAULT_MEMORY_JOB_MAX_ATTEMPTS = 3
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
@@ -111,6 +116,11 @@ class AppConfig:
     memos_profile_template_id: str | None = None
     memos_timeout_seconds: float = DEFAULT_MEMOS_TIMEOUT_SECONDS
     profile_max_chars: int = DEFAULT_PROFILE_MAX_CHARS
+    memory_search_limit: int = DEFAULT_MEMORY_SEARCH_LIMIT
+    memory_search_relativity: float = DEFAULT_MEMORY_SEARCH_RELATIVITY
+    memory_result_max_chars: int = DEFAULT_MEMORY_RESULT_MAX_CHARS
+    memory_job_poll_seconds: float = DEFAULT_MEMORY_JOB_POLL_SECONDS
+    memory_job_max_attempts: int = DEFAULT_MEMORY_JOB_MAX_ATTEMPTS
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -401,6 +411,39 @@ class AppConfig:
             minimum=100,
             maximum=10000,
         )
+        memory_search_limit = _bounded_int_value(
+            values,
+            "NEWTALK_MEMORY_SEARCH_LIMIT",
+            DEFAULT_MEMORY_SEARCH_LIMIT,
+            minimum=1,
+            maximum=25,
+        )
+        memory_search_relativity = _bounded_float_value(
+            values,
+            "NEWTALK_MEMORY_SEARCH_RELATIVITY",
+            DEFAULT_MEMORY_SEARCH_RELATIVITY,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        memory_result_max_chars = _bounded_int_value(
+            values,
+            "NEWTALK_MEMORY_RESULT_MAX_CHARS",
+            DEFAULT_MEMORY_RESULT_MAX_CHARS,
+            minimum=500,
+            maximum=20000,
+        )
+        memory_job_poll_seconds = _positive_float_value(
+            values,
+            "NEWTALK_MEMORY_JOB_POLL_SECONDS",
+            DEFAULT_MEMORY_JOB_POLL_SECONDS,
+        )
+        memory_job_max_attempts = _bounded_int_value(
+            values,
+            "NEWTALK_MEMORY_JOB_MAX_ATTEMPTS",
+            DEFAULT_MEMORY_JOB_MAX_ATTEMPTS,
+            minimum=1,
+            maximum=10,
+        )
         if memory_backend == "memos":
             if not memos_api_key:
                 raise ConfigError(
@@ -463,6 +506,11 @@ class AppConfig:
             memos_profile_template_id=memos_profile_template_id,
             memos_timeout_seconds=memos_timeout_seconds,
             profile_max_chars=profile_max_chars,
+            memory_search_limit=memory_search_limit,
+            memory_search_relativity=memory_search_relativity,
+            memory_result_max_chars=memory_result_max_chars,
+            memory_job_poll_seconds=memory_job_poll_seconds,
+            memory_job_max_attempts=memory_job_max_attempts,
         )
 
 
@@ -544,4 +592,22 @@ def _positive_float_value(
     value = _float_value(values, name, default)
     if value <= 0:
         raise ConfigError(f"{name} must be greater than zero")
+    return value
+
+
+def _bounded_float_value(
+    values: Mapping[str, str],
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    raw_value = values.get(name, str(default)).strip()
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number") from exc
+    if not minimum <= value <= maximum:
+        raise ConfigError(f"{name} must be between {minimum} and {maximum}")
     return value

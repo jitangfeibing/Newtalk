@@ -15,10 +15,16 @@ from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
 from newtalk.identity.api import RecoveryRateLimiter, router as identity_router
+from newtalk.memory import (
+    DisabledMemoryProvider,
+    DisabledMemoryWriteService,
+    MemoryProvider,
+    MemoryWriteService,
+    MemoryWriter,
+    SqlAlchemyMemoryJobStore,
+)
 from newtalk.profile import (
-    DisabledProfileProvider,
     MemosProfileProvider,
-    ProfileProvider,
 )
 from newtalk.transport import websocket_router
 from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
@@ -93,10 +99,20 @@ def create_synthesizer(config: AppConfig) -> TextToSpeech:
     )
 
 
-def create_chat_service(config: AppConfig) -> ChatService:
+def create_chat_service(
+    config: AppConfig,
+    memory_provider: MemoryProvider | None = None,
+) -> ChatService:
     synthesizer = create_synthesizer(config)
     if config.llm_backend == "fake":
-        return ChatService(FakeLLM(), synthesizer)
+        return ChatService(
+            FakeLLM(),
+            synthesizer,
+            memory_provider,
+            memory_search_limit=config.memory_search_limit,
+            memory_search_relativity=config.memory_search_relativity,
+            memory_result_max_chars=config.memory_result_max_chars,
+        )
 
     if not config.llm_api_key or not config.llm_model:
         raise RuntimeError("OpenAI-compatible LLM configuration is incomplete")
@@ -109,6 +125,10 @@ def create_chat_service(config: AppConfig) -> ChatService:
             timeout_seconds=config.llm_timeout_seconds,
         ),
         synthesizer,
+        memory_provider,
+        memory_search_limit=config.memory_search_limit,
+        memory_search_relativity=config.memory_search_relativity,
+        memory_result_max_chars=config.memory_result_max_chars,
     )
 
 
@@ -128,9 +148,9 @@ def create_voiceprint_client(config: AppConfig) -> VoicePrintClient:
     )
 
 
-def create_profile_provider(config: AppConfig) -> ProfileProvider:
+def create_profile_provider(config: AppConfig) -> MemoryProvider:
     if config.memory_backend == "disabled":
-        return DisabledProfileProvider()
+        return DisabledMemoryProvider()
     if not config.memos_api_key or not config.memos_profile_template_id:
         raise RuntimeError("MemOS Profile configuration is incomplete")
     return MemosProfileProvider(
@@ -138,6 +158,20 @@ def create_profile_provider(config: AppConfig) -> ProfileProvider:
         api_key=config.memos_api_key,
         profile_template_id=config.memos_profile_template_id,
         timeout_seconds=config.memos_timeout_seconds,
+    )
+
+
+def create_memory_writer(
+    config: AppConfig,
+    provider: MemoryProvider,
+) -> MemoryWriter:
+    if config.memory_backend == "disabled" or not provider.enabled:
+        return DisabledMemoryWriteService()
+    return MemoryWriteService(
+        SqlAlchemyMemoryJobStore(config.database_url),
+        provider,
+        poll_seconds=config.memory_job_poll_seconds,
+        max_attempts=config.memory_job_max_attempts,
     )
 
 
@@ -150,24 +184,31 @@ def create_app(
     recognizer: SpeechRecognizer | None = None,
     identity_service: IdentityService | None = None,
     voiceprint_client: VoicePrintClient | None = None,
-    profile_provider: ProfileProvider | None = None,
+    profile_provider: MemoryProvider | None = None,
+    memory_writer: MemoryWriter | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
         config = replace(config, web_root=web_root)
     if not config.web_root.is_dir():
         raise RuntimeError(f"Web root does not exist: {config.web_root}")
-    resolved_chat_service = chat_service or create_chat_service(config)
+    resolved_profile_provider = profile_provider or create_profile_provider(config)
+    resolved_chat_service = chat_service or create_chat_service(
+        config, resolved_profile_provider
+    )
     resolved_vad = vad or create_vad(config)
     resolved_recognizer = recognizer or create_recognizer(config)
     resolved_identity_service = identity_service or create_identity_service(config)
     resolved_voiceprint_client = voiceprint_client or create_voiceprint_client(config)
-    resolved_profile_provider = profile_provider or create_profile_provider(config)
+    resolved_memory_writer = memory_writer or create_memory_writer(
+        config, resolved_profile_provider
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
             await resolved_identity_service.start()
+            await resolved_memory_writer.start()
             logger.info(
                 "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s memory_backend=%s identity_service=%s",
                 config.host,
@@ -182,6 +223,7 @@ def create_app(
             )
             yield
         finally:
+            await resolved_memory_writer.close()
             await resolved_chat_service.aclose()
             await resolved_recognizer.aclose()
             await resolved_identity_service.close()
@@ -197,6 +239,7 @@ def create_app(
     app.state.identity_service = resolved_identity_service
     app.state.voiceprint_client = resolved_voiceprint_client
     app.state.profile_provider = resolved_profile_provider
+    app.state.memory_writer = resolved_memory_writer
     app.state.recovery_rate_limiter = RecoveryRateLimiter(
         max_attempts=config.recovery_max_attempts,
         window_seconds=config.recovery_window_seconds,

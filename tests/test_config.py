@@ -70,6 +70,11 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID": "template-1",
             "NEWTALK_MEMOS_TIMEOUT_SECONDS": "4.5",
             "NEWTALK_PROFILE_MAX_CHARS": "1500",
+            "NEWTALK_MEMORY_SEARCH_LIMIT": "7",
+            "NEWTALK_MEMORY_SEARCH_RELATIVITY": "0.65",
+            "NEWTALK_MEMORY_RESULT_MAX_CHARS": "3500",
+            "NEWTALK_MEMORY_JOB_POLL_SECONDS": "0.5",
+            "NEWTALK_MEMORY_JOB_MAX_ATTEMPTS": "4",
         }
     )
 
@@ -122,6 +127,11 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.memos_profile_template_id == "template-1"
     assert config.memos_timeout_seconds == 4.5
     assert config.profile_max_chars == 1500
+    assert config.memory_search_limit == 7
+    assert config.memory_search_relativity == 0.65
+    assert config.memory_result_max_chars == 3500
+    assert config.memory_job_poll_seconds == 0.5
+    assert config.memory_job_max_attempts == 4
     assert "test-secret" not in repr(config)
     assert "tts-secret" not in repr(config)
     assert "asr-secret" not in repr(config)
@@ -140,6 +150,11 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_DIALOGUE_MAX_TURNS", "51"),
         ("NEWTALK_DIALOGUE_MAX_CHARS", "0"),
         ("NEWTALK_DIALOGUE_MAX_CHARS", "100001"),
+        ("NEWTALK_MEMORY_SEARCH_LIMIT", "0"),
+        ("NEWTALK_MEMORY_SEARCH_RELATIVITY", "1.1"),
+        ("NEWTALK_MEMORY_RESULT_MAX_CHARS", "100"),
+        ("NEWTALK_MEMORY_JOB_POLL_SECONDS", "0"),
+        ("NEWTALK_MEMORY_JOB_MAX_ATTEMPTS", "11"),
         ("NEWTALK_LLM_BACKEND", "unknown"),
         ("NEWTALK_LLM_TIMEOUT_SECONDS", "never"),
         ("NEWTALK_LLM_TIMEOUT_SECONDS", "0"),
