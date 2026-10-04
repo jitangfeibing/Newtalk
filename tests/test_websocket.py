@@ -15,7 +15,10 @@ from newtalk.voiceprint import VoicePrintIdentification
 
 
 def make_client(**app_options) -> TestClient:
-    identity_service = IdentityService(InMemoryIdentityStore())
+    identity_service = app_options.pop(
+        "identity_service",
+        IdentityService(InMemoryIdentityStore()),
+    )
     config = app_options.pop("config", AppConfig())
     test_client = TestClient(
         create_app(
@@ -62,13 +65,20 @@ def receive_turn(websocket) -> tuple[dict, list[dict], dict, list[dict], list[by
 
 
 def test_websocket_sends_hello_and_answers_ping() -> None:
-    with client.websocket_connect("/ws") as websocket:
+    isolated_client = make_client()
+    with isolated_client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.7"
+        assert hello["protocol_version"] == "0.8"
         assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]
+        assert hello["dialogue"] == {
+            "resumed": False,
+            "family_turns": 0,
+            "guest_turns": 0,
+            "items": [],
+        }
         assert hello["audio"] == {
             "input": {
                 "codec": "pcm_s16le",
@@ -550,23 +560,66 @@ def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
     assert model.requests[-1] == (ChatMessage("user", guest("新的问题")),)
 
 
-def test_websocket_connections_do_not_share_dialogue_context() -> None:
+def test_websocket_reconnect_restores_dialogue_context_for_same_device() -> None:
     model = RecordingModel()
     isolated_client = make_client(chat_service=ChatService(model))
 
+    hellos = []
     for event_id, text in (("session-a", "甲的问题"), ("session-b", "乙的问题")):
         with isolated_client.websocket_connect("/ws") as websocket:
-            websocket.receive_json()
+            hellos.append(websocket.receive_json())
             websocket.send_json(
                 {"type": "text_input", "event_id": event_id, "text": text}
             )
             _, _, completed, _, _ = receive_turn(websocket)
             assert completed["type"] == "turn_completed"
 
-    assert model.requests == [
-        (ChatMessage("user", guest("甲的问题")),),
-        (ChatMessage("user", guest("乙的问题")),),
-    ]
+    assert hellos[0]["dialogue"]["resumed"] is False
+    assert hellos[1]["session_id"] == hellos[0]["session_id"]
+    assert hellos[1]["dialogue"]["resumed"] is True
+    assert hellos[1]["dialogue"]["items"][0]["user_text"] == "甲的问题"
+    assert model.requests[1] == (
+        ChatMessage("user", guest("甲的问题")),
+        ChatMessage("assistant", f"回复：{guest('甲的问题')}"),
+        ChatMessage("user", guest("乙的问题")),
+    )
+
+
+def test_member_deleted_during_turn_is_not_restored() -> None:
+    identity_service = IdentityService(InMemoryIdentityStore())
+    isolated_client = make_client(
+        identity_service=identity_service,
+        chat_service=ChatService(FakeLLM(chunk_delay_seconds=0.05)),
+    )
+    member = isolated_client.post(
+        "/api/members",
+        json={"display_name": "即将删除的成员"},
+    ).json()
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        hello = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "deleted-member-turn",
+                "text": "这轮不应写入历史",
+                "identity_id": member["identity_id"],
+            }
+        )
+        assert websocket.receive_json()["type"] == "turn_started"
+        asyncio.run(
+            identity_service.mark_identity_deletion_pending(
+                device_id=hello["device_id"],
+                identity_id=member["identity_id"],
+            )
+        )
+        _, _, completed, _, _ = receive_turn(websocket)
+        assert completed["type"] == "turn_completed"
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        restored = websocket.receive_json()
+        assert restored["dialogue"]["family_turns"] == 0
+        assert restored["dialogue"]["items"] == []
 
 
 def test_duplicate_event_id_does_not_create_another_turn() -> None:

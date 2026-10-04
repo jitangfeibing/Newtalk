@@ -1,6 +1,7 @@
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
+from weakref import WeakKeyDictionary
 
 from newtalk.chat.models import ChatMessage, Turn, format_user_message
 
@@ -35,6 +36,26 @@ class DialogueSession:
     @property
     def exchanges(self) -> tuple[DialogueExchange, ...]:
         return tuple(self._exchanges)
+
+    def restore(self, exchanges: Sequence[DialogueExchange]) -> None:
+        if self._exchanges:
+            raise ValueError("Dialogue history has already been initialized")
+        seen: set[str] = set()
+        for exchange in exchanges[-self.max_turns :]:
+            if exchange.turn_id in seen:
+                raise ValueError("Restored Dialogue contains duplicate turns")
+            seen.add(exchange.turn_id)
+            self._exchanges.append(exchange)
+
+    def remove_identity(self, identity_id: str) -> None:
+        self._exchanges = deque(
+            (
+                exchange
+                for exchange in self._exchanges
+                if exchange.speaker_identity_id != identity_id
+            ),
+            maxlen=self.max_turns,
+        )
 
     def messages_for(
         self,
@@ -100,3 +121,21 @@ class DialogueSession:
                 speaker_relationship=turn.speaker_relationship,
             )
         )
+
+
+class DialogueCacheCoordinator:
+    """Removes deleted member exchanges from active Family Dialogue windows."""
+
+    def __init__(self) -> None:
+        self._sessions: WeakKeyDictionary[DialogueSession, str] = WeakKeyDictionary()
+
+    def register(self, device_id: str, dialogue: DialogueSession) -> None:
+        self._sessions[dialogue] = device_id
+
+    def unregister(self, dialogue: DialogueSession) -> None:
+        self._sessions.pop(dialogue, None)
+
+    def remove_identity(self, device_id: str, identity_id: str) -> None:
+        for dialogue, owner_device_id in tuple(self._sessions.items()):
+            if owner_device_id == device_id:
+                dialogue.remove_identity(identity_id)

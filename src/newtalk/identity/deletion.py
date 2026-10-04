@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
+from newtalk.chat import DialogueCacheCoordinator, DialogueStore
 from newtalk.identity.models import IdentityStatus
 from newtalk.identity.service import IdentityNotFoundError, IdentityService
 from newtalk.identity.sqlalchemy_store import Base, IdentityRow
@@ -299,6 +300,8 @@ class IdentityDeletionService:
         memory: MemoryProvider,
         coordinator: ProfileCacheCoordinator,
         *,
+        dialogue_store: DialogueStore | None = None,
+        dialogue_coordinator: DialogueCacheCoordinator | None = None,
         poll_seconds: float = 1.0,
         max_attempts: int = 3,
     ) -> None:
@@ -306,6 +309,8 @@ class IdentityDeletionService:
         self._voiceprint = voiceprint
         self._memory = memory
         self._coordinator = coordinator
+        self._dialogue_store = dialogue_store
+        self._dialogue_coordinator = dialogue_coordinator
         self._poll_seconds = poll_seconds
         self._max_attempts = max_attempts
         self._worker: asyncio.Task[None] | None = None
@@ -321,6 +326,8 @@ class IdentityDeletionService:
         )
         if scheduled:
             self._coordinator.remove(device_id, identity_id)
+            if self._dialogue_coordinator is not None:
+                self._dialogue_coordinator.remove_identity(device_id, identity_id)
         return scheduled
 
     async def close(self) -> None:
@@ -355,6 +362,11 @@ class IdentityDeletionService:
             if self._memory.enabled:
                 await self._memory.delete_all_memories(scope)
                 await self._memory.delete_profile(scope)
+            if self._dialogue_store is not None:
+                await self._dialogue_store.delete_identity(
+                    device_id=job.device_id,
+                    identity_id=job.identity_id,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

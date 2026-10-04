@@ -73,6 +73,14 @@ PR：https://github.com/jitangfeibing/Newtalk/pull/16
 状态：Memory Center、完整成员删除、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
 ```
 
+P7.7 当前交付状态：
+
+```text
+分支：codex/p7-7-session-recovery
+状态：Session/Dialogue 持久化、刷新恢复、文档与本地全量验证已完成，等待 PR/CI
+本地验证：148 passed, 2 skipped；5 项真实 PostgreSQL 集成测试和真实浏览器刷新恢复通过
+```
+
 从远端 `main` 阅读本文时，应先用下列命令核对最新状态：
 
 ```powershell
@@ -81,7 +89,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2-P7.6 已通过 PR/CI 合并，后续 P7.7 应从最新 `main` 创建新分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.6 已通过 PR/CI 合并，P7.7 位于上述开发分支等待交付。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
@@ -115,7 +123,7 @@ gh pr list --state all --limit 20
 - 已完成真实 CAM++ CPU 加载、浏览器三段录入和 PostgreSQL 512 维模板写入验证。
 - `deterministic` 后端仅供自动测试和 CI，不能作为产品声纹识别结果。
 
-## 4. P7.3-P7.5 当前实现
+## 4. P7.3-P7.7 当前实现
 
 ### P7.3 说话人 Turn
 
@@ -212,6 +220,23 @@ P7.5 当前分支已经实现：
 - `src/newtalk/profile/memos.py`：MemOS Search Memory 与 Add Message。
 - `tests/test_memory.py`、`tests/integration/test_postgres_memory_jobs.py`：Memory 行为和真实数据库验证。
 
+### P7.6 Memory Center 与完整删除
+
+- Web 可以按当前家庭成员查看、搜索、修改和删除长期记忆，并编辑、删除或锁定 Profile 字段。
+- 所有管理请求都通过 Device Cookie 和 Active Identity 归属校验，浏览器不能构造 MemOS Scope。
+- 成员删除先进入 `deletion_pending`，再由 PostgreSQL Job 清理 VoicePrint、MemOS Memory/Profile，最后物理删除 Identity。
+- 活动 Profile Cache 在人工修改和成员删除后同步更新。
+
+### P7.7 Session/Dialogue 恢复
+
+- 一个 `device_id` 唯一对应一个 PostgreSQL Dialogue Session；刷新和短暂重连复用稳定 `session_id`。
+- Family 与 Guest 分别保存有限窗口，只持久化成功完成的交换。
+- WebSocket `hello.dialogue` 携带恢复快照；浏览器重建消息，Runtime 恢复 LLM 上下文。
+- `turn_id` 唯一约束和 Session 行锁保证幂等及同家庭并发裁剪；不同设备仍完全隔离。
+- 成员完整删除同步清理该成员的持久化交换和活动 Family Dialogue。
+- Member Turn 提交前重查 Active Identity，避免删除中的旧 Turn 重新写回 Dialogue 或 Memory。
+- 主要入口为 `src/newtalk/chat/persistence.py`、迁移 `20261004_05`、`transport/websocket.py` 和 `transport/runtime.py`。
+
 ## 5. 验证与持续校准
 
 P7.3 的功能交付以自动测试、P7.2 真实 CAM++ 录入验证、协议检查和故障降级测试作为完成标准。以下真实家庭语音测试用于后续校准识别阈值与等待期限，不阻塞 P7.3 合并：
@@ -275,7 +300,7 @@ NEWTALK_MEMORY_JOB_MAX_ATTEMPTS=3
 ```text
 Python 虚拟环境：D:\Desktop\Newtalk\.venv
 PostgreSQL 5432：正在监听
-Alembic：20261004_03 (head)
+Alembic：20261004_05 (head)
 Newtalk 8006：未运行
 VoicePrint 8010：未运行
 根 .env：已配置 openai-compatible LLM、豆包 ASR/TTS 和 VoicePrint URL；尚未配置 MemOS
@@ -345,7 +370,7 @@ Invoke-RestMethod http://127.0.0.1:8010/health
 2026-10-04 重新执行的结果：
 
 ```text
-主项目：135 passed, 2 skipped（使用真实本机 PostgreSQL）
+主项目：148 passed, 2 skipped（使用真实本机 PostgreSQL）
 VoicePrint：4 passed（使用真实本机 PostgreSQL）
 pip check：No broken requirements found
 ```
@@ -363,12 +388,12 @@ git diff --check
 
 ## 8. 当前客观边界与风险
 
-- P7.3 的 Family/Guest Dialogue 仍只存在于当前 WebSocket 连接内；刷新后 Session 恢复尚未实现。
+- Family/Guest Dialogue 已可刷新恢复，但第一版没有多个活动页面之间的实时消息广播，也不提供历史 Session 列表。
 - Guest 是该连接内统一的访客窗口，不区分多个未知访客。
 - VoicePrint CAM++ 推理有进程内锁，单实例并发推理会串行；主聊天通过有限等待降级 Guest，但仍需测并发容量。
 - 真实扬声器环境只有浏览器回声消除，没有服务端 AEC；播放 TTS 时误触发 VAD/声纹仍需人工测试。
 - 每个 utterance 当前新建豆包 ASR Provider WebSocket，尚未复用连接。
-- `ConnectionRuntime` 仍承担较多编排职责；P7.5 只在 Dialogue 成功提交点调用 MemoryWriter 入队，MemOS HTTP、解析、任务领取和重试留在 `newtalk.memory`/`newtalk.profile.memos`。
+- `ConnectionRuntime` 仍承担较多编排职责；Dialogue SQL 位于 `newtalk.chat.persistence`，Memory HTTP、解析、任务领取和重试留在 `newtalk.memory`/`newtalk.profile.memos`。
 - Profile Snapshot、`memory_search`、后台 Memory Job 和 Memory Center 已进入 Member 数据链；Vision 尚未实现。
 - Profile 远端失败在同一 Session 内不会自动重试，重新连接后才会再次预取。
 - P7.4/P7.5 尚未完成真实 MemOS 账号、Template、Search 和 Add Message 验收，不能仅凭 Mock 测试宣称外部集成完成。
@@ -383,7 +408,8 @@ git diff --check
 P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级（代码和自动测试完成，待真实验收）
 P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务（代码和自动测试完成，待真实验收）
 P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除（代码和自动测试完成，待真实 MemOS 验收）
-P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
+P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试（代码和本地验证完成，等待 PR/CI）
+P8：统一 Vision 输入（尚未开始）
 ```
 
 Memory 基线不可改回旧小智的“每轮先查 Memory 再调用 LLM”：
@@ -407,9 +433,9 @@ MemOS    -> 主 LLM 按需调用 memory_search 查询长期情景记忆
 
 详细设计见 `docs/P7_DESIGN.md`。P7.4/P7.5 代码已按官方 HTTP 文档实现，仍需真实账号确认权限、Profile Template、Search/Add Message 返回和远端幂等。
 
-### MemOS 真实验收与 P7.7 前置
+### MemOS 真实验收
 
-进入 P7.7 前仍建议完成 P7.4-P7.6 的真实 Memory 联调，需要从用户本地配置和真实验收得到：
+P7.4-P7.6 的真实 Memory 联调仍需从用户本地配置和真实验收得到：
 
 - MemOS API Base URL 和本地 `.env` 中的 API Key；密钥不能写入本文、测试夹具或 Git。
 - MemOS 控制台创建的 `profile_template_id`。
@@ -434,8 +460,8 @@ P7.4/P7.5 的验收边界：
 
 1. `docs/CODEX_HANDOFF.md`：当前交接状态和执行顺序。
 2. `docs/PROGRESS.md`：已经实现并验证过的历史。
-3. `docs/architecture.md`：当前 P7.6 运行时结构。
-4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.7` 协议。
+3. `docs/architecture.md`：当前 P7.7 运行时结构。
+4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.8` 协议。
 5. `docs/P7_DESIGN.md`：P7 已确认产品和 Memory 设计基线。
 6. `PROJECT_PLAN.md`：总体路线，不代表所有内容已经实现。
 7. `docs/DEVELOPMENT_WORKFLOW.md`：Git、PR 和 CI 协作流程。

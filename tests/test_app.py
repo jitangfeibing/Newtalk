@@ -21,7 +21,7 @@ def test_health() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "newtalk",
-        "version": "0.12.0",
+        "version": "0.13.0",
     }
 
 
