@@ -18,8 +18,8 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 当前阶段 | P7.7 Session/Dialogue 刷新恢复 |
-| 阶段状态 | 代码与本地全量验证完成，等待 PR/CI |
-| 开发分支 | `codex/p7-7-session-recovery` |
+| 阶段状态 | PR #18 和 CI 已通过并合并；P7 代码阶段完成，真实 MemOS 验收仍待执行 |
+| 开发分支 | `main`（P7.7 已合并） |
 | 项目版本 | `0.13.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |

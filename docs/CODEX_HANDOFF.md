@@ -73,12 +73,14 @@ PR：https://github.com/jitangfeibing/Newtalk/pull/16
 状态：Memory Center、完整成员删除、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
 ```
 
-P7.7 当前交付状态：
+P7.7 交付记录：
 
 ```text
-分支：codex/p7-7-session-recovery
-状态：Session/Dialogue 持久化、刷新恢复、文档与本地全量验证已完成，等待 PR/CI
-本地验证：148 passed, 2 skipped；5 项真实 PostgreSQL 集成测试和真实浏览器刷新恢复通过
+提交：544f582 feat: complete P7.7 session recovery
+PR：https://github.com/jitangfeibing/Newtalk/pull/18
+合并提交：9cd2bf2 Merge pull request #18 ... P7.7
+状态：Session/Dialogue 持久化、刷新恢复、文档、自动测试和真实 PostgreSQL 集成验证已通过 CI 合并
+验证：148 passed, 2 skipped；5 项真实 PostgreSQL 集成测试和真实浏览器刷新恢复通过
 ```
 
 从远端 `main` 阅读本文时，应先用下列命令核对最新状态：
@@ -89,7 +91,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2-P7.6 已通过 PR/CI 合并，P7.7 位于上述开发分支等待交付。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.7 已通过 PR/CI 合并，P7 的代码阶段完成，下一阶段为 P8 统一 Vision 输入。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
@@ -408,7 +410,7 @@ git diff --check
 P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级（代码和自动测试完成，待真实验收）
 P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务（代码和自动测试完成，待真实验收）
 P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除（代码和自动测试完成，待真实 MemOS 验收）
-P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试（代码和本地验证完成，等待 PR/CI）
+P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试（PR #18、CI 已通过并合并）
 P8：统一 Vision 输入（尚未开始）
 ```
 
