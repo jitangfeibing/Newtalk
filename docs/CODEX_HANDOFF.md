@@ -55,11 +55,13 @@ PR：https://github.com/jitangfeibing/Newtalk/pull/13
 状态：代码和自动测试已合并；真实 MemOS 验收尚未执行
 ```
 
-P7.5 当前开发状态：
+P7.5 交付记录：
 
 ```text
-分支：codex/p7-5-memory-tools
-状态：代码、文档、自动测试和本机 PostgreSQL 集成验证完成；提交、PR、CI 与合并尚待本轮完成
+提交：dc979c8 feat: complete P7.5 memory tools
+PR：https://github.com/jitangfeibing/Newtalk/pull/14
+合并提交：1de762e Merge pull request #14 ... P7.5
+状态：代码、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
 ```
 
 从远端 `main` 阅读本文时，应先用下列命令核对最新状态：
@@ -70,7 +72,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2-P7.4 已通过 PR/CI 合并，P7.5 位于独立开发分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.5 已通过 PR/CI 合并，后续 P7.6 应从最新 `main` 创建新分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
