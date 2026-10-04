@@ -18,8 +18,8 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 当前阶段 | P7.5 Memory Tool 与后台写入 |
-| 阶段状态 | 代码、协议文档、自动测试和 PostgreSQL 集成测试通过；待真实 MemOS 验收 |
-| 开发分支 | `codex/p7-5-memory-tools` |
+| 阶段状态 | PR #14 和 CI 已通过并合并；待真实 MemOS 验收 |
+| 开发分支 | `main`（P7.5 已合并） |
 | 项目版本 | `0.11.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
