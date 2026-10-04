@@ -18,8 +18,8 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 当前阶段 | P7.6 Memory Center 与完整成员删除 |
-| 阶段状态 | 代码与自动测试完成；待 PR/CI 合并和真实 MemOS 验收 |
-| 开发分支 | `codex/p7-6-memory-center` |
+| 阶段状态 | PR #16 和 CI 已通过并合并；待真实 MemOS 验收 |
+| 开发分支 | `main`（P7.6 已合并） |
 | 项目版本 | `0.12.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
