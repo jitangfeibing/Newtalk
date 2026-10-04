@@ -8,12 +8,12 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 文档口径：
 
-- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.5 运行时。
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.6 运行时。
 - `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
-- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.5 已完成代码和自动测试。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.6 已完成代码和自动测试。
 - `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
 
-## 当前阶段：P7.5 长期记忆读写已完成，待真实 MemOS 验收
+## 当前阶段：P7.6 Memory Center 与完整成员删除已完成
 
 P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声纹服务：
 
@@ -60,7 +60,15 @@ P7.5 增加按需长期记忆读写：
 - 只有成功提交 Dialogue 的 Member Turn 才写入长期记忆；Guest、取消、失败和旧 Turn 均不写入。
 - 写入先落 PostgreSQL `memory_jobs` Outbox，再由后台 Worker 调用 MemOS Add Message，不把远程写入延迟放进当前回复。
 - `turn_id` 唯一约束避免本地重复入队；数据库任务使用领取租约和有限重试，支持服务重启和多 Worker 竞争。
-- P7.5 尚未实现 Memory Center、Profile 字段锁定或跨服务成员完整删除。
+
+P7.6 增加可见、可纠正的 Memory Center 与完整成员删除：
+
+- 页面按家庭成员查看、搜索、筛选、编辑和删除 MemOS 长期记忆。
+- 页面查看、添加、修改、删除 Profile 字段，并使用锁定状态控制 `algorithm_updatable`。
+- 浏览器只访问 Newtalk API；后端从 HttpOnly 设备凭据验证成员归属并生成 MemOS Scope。
+- 修改 Profile 后同步更新当前活动 WebSocket 的 Profile Snapshot。
+- 删除成员立即改为 `deletion_pending`，后台再删除 VoicePrint、MemOS 记忆与 Profile。
+- 删除任务持久化在 PostgreSQL，外部清理成功后才物理删除 Identity。
 
 继承能力包括：
 
@@ -91,7 +99,7 @@ P7.5 增加按需长期记忆读写：
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未接入 Memory Center、Vision 和通用 Provider Registry。P7.5 自动测试与 PostgreSQL 集成测试已覆盖 Tool Call、成员 Scope、Guest 隔离、查询降级、写入去重、重试和任务租约；真实 MemOS API Key、Profile Template、Search/Add 返回数据仍需本地验收。
+当前阶段尚未接入 Vision、Session/Dialogue 刷新恢复和通用 Provider Registry。P7.6 自动测试与 PostgreSQL 集成测试已覆盖 Memory Center 家庭隔离、MemOS 所有权校验、Profile Cache 更新和持久化成员删除；真实 MemOS API Key、Profile Template、Search/Add/Edit/Delete 返回数据仍需本地验收。
 
 ## 本地启动
 
@@ -109,7 +117,7 @@ newtalk
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P7.5 数据库、设备、声纹和可选 Memory 配置：
+P7.6 数据库、设备、声纹和可选 Memory 配置：
 
 ```dotenv
 NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk

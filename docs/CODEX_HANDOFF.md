@@ -360,7 +360,7 @@ git diff --check
 - 真实扬声器环境只有浏览器回声消除，没有服务端 AEC；播放 TTS 时误触发 VAD/声纹仍需人工测试。
 - 每个 utterance 当前新建豆包 ASR Provider WebSocket，尚未复用连接。
 - `ConnectionRuntime` 仍承担较多编排职责；P7.5 只在 Dialogue 成功提交点调用 MemoryWriter 入队，MemOS HTTP、解析、任务领取和重试留在 `newtalk.memory`/`newtalk.profile.memos`。
-- Profile Snapshot、`memory_search` 和后台 Memory Job 已进入 Member 运行链；Memory Center 和 Vision 尚未实现。
+- Profile Snapshot、`memory_search`、后台 Memory Job 和 Memory Center 已进入 Member 数据链；Vision 尚未实现。
 - Profile 远端失败在同一 Session 内不会自动重试，重新连接后才会再次预取。
 - P7.4/P7.5 尚未完成真实 MemOS 账号、Template、Search 和 Add Message 验收，不能仅凭 Mock 测试宣称外部集成完成。
 - Outbox 本地按 `turn_id` 去重并提供至少一次投递；MemOS 端是否幂等尚未确认，崩溃发生在远端接收后、本地完成标记前时可能重复写入。
@@ -373,7 +373,7 @@ git diff --check
 ```text
 P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级（代码和自动测试完成，待真实验收）
 P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务（代码和自动测试完成，待真实验收）
-P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除
+P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除（代码和自动测试完成，待真实 MemOS 验收）
 P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
 ```
 
@@ -398,9 +398,9 @@ MemOS    -> 主 LLM 按需调用 memory_search 查询长期情景记忆
 
 详细设计见 `docs/P7_DESIGN.md`。P7.4/P7.5 代码已按官方 HTTP 文档实现，仍需真实账号确认权限、Profile Template、Search/Add Message 返回和远端幂等。
 
-### MemOS 真实验收与 P7.6 前置
+### MemOS 真实验收与 P7.7 前置
 
-进入 P7.6 的真实 Memory Center 联调前，需要从用户本地配置和真实验收得到：
+进入 P7.7 前仍建议完成 P7.4-P7.6 的真实 Memory 联调，需要从用户本地配置和真实验收得到：
 
 - MemOS API Base URL 和本地 `.env` 中的 API Key；密钥不能写入本文、测试夹具或 Git。
 - MemOS 控制台创建的 `profile_template_id`。
@@ -425,7 +425,7 @@ P7.4/P7.5 的验收边界：
 
 1. `docs/CODEX_HANDOFF.md`：当前交接状态和执行顺序。
 2. `docs/PROGRESS.md`：已经实现并验证过的历史。
-3. `docs/architecture.md`：当前 P7.5 运行时结构。
+3. `docs/architecture.md`：当前 P7.6 运行时结构。
 4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.7` 协议。
 5. `docs/P7_DESIGN.md`：P7 已确认产品和 Memory 设计基线。
 6. `PROJECT_PLAN.md`：总体路线，不代表所有内容已经实现。

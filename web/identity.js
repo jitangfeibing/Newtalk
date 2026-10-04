@@ -189,7 +189,7 @@ function renderMembers(members) {
     if (!members.length) {
         const empty = document.createElement('li');
         empty.className = 'member-empty';
-        empty.textContent = '还没有成员。先录入姓名，声纹将在 P7.2 接入。';
+        empty.textContent = '还没有成员。添加成员后可以录入声纹并管理个人记忆。';
         memberList.append(empty);
         return;
     }
@@ -225,12 +225,12 @@ function renderMembers(members) {
         deleteButton.className = 'text-button danger';
         deleteButton.textContent = '删除';
         deleteButton.addEventListener('click', async () => {
-            if (!window.confirm(`确认删除成员“${member.display_name}”？P7.1 当前只包含本地成员资料。`)) return;
+            if (!window.confirm(`确认删除成员“${member.display_name}”？声纹、画像和长期记忆会在后台一并清理，且无法恢复。`)) return;
             try {
                 await api(`/api/members/${member.identity_id}`, {method: 'DELETE'});
                 if (editingIdentityId === member.identity_id) resetMemberForm();
                 await loadMembers();
-                setFeedback(`已删除成员：${member.display_name}`, 'success');
+                setFeedback(`成员 ${member.display_name} 已进入删除流程。`, 'success');
             } catch (error) {
                 setFeedback(error.message, 'error');
             }
@@ -286,6 +286,7 @@ async function loadMembers() {
     currentMembers = members;
     renderMembers(members);
     renderSpeakerOptions(members);
+    window.dispatchEvent(new CustomEvent('newtalk:members-changed', {detail: {members}}));
 }
 
 createDeviceButton.addEventListener('click', async () => {

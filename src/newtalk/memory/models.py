@@ -6,6 +6,10 @@ from typing import Literal
 MemoryKind = Literal["fact", "preference", "event"]
 
 
+class MemoryNotFoundError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryItem:
     memory_id: str
@@ -52,3 +56,22 @@ class MemorySearchResult:
 class MemoryWriteReceipt:
     provider_task_id: str | None
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRecord:
+    memory_id: str
+    kind: MemoryKind
+    title: str
+    content: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryPage:
+    items: tuple[MemoryRecord, ...]
+    page: int
+    size: int
+    total: int
+    pages: int

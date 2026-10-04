@@ -1,4 +1,4 @@
-# P7.5 HTTP、VoicePrint、Memory 与 WebSocket 协议
+# P7.6 HTTP、VoicePrint、Memory 与 WebSocket 协议
 
 WebSocket Endpoint 为 `GET /ws`，协议版本 `0.7`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
@@ -13,9 +13,14 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 - `GET /api/members`：列出当前 `device_id` 的成员。
 - `POST /api/members`：创建成员。
 - `PATCH /api/members/{identity_id}`：修改当前家庭成员。
-- `DELETE /api/members/{identity_id}`：删除成员行时一并删除同一行的声纹模板；跨 MemOS/Profile 完整删除任务在 P7.6 接入。
+- `DELETE /api/members/{identity_id}`：返回 `202 deletion_pending`；成员立即不可访问，后台删除 VoicePrint、MemOS Memory/Profile 后物理删除 Identity。
 - `POST /api/members/{identity_id}/voiceprint`：上传名为 `samples` 的三个 WAV multipart part，录入或覆盖当前成员模板。
 - `DELETE /api/members/{identity_id}/voiceprint`：删除声纹模板但保留成员资料。
+- `GET /api/members/{identity_id}/profile`：读取当前成员 Profile。
+- `PATCH /api/members/{identity_id}/profile`：新增、编辑、删除或锁定 Profile 字段。
+- `GET /api/members/{identity_id}/memories`：分页、按类型查看或按查询文本搜索长期记忆。
+- `PATCH /api/members/{identity_id}/memories/{memory_id}`：校验该 Memory 属于当前成员后修改标题和内容。
+- `DELETE /api/members/{identity_id}/memories/{memory_id}`：校验归属后删除长期记忆。
 
 所有成员读写都由服务端从 Cookie 解析 `device_id`，客户端不能在请求体中指定其他家庭。
 

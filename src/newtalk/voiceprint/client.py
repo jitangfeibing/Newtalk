@@ -29,6 +29,9 @@ class VoicePrintIdentification:
 
 
 class VoicePrintClient(Protocol):
+    @property
+    def enabled(self) -> bool: ...
+
     async def register(
         self,
         *,
@@ -50,6 +53,10 @@ class VoicePrintClient(Protocol):
 
 
 class DisabledVoicePrintClient:
+    @property
+    def enabled(self) -> bool:
+        return False
+
     async def register(
         self,
         *,
@@ -81,6 +88,10 @@ class HttpVoicePrintClient:
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=timeout_seconds,
         )
+
+    @property
+    def enabled(self) -> bool:
+        return True
 
     async def register(
         self,
@@ -140,6 +151,8 @@ class HttpVoicePrintClient:
             )
         except httpx.HTTPError as exc:
             raise VoicePrintUnavailableError("VoicePrint service is unavailable") from exc
+        if response.status_code == 404:
+            return
         self._raise_for_status(response)
 
     @staticmethod

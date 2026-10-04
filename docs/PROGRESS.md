@@ -17,15 +17,15 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P7.5 Memory Tool 与后台写入 |
-| 阶段状态 | PR #14 和 CI 已通过并合并；待真实 MemOS 验收 |
-| 开发分支 | `main`（P7.5 已合并） |
-| 项目版本 | `0.11.0` |
+| 当前阶段 | P7.6 Memory Center 与完整成员删除 |
+| 阶段状态 | 代码与自动测试完成；待 PR/CI 合并和真实 MemOS 验收 |
+| 开发分支 | `codex/p7-6-memory-center` |
+| 项目版本 | `0.12.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 本机 PostgreSQL 下主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过 |
+| 自动测试 | 主项目全量测试通过，包含 3 项真实 PostgreSQL 集成测试；2 项 live 跳过 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
 | 最后更新 | 2026-10-04 |
 
@@ -460,11 +460,33 @@ text_input
 - 真实 MemOS API Key/Profile Template 尚未配置，因此真实 Profile/Search/Add Message、任务状态和远端幂等仍待联调。
 - P7.5 不包含 Memory Center、Profile 字段锁定、记忆人工编辑删除、成员跨服务完整删除和 Session 恢复。
 
+## P7.6：Memory Center 与成员完整删除
+
+### 已实现
+
+- Web 增加按成员管理的 Memory Center，可查看、筛选、搜索、编辑和删除长期记忆。
+- Profile 支持查看、添加、修改、删除和锁定；手工变更同步到活动 WebSocket 的 Profile Snapshot。
+- 所有管理接口先用 HttpOnly Device Cookie 验证家庭，再校验 Active Identity 归属；浏览器不能指定 MemOS `user_id`。
+- 修改或删除单条 Memory 前，Provider 先分页列出该成员记忆并确认 `memory_id` 所有权。
+- 成员删除返回 `202 deletion_pending`，立即从成员列表、聊天和 Memory API 隐藏。
+- PostgreSQL `identity_deletion_jobs` 持久化跨服务删除任务；Worker 清理 VoicePrint、MemOS 全部 Memory 和 Profile，全部成功后再硬删除 Identity。
+- 删除任务支持 `FOR UPDATE SKIP LOCKED`、领取租约、有限重试和并发重复请求保护。
+- Alembic 已升级到 `20261004_04`，项目版本升级为 `0.12.0`。
+
+### 自动验证与当前边界
+
+- Python 全量测试通过；JavaScript 三个入口语法检查通过。
+- 真实 PostgreSQL 上迁移成功，Identity 隔离、Memory Job 与 Identity Deletion Job 三项集成测试通过。
+- 自动测试覆盖家庭越权拒绝、Memory CRUD、Profile 锁定、活动缓存更新、MemOS 请求体/所有权校验、删除失败重试与最终清理。
+- Memory Provider 关闭时 Memory Center 返回 503，聊天继续正常；删除成员时跳过未启用 Provider。
+- 真实 MemOS 账号仍未配置，因此 Profile/Edit/Get、Memory Get/Search/Update/Delete 和跨服务删除仍需真实浏览器验收。
+- P7.6 不包含页面刷新后的 Dialogue 恢复、Vision 或删除任务管理后台。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.5 合并后进入 P7.6：实现 Memory Center、Profile 锁定、记忆编辑删除和成员跨服务完整删除。P7.7 再实现页面刷新后的 Session/Dialogue 恢复。
+P7.6 合并后进入 P7.7：实现页面刷新后的 Session/Dialogue 恢复。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -501,3 +523,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-09-07 | P7.3 | 增加 ASR/VoicePrint 有限汇合、Member/Guest Turn 映射和多人 Dialogue | 主项目 105 项通过、3 项跳过；声纹服务 3 项通过、1 项跳过；协议和前端语法检查通过 |
 | 2026-09-07 | P7.4 | 增加 MemOS Profile 懒绑定、连接后台预取、Identity Snapshot 隔离和无阻塞降级 | 主项目 118 项通过、3 项跳过；真实 MemOS 账号验收待完成 |
 | 2026-10-04 | P7.5 | 增加主 LLM `memory_search`、服务端 Scope、PostgreSQL Outbox 和 MemOS 后台写入 | 主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过；真实 MemOS 账号验收待完成 |
+| 2026-10-04 | P7.6 | 增加 Memory Center、Profile 锁定、记忆人工管理和持久化成员完整删除 | 全量测试通过；3 项真实 PostgreSQL 集成测试通过；真实 MemOS 验收待完成 |

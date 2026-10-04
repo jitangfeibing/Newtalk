@@ -262,6 +262,7 @@ class SqlAlchemyIdentityStore:
                 .where(
                     IdentityRow.identity_id == parsed_id,
                     IdentityRow.device_id == device_id,
+                    IdentityRow.status == IdentityStatus.ACTIVE.value,
                 )
                 .with_for_update()
             )
@@ -287,3 +288,28 @@ class SqlAlchemyIdentityStore:
                 )
             )
             return result.rowcount == 1
+
+    async def mark_identity_deletion_pending(
+        self, *, device_id: str, identity_id: str
+    ) -> Identity | None:
+        try:
+            parsed_id = UUID(identity_id)
+        except ValueError:
+            return None
+        async with self._sessions.begin() as session:
+            row = await session.scalar(
+                select(IdentityRow)
+                .where(
+                    IdentityRow.identity_id == parsed_id,
+                    IdentityRow.device_id == device_id,
+                    IdentityRow.status == IdentityStatus.ACTIVE.value,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                return None
+            row.status = IdentityStatus.DELETION_PENDING.value
+            row.updated_at = func.now()
+            await session.flush()
+            await session.refresh(row)
+            return _identity(row)

@@ -21,7 +21,7 @@ def test_health() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "newtalk",
-        "version": "0.11.0",
+        "version": "0.12.0",
     }
 
 
@@ -36,6 +36,9 @@ def test_web_page_is_served() -> None:
     assert 'id="micButton"' in response.text
     assert 'id="deviceOnboarding"' in response.text
     assert 'id="memberForm"' in response.text
+    assert 'id="memoryCenter"' in response.text
+    assert 'id="profileList"' in response.text
+    assert 'id="memoryList"' in response.text
 
 
 def test_app_fails_fast_when_web_root_is_missing(tmp_path) -> None:

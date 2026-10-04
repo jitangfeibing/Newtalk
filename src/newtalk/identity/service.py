@@ -97,14 +97,19 @@ class IdentityService:
         raise RuntimeError("Unable to allocate a unique recovery code")
 
     async def list_identities(self, device_id: str) -> Sequence[Identity]:
-        return await self._store.list_identities(device_id)
+        identities = await self._store.list_identities(device_id)
+        return [
+            identity
+            for identity in identities
+            if identity.status.value == "active"
+        ]
 
     async def get_identity(self, *, device_id: str, identity_id: str) -> Identity:
         identity = await self._store.get_identity(
             device_id=device_id,
             identity_id=identity_id,
         )
-        if identity is None:
+        if identity is None or identity.status.value != "active":
             raise IdentityNotFoundError(identity_id)
         return identity
 
@@ -148,3 +153,14 @@ class IdentityService:
         )
         if not deleted:
             raise IdentityNotFoundError(identity_id)
+
+    async def mark_identity_deletion_pending(
+        self, *, device_id: str, identity_id: str
+    ) -> Identity:
+        identity = await self._store.mark_identity_deletion_pending(
+            device_id=device_id,
+            identity_id=identity_id,
+        )
+        if identity is None:
+            raise IdentityNotFoundError(identity_id)
+        return identity

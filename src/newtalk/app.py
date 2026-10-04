@@ -14,6 +14,12 @@ from newtalk.chat import ChatService, FakeLLM, OpenAICompatibleChatModel
 from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
+from newtalk.identity.deletion import (
+    IdentityDeletionScheduler,
+    IdentityDeletionService,
+    InMemoryIdentityDeletionStore,
+    SqlAlchemyIdentityDeletionStore,
+)
 from newtalk.identity.api import RecoveryRateLimiter, router as identity_router
 from newtalk.memory import (
     DisabledMemoryProvider,
@@ -23,8 +29,10 @@ from newtalk.memory import (
     MemoryWriter,
     SqlAlchemyMemoryJobStore,
 )
+from newtalk.memory.api import router as memory_router
 from newtalk.profile import (
     MemosProfileProvider,
+    ProfileCacheCoordinator,
 )
 from newtalk.transport import websocket_router
 from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
@@ -186,6 +194,7 @@ def create_app(
     voiceprint_client: VoicePrintClient | None = None,
     profile_provider: MemoryProvider | None = None,
     memory_writer: MemoryWriter | None = None,
+    identity_deletion_service: IdentityDeletionScheduler | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -200,15 +209,32 @@ def create_app(
     resolved_recognizer = recognizer or create_recognizer(config)
     resolved_identity_service = identity_service or create_identity_service(config)
     resolved_voiceprint_client = voiceprint_client or create_voiceprint_client(config)
+    profile_cache_coordinator = ProfileCacheCoordinator()
     resolved_memory_writer = memory_writer or create_memory_writer(
         config, resolved_profile_provider
     )
+    resolved_identity_deletion_service = identity_deletion_service
+    if resolved_identity_deletion_service is None:
+        deletion_store = (
+            InMemoryIdentityDeletionStore(resolved_identity_service)
+            if identity_service is not None
+            else SqlAlchemyIdentityDeletionStore(config.database_url)
+        )
+        resolved_identity_deletion_service = IdentityDeletionService(
+            deletion_store,
+            resolved_voiceprint_client,
+            resolved_profile_provider,
+            profile_cache_coordinator,
+            poll_seconds=config.memory_job_poll_seconds,
+            max_attempts=config.memory_job_max_attempts,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
             await resolved_identity_service.start()
             await resolved_memory_writer.start()
+            await resolved_identity_deletion_service.start()
             logger.info(
                 "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s memory_backend=%s identity_service=%s",
                 config.host,
@@ -223,6 +249,7 @@ def create_app(
             )
             yield
         finally:
+            await resolved_identity_deletion_service.close()
             await resolved_memory_writer.close()
             await resolved_chat_service.aclose()
             await resolved_recognizer.aclose()
@@ -240,6 +267,8 @@ def create_app(
     app.state.voiceprint_client = resolved_voiceprint_client
     app.state.profile_provider = resolved_profile_provider
     app.state.memory_writer = resolved_memory_writer
+    app.state.profile_cache_coordinator = profile_cache_coordinator
+    app.state.identity_deletion_service = resolved_identity_deletion_service
     app.state.recovery_rate_limiter = RecoveryRateLimiter(
         max_attempts=config.recovery_max_attempts,
         window_seconds=config.recovery_window_seconds,
@@ -264,6 +293,7 @@ def create_app(
 
     app.include_router(identity_router)
     app.include_router(voiceprint_router)
+    app.include_router(memory_router)
     app.include_router(websocket_router)
 
     app.mount(
@@ -279,7 +309,6 @@ runtime_config = load_config()
 configure_logging(runtime_config.log_level)
 app = create_app(
     runtime_config,
-    identity_service=create_identity_service(runtime_config),
 )
 
 

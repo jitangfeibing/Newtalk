@@ -145,7 +145,8 @@ h1 {
 
 .chat-panel,
 .console-panel,
-.identity-panel {
+.identity-panel,
+.memory-panel {
     overflow: hidden;
     border: 1px solid var(--ink);
     background: var(--panel);
@@ -155,6 +156,144 @@ h1 {
 .identity-panel {
     margin-bottom: 18px;
 }
+
+.memory-panel {
+    margin-bottom: 18px;
+}
+
+.memory-header {
+    border-bottom-color: var(--ink);
+}
+
+.memory-member-select,
+.memory-member-select span {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.memory-member-select span {
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.memory-member-select select,
+.memory-search select,
+.memory-search input,
+.profile-add-form input,
+.profile-row textarea,
+.memory-card input,
+.memory-card textarea {
+    border: 1px solid var(--line);
+    border-radius: 0;
+    padding: 10px;
+    color: var(--ink);
+    background: rgba(255, 255, 255, 0.46);
+}
+
+.memory-layout {
+    display: grid;
+    grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.2fr);
+}
+
+.profile-column,
+.memories-column {
+    min-width: 0;
+    padding: 24px;
+}
+
+.memories-column {
+    border-left: 1px solid var(--line);
+}
+
+.memory-section-heading,
+.memory-card-meta,
+.inline-actions,
+.memory-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.memory-section-heading h4 {
+    margin: 0;
+    font-family: Georgia, "STSong", serif;
+    font-size: 1.35rem;
+    font-weight: 400;
+}
+
+.memory-count,
+.memory-card-meta {
+    color: var(--muted);
+    font-size: 0.76rem;
+}
+
+.profile-add-form,
+.profile-row,
+.memory-card {
+    display: grid;
+    gap: 10px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid var(--line);
+}
+
+.profile-add-form label,
+.profile-row label {
+    color: var(--muted);
+    font-size: 0.78rem;
+}
+
+.profile-row code {
+    color: var(--signal);
+    overflow-wrap: anywhere;
+}
+
+.profile-row textarea,
+.memory-card textarea {
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.memory-search {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.memory-card-meta span {
+    color: var(--signal);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.memory-empty {
+    margin: 16px 0 0;
+    padding: 22px;
+    border: 1px dashed var(--line);
+    color: var(--muted);
+    line-height: 1.55;
+}
+
+.memory-pagination {
+    justify-content: center;
+    margin-top: 18px;
+}
+
+.memory-feedback {
+    min-height: 22px;
+    margin: 0;
+    padding: 0 24px 18px;
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+.memory-feedback[data-state="success"] { color: var(--online); }
+.memory-feedback[data-state="error"] { color: var(--signal); }
 
 .identity-panel > .panel-header code {
     color: var(--signal);
@@ -755,14 +894,32 @@ h1 {
     }
 
     .device-onboarding,
-    .member-layout {
+    .member-layout,
+    .memory-layout {
         grid-template-columns: 1fr;
     }
 
     .device-onboarding > form,
-    .member-directory {
+    .member-directory,
+    .memories-column {
         border-top: 1px solid var(--line);
         border-left: 0;
+    }
+
+    .memory-header,
+    .memory-section-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .memory-member-select,
+    .memory-member-select select,
+    .memory-search {
+        width: 100%;
+    }
+
+    .memory-search {
+        grid-template-columns: 1fr;
     }
 
     .recovery-notice,

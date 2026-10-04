@@ -6,6 +6,7 @@ import httpx
 from newtalk.identity import IdentityService, InMemoryIdentityStore
 from newtalk.profile import (
     MemosProfileProvider,
+    ProfileCacheCoordinator,
     ProfileField,
     ProfileScope,
     ProfileSnapshot,
@@ -285,6 +286,176 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
     }
 
 
+def test_memos_provider_lists_and_mutates_only_owned_memories() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append((request.url.path, body))
+        if request.url.path.endswith("/get/memory"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "memory_detail_list": [
+                            {
+                                "id": "fact-1",
+                                "memory_key": "工作",
+                                "memory_value": "正在开发 Newtalk",
+                                "create_time": "2026-10-01T12:00:00Z",
+                                "update_time": "2026-10-04T12:00:00Z",
+                            }
+                        ],
+                        "preference_detail_list": [],
+                        "event_detail_list": [],
+                        "current": 1,
+                        "size": 50,
+                        "total": 1,
+                        "pages": 1,
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"code": 0, "message": "ok", "data": {"success": True}},
+        )
+
+    async def exercise():
+        client = httpx.AsyncClient(
+            base_url="https://memos.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        provider = MemosProfileProvider(
+            base_url="https://memos.test/v1",
+            api_key="secret",
+            profile_template_id="template-1",
+            timeout_seconds=1,
+            client=client,
+        )
+        scope = ProfileScope("02:00:00:00:00:01", "member-1")
+        page = await provider.list_memories(
+            scope,
+            page=1,
+            size=20,
+            kinds=("fact",),
+        )
+        await provider.update_memory(
+            scope,
+            memory_id="fact-1",
+            title="当前项目",
+            content="Newtalk P7",
+        )
+        await provider.delete_memory(scope, memory_id="fact-1")
+        await client.aclose()
+        return page
+
+    page = asyncio.run(exercise())
+
+    assert page.items[0].content == "正在开发 Newtalk"
+    assert page.total == 1
+    assert [path for path, _ in calls] == [
+        "/v1/get/memory",
+        "/v1/get/memory",
+        "/v1/update/memory",
+        "/v1/get/memory",
+        "/v1/delete/memory",
+    ]
+    assert calls[2][1] == {
+        "memory_id": "fact-1",
+        "title": "当前项目",
+        "content": "Newtalk P7",
+    }
+    assert calls[4][1] == {"memory_ids": ["fact-1"]}
+
+
+def test_memos_provider_updates_profile_and_deletes_member_data() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append((request.url.path, body))
+        if request.url.path.endswith("/get/memory"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "profile_detail_list": [
+                            {
+                                "profile_template_id": "template-1",
+                                "status": "activated",
+                                "properties": {
+                                    "偏好": {
+                                        "饮料": {
+                                            "value": "咖啡",
+                                            "algorithm_updatable": False,
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"code": 0, "message": "ok", "data": {"success": True}},
+        )
+
+    async def exercise() -> ProfileSnapshot:
+        client = httpx.AsyncClient(
+            base_url="https://memos.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        provider = MemosProfileProvider(
+            base_url="https://memos.test/v1",
+            api_key="secret",
+            profile_template_id="template-1",
+            timeout_seconds=1,
+            client=client,
+        )
+        scope = ProfileScope("02:00:00:00:00:01", "member-1")
+        snapshot = await provider.update_profile(
+            scope,
+            path="偏好.饮料",
+            value="咖啡",
+            locked=True,
+            remove=False,
+        )
+        await provider.delete_all_memories(scope)
+        await provider.delete_profile(scope)
+        await client.aclose()
+        return snapshot
+
+    snapshot = asyncio.run(exercise())
+
+    assert snapshot.fields == (ProfileField("偏好.饮料", "咖啡", False),)
+    assert calls[0] == (
+        "/v1/edit/profile",
+        {
+            "user_id": calls[0][1]["user_id"],
+            "profile_template_id": "template-1",
+            "metadata": {
+                "偏好": {
+                    "饮料": {"value": "咖啡", "algorithm_updatable": False}
+                }
+            },
+        },
+    )
+    assert calls[2][0] == "/v1/delete/memory"
+    assert calls[2][1] == {"user_id": calls[0][1]["user_id"]}
+    assert calls[3] == (
+        "/v1/delete/profile",
+        {
+            "user_id": calls[0][1]["user_id"],
+            "profile_template_id": "template-1",
+        },
+    )
+
+
 class BlockingProfileProvider:
     enabled = True
 
@@ -332,5 +503,31 @@ def test_session_profile_prefetch_is_non_blocking_and_scoped_by_identity() -> No
 
         await cache.close()
         await identity_service.close()
+
+    asyncio.run(exercise())
+
+
+def test_profile_cache_coordinator_updates_active_session_snapshot() -> None:
+    async def exercise() -> None:
+        identity_service = IdentityService(InMemoryIdentityStore())
+        provider = BlockingProfileProvider()
+        cache = SessionProfileCache(
+            device_id="02:00:00:00:00:01",
+            identity_service=identity_service,
+            provider=provider,
+        )
+        coordinator = ProfileCacheCoordinator()
+        coordinator.register(cache)
+        updated = ProfileSnapshot(
+            "member-1",
+            "template-1",
+            (ProfileField("偏好.饮料", "咖啡", False),),
+        )
+
+        coordinator.update("02:00:00:00:00:01", updated)
+        assert cache.snapshot_for("member-1") == updated
+        coordinator.remove("02:00:00:00:00:01", "member-1")
+        assert cache.snapshot_for("member-1") is None
+        await cache.close()
 
     asyncio.run(exercise())

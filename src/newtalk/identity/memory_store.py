@@ -167,7 +167,11 @@ class InMemoryIdentityStore:
     ) -> Identity | None:
         async with self._lock:
             identity = self._identities.get(identity_id)
-            if identity is None or identity.device_id != device_id:
+            if (
+                identity is None
+                or identity.device_id != device_id
+                or identity.status is not IdentityStatus.ACTIVE
+            ):
                 return None
             updated = replace(identity, **changes, updated_at=datetime.now(UTC))
             self._identities[identity_id] = updated
@@ -180,3 +184,22 @@ class InMemoryIdentityStore:
                 return False
             del self._identities[identity_id]
             return True
+
+    async def mark_identity_deletion_pending(
+        self, *, device_id: str, identity_id: str
+    ) -> Identity | None:
+        async with self._lock:
+            identity = self._identities.get(identity_id)
+            if (
+                identity is None
+                or identity.device_id != device_id
+                or identity.status is not IdentityStatus.ACTIVE
+            ):
+                return None
+            updated = replace(
+                identity,
+                status=IdentityStatus.DELETION_PENDING,
+                updated_at=datetime.now(UTC),
+            )
+            self._identities[identity_id] = updated
+            return updated
