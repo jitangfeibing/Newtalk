@@ -1,6 +1,6 @@
 # Newtalk Codex 交接说明
 
-更新时间：2026-09-07
+更新时间：2026-10-04
 
 本文面向接手 Newtalk 后续开发的 Codex。开始工作前必须先阅读本文，并结合当前工作区执行 `git status`，不得只根据 README 或规划文档判断功能是否完成。
 
@@ -46,11 +46,20 @@ PR：https://github.com/jitangfeibing/Newtalk/pull/11
 合并提交：f5c1247 Merge pull request #11 ... P7.3
 ```
 
-P7.4 当前开发状态：
+P7.4 交付记录：
 
 ```text
-分支：codex/p7-4-profile-snapshots
-状态：代码、协议文档和自动测试已完成；真实 MemOS 验收尚未执行，PR、CI 和合并状态以 GitHub 为准
+提交：e5ff324 feat: complete P7.4 profile snapshots
+PR：https://github.com/jitangfeibing/Newtalk/pull/13
+合并提交：6fdeb8d Merge pull request #13 ... P7.4
+状态：代码和自动测试已合并；真实 MemOS 验收尚未执行
+```
+
+P7.5 当前开发状态：
+
+```text
+分支：codex/p7-5-memory-tools
+状态：代码、文档、自动测试和本机 PostgreSQL 集成验证完成；提交、PR、CI 与合并尚待本轮完成
 ```
 
 从远端 `main` 阅读本文时，应先用下列命令核对最新状态：
@@ -61,7 +70,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2、P7.3 已通过 PR/CI 合并，P7.4 位于独立开发分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.4 已通过 PR/CI 合并，P7.5 位于独立开发分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
@@ -95,7 +104,7 @@ gh pr list --state all --limit 20
 - 已完成真实 CAM++ CPU 加载、浏览器三段录入和 PostgreSQL 512 维模板写入验证。
 - `deterministic` 后端仅供自动测试和 CI，不能作为产品声纹识别结果。
 
-## 4. P7.3-P7.4 当前实现
+## 4. P7.3-P7.5 当前实现
 
 ### P7.3 说话人 Turn
 
@@ -152,7 +161,7 @@ Browser getUserMedia
 
 ### P7.4 Profile Snapshot
 
-P7.4 当前分支已经实现：
+P7.4 已合并实现：
 
 - `newtalk.profile.ProfileProvider` 最小契约，以及默认关闭和 MemOS 两种实现。
 - MemOS `/get/memory` 只请求 Profile；缺少配置模板时调用 `/bind/profile_template` 后重新读取。
@@ -169,6 +178,28 @@ P7.4 当前分支已经实现：
 - `src/newtalk/profile/memos.py`：官方 HTTP API 的异步绑定与读取。
 - `src/newtalk/profile/session.py`：连接内后台任务和 Identity Snapshot 缓存。
 - `tests/test_profile.py`：API 请求、绑定流程、字段解析和非阻塞缓存测试。
+
+### P7.5 Memory Tool 与后台写入
+
+P7.5 当前分支已经实现：
+
+- `ChatModel` 增加一次 `ModelToolCall` 和 Tool Result 的最小契约，OpenAI-compatible 流能聚合分片参数。
+- 只有 Member 且 Memory 开启时提供 `memory_search`，每个 Turn 最多调用一次；Guest 完全看不到该 Tool。
+- 查询的 `device_id + identity_id` 固定来自 Turn，LLM 只能提供查询文本。
+- MemOS Search 失败会作为受控 Tool Result 返回第二轮模型，不中断普通聊天；中间 Tool 事件不进入 TTS。
+- 只有成功提交 Dialogue 的 Member Turn 才进入 PostgreSQL `memory_jobs`，`turn_id` 在本地唯一。
+- 后台 Worker 使用 `FOR UPDATE SKIP LOCKED`、处理租约和有限重试调用 MemOS Add Message 异步模式。
+- 新增迁移 `20261004_03_memory_jobs.py`；应用生命周期启动和关闭 Worker。
+
+主要新增入口：
+
+- `src/newtalk/memory/models.py`：规范化长期记忆与写入回执。
+- `src/newtalk/memory/provider.py`：当前实际需要的 Memory 契约与关闭实现。
+- `src/newtalk/memory/jobs.py`：PostgreSQL Outbox、Worker、租约和重试。
+- `src/newtalk/chat/service.py`：Tool 注册、单次调用上限、Scope 绑定和第二轮 LLM。
+- `src/newtalk/chat/openai_compatible.py`：Tool Call 分片解析和消息序列化。
+- `src/newtalk/profile/memos.py`：MemOS Search Memory 与 Add Message。
+- `tests/test_memory.py`、`tests/integration/test_postgres_memory_jobs.py`：Memory 行为和真实数据库验证。
 
 ## 5. 验证与持续校准
 
@@ -208,7 +239,7 @@ P7.3 的功能交付以自动测试、P7.2 真实 CAM++ 录入验证、协议检
 
 不要为了让单次测试通过而盲目降低阈值。阈值必须同时观察同人和异人样本。
 
-P7.4 自动测试基线是主项目 121 项中 118 项通过、3 项显式 live/环境跳过。真实 MemOS 验收尚未完成，接手时必须使用用户本地 `.env`，不能让用户把 Key 发到聊天或写入仓库：
+P7.5 自动测试基线是主项目 137 项中 135 项通过、2 项付费 Provider live 测试跳过；声纹服务在本机 PostgreSQL 下 4 项全部通过。真实 MemOS 验收尚未完成，接手时必须使用用户本地 `.env`，不能让用户把 Key 发到聊天或写入仓库：
 
 ```dotenv
 NEWTALK_MEMORY_BACKEND=memos
@@ -217,21 +248,26 @@ NEWTALK_MEMOS_API_KEY=本地密钥
 NEWTALK_MEMOS_PROFILE_TEMPLATE_ID=控制台模板ID
 NEWTALK_MEMOS_TIMEOUT_SECONDS=5
 NEWTALK_PROFILE_MAX_CHARS=2000
+NEWTALK_MEMORY_SEARCH_LIMIT=5
+NEWTALK_MEMORY_SEARCH_RELATIVITY=0.55
+NEWTALK_MEMORY_RESULT_MAX_CHARS=4000
+NEWTALK_MEMORY_JOB_POLL_SECONDS=1
+NEWTALK_MEMORY_JOB_MAX_ATTEMPTS=3
 ```
 
-验收时创建或选择至少两个 Member，连接 WebSocket 后观察 `profile_prefetch_completed`；分别用两个身份发消息并检查 `turn_started.profile`。还应临时使用错误配置或停止外部服务，确认 `ready=false` 时 Turn 仍正常完成。
+验收时创建或选择至少两个 Member，连接 WebSocket 后观察 `profile_prefetch_completed`；分别用两个身份发消息并检查 `turn_started.profile`。再测试一条需要历史信息的问题，确认模型调用 `memory_search`；完成 Member Turn 后检查 `memory_jobs` 和 MemOS 新增内容。还应临时使用错误配置或停止外部服务，确认 Profile 未就绪和查询失败时 Turn 仍正常完成。
 
 ## 6. 本机环境与启动方式
 
-当前本机状态（2026-09-07 核对）：
+当前本机状态（2026-10-04 核对）：
 
 ```text
 Python 虚拟环境：D:\Desktop\Newtalk\.venv
 PostgreSQL 5432：正在监听
-Alembic：20260829_02 (head)
+Alembic：20261004_03 (head)
 Newtalk 8006：未运行
 VoicePrint 8010：未运行
-根 .env：已配置 openai-compatible LLM、豆包 ASR/TTS 和 VoicePrint URL；尚未配置 P7.4 MemOS
+根 .env：已配置 openai-compatible LLM、豆包 ASR/TTS 和 VoicePrint URL；尚未配置 MemOS
 ```
 
 不得把 `.env`、API Key、Token 或数据库生产密码提交到 Git。
@@ -295,11 +331,11 @@ Invoke-RestMethod http://127.0.0.1:8010/health
 
 ## 7. 测试基线
 
-2026-09-07 重新执行的结果：
+2026-10-04 重新执行的结果：
 
 ```text
-主项目：118 passed, 3 skipped
-VoicePrint：3 passed, 1 skipped
+主项目：135 passed, 2 skipped（使用真实本机 PostgreSQL）
+VoicePrint：4 passed（使用真实本机 PostgreSQL）
 pip check：No broken requirements found
 ```
 
@@ -321,11 +357,12 @@ git diff --check
 - VoicePrint CAM++ 推理有进程内锁，单实例并发推理会串行；主聊天通过有限等待降级 Guest，但仍需测并发容量。
 - 真实扬声器环境只有浏览器回声消除，没有服务端 AEC；播放 TTS 时误触发 VAD/声纹仍需人工测试。
 - 每个 utterance 当前新建豆包 ASR Provider WebSocket，尚未复用连接。
-- `ConnectionRuntime` 仍承担较多编排职责；P7.4 只向其中加入 Profile Cache 只读和生命周期调用，MemOS HTTP、解析与任务集合已留在 `newtalk.profile`。
-- Profile Snapshot 已进入 Member Turn；`memory_search`、后台 Memory Job、Memory Center 和 Vision 尚未进入运行链。
+- `ConnectionRuntime` 仍承担较多编排职责；P7.5 只在 Dialogue 成功提交点调用 MemoryWriter 入队，MemOS HTTP、解析、任务领取和重试留在 `newtalk.memory`/`newtalk.profile.memos`。
+- Profile Snapshot、`memory_search` 和后台 Memory Job 已进入 Member 运行链；Memory Center 和 Vision 尚未实现。
 - Profile 远端失败在同一 Session 内不会自动重试，重新连接后才会再次预取。
-- P7.4 尚未完成真实 MemOS 账号和 Template 验收，不能仅凭 Mock 测试宣称外部集成完成。
-- 接手时仍应检查 P7.2/P7.3 的 GitHub PR 和 `origin/main`，不要只凭本地测试判断远端状态。
+- P7.4/P7.5 尚未完成真实 MemOS 账号、Template、Search 和 Add Message 验收，不能仅凭 Mock 测试宣称外部集成完成。
+- Outbox 本地按 `turn_id` 去重并提供至少一次投递；MemOS 端是否幂等尚未确认，崩溃发生在远端接收后、本地完成标记前时可能重复写入。
+- 接手时仍应检查最新 GitHub PR 和 `origin/main`，不要只凭本地测试判断远端状态。
 
 ## 9. P7 后续顺序
 
@@ -333,7 +370,7 @@ git diff --check
 
 ```text
 P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级（代码和自动测试完成，待真实验收）
-P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务
+P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务（代码和自动测试完成，待真实验收）
 P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除
 P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
 ```
@@ -357,19 +394,20 @@ MemOS    -> 主 LLM 按需调用 memory_search 查询长期情景记忆
 - Memory Provider 可关闭；关闭后 Dialogue、ASR、LLM 和 TTS 必须继续工作。
 - 第一版使用 MemOS 已有 Add/Search/Profile 能力，不自建 Embedding、Rerank、知识图谱或通用 Agent Framework。
 
-详细设计见 `docs/P7_DESIGN.md`。P7.4 代码已按官方 HTTP 文档实现，仍需真实账号确认权限、Profile Template 和实际字段数据。
+详细设计见 `docs/P7_DESIGN.md`。P7.4/P7.5 代码已按官方 HTTP 文档实现，仍需真实账号确认权限、Profile Template、Search/Add Message 返回和远端幂等。
 
-### P7.4 真实验收与 P7.5 前置
+### MemOS 真实验收与 P7.6 前置
 
-继续 P7.5 前先从用户本地配置和真实验收得到：
+进入 P7.6 的真实 Memory Center 联调前，需要从用户本地配置和真实验收得到：
 
 - MemOS API Base URL 和本地 `.env` 中的 API Key；密钥不能写入本文、测试夹具或 Git。
 - MemOS 控制台创建的 `profile_template_id`。
 - 按 `docs/P7_DESIGN.md` 的第一版字段树在 MemOS 控制台创建 Profile Template，并记录其 ID；首版字段允许算法更新，P7.6 再验证人工锁定。
 - `bind/profile_template`、Profile 查询接口的真实成功/失败日志；日志不得包含 API Key。
+- `search/memory`、`add/message` 的真实返回结构、任务状态和重复 `turn_id` 行为。
 - 已存在 Identity 使用 Session 后台预取时懒绑定；连接后新增 Identity 在第一次 Member Turn 选择时异步调度，本轮不等待。
 
-P7.4 的最小完成边界：
+P7.4/P7.5 的验收边界：
 
 - Memory 默认可关闭；关闭时不调用 MemOS，现有文本和语音聊天测试继续通过。
 - 开启后按 `device_id + identity_id` 建立服务端 Scope，但映射到 MemOS 的 `user_id` 必须由后端生成，不能接受浏览器指定。
@@ -377,14 +415,16 @@ P7.4 的最小完成边界：
 - 每个 Identity 的 Profile Snapshot 独立缓存；成员切换测试必须证明 A 的画像不会注入 B 的 Turn。
 - Guest 不绑定 Profile Template、不加载 Profile，也不获得任何长期 Memory 能力。
 - Profile 尚未就绪、MemOS 超时、鉴权失败或服务不可用时，本轮聊天降级为无 Profile，不得阻塞或终止 Turn。
-- P7.4 只实现 Profile 绑定、读取与缓存，不提前实现 P7.5 的 `memory_search`、Tool Calling 或后台记忆写入。
+- 只有 Member 获得 `memory_search`，Scope 必须来自 Turn；普通聊天不强制查询 MemOS。
+- 只有成功完成的 Member Turn 进入 `memory_jobs`；Guest、取消和失败 Turn 不写入。
+- 查询或写入失败不得破坏已完成的聊天。
 
 ## 10. 文档阅读顺序
 
 1. `docs/CODEX_HANDOFF.md`：当前交接状态和执行顺序。
 2. `docs/PROGRESS.md`：已经实现并验证过的历史。
-3. `docs/architecture.md`：当前 P7.4 运行时结构。
-4. `docs/protocol.md`：HTTP、VoicePrint、Profile 和 WebSocket `0.7` 协议。
+3. `docs/architecture.md`：当前 P7.5 运行时结构。
+4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.7` 协议。
 5. `docs/P7_DESIGN.md`：P7 已确认产品和 Memory 设计基线。
 6. `PROJECT_PLAN.md`：总体路线，不代表所有内容已经实现。
 7. `docs/DEVELOPMENT_WORKFLOW.md`：Git、PR 和 CI 协作流程。

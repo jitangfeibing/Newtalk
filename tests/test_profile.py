@@ -147,6 +147,144 @@ def test_memos_provider_binds_missing_profile_then_loads_it() -> None:
     assert calls[1][1]["bind_list"][0]["profile_template_id"] == "template-1"
 
 
+def test_memos_provider_searches_scoped_memory_and_sorts_results() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "memory_detail_list": [
+                        {
+                            "id": "fact-1",
+                            "memory_key": "旧事实",
+                            "memory_value": "较弱结果",
+                            "relativity": 0.61,
+                        }
+                    ],
+                    "preference_detail_list": [
+                        {
+                            "id": "preference-1",
+                            "preference_type": "explicit_preference",
+                            "preference": "更相关结果",
+                            "relativity": 0.93,
+                        }
+                    ],
+                    "event_detail_list": [],
+                },
+            },
+        )
+
+    async def exercise():
+        client = httpx.AsyncClient(
+            base_url="https://memos.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        provider = MemosProfileProvider(
+            base_url="https://memos.test/v1",
+            api_key="secret",
+            profile_template_id="template-1",
+            timeout_seconds=1,
+            client=client,
+        )
+        result = await provider.search(
+            ProfileScope("02:00:00:00:00:01", "member-1"),
+            query="过去的偏好",
+            conversation_id="session-1",
+            limit=2,
+            relativity=0.55,
+        )
+        await client.aclose()
+        return result
+
+    result = asyncio.run(exercise())
+
+    assert [item.content for item in result.items] == ["更相关结果", "较弱结果"]
+    body = json.loads(requests[0].content)
+    assert requests[0].url.path == "/v1/search/memory"
+    assert body["user_id"].startswith("newtalk_020000000001_")
+    assert body["include_memory_view"] == [
+        "detail_factual",
+        "preference",
+        "event",
+    ]
+    assert body["memory_limit_number"] == 2
+    assert body["relativity"] == 0.55
+
+
+def test_memos_provider_adds_only_completed_turn_content() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "success": True,
+                    "task_id": "task-1",
+                    "status": "running",
+                },
+            },
+        )
+
+    async def exercise():
+        client = httpx.AsyncClient(
+            base_url="https://memos.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        provider = MemosProfileProvider(
+            base_url="https://memos.test/v1",
+            api_key="secret",
+            profile_template_id="template-1",
+            timeout_seconds=1,
+            client=client,
+        )
+        receipt = await provider.add_completed_turn(
+            ProfileScope("02:00:00:00:00:01", "member-1"),
+            conversation_id="session-1",
+            turn_id="turn-1",
+            speaker_name="小明",
+            user_text="我准备换工作",
+            assistant_text="我会记住。",
+        )
+        await client.aclose()
+        return receipt
+
+    receipt = asyncio.run(exercise())
+
+    assert receipt.provider_task_id == "task-1"
+    body = json.loads(requests[0].content)
+    assert requests[0].url.path == "/v1/add/message"
+    assert body["async_mode"] is True
+    assert body["allow_memory_view"] == [
+        "detail_factual",
+        "preference",
+        "profile",
+        "event",
+    ]
+    assert body["messages"] == [
+        {
+            "role": "user",
+            "role_id": "member-1",
+            "role_name": "小明",
+            "content": "我准备换工作",
+        },
+        {"role": "assistant", "content": "我会记住。"},
+    ]
+    assert body["info"] == {
+        "device_id": "02:00:00:00:00:01",
+        "identity_id": "member-1",
+        "turn_id": "turn-1",
+    }
+
+
 class BlockingProfileProvider:
     enabled = True
 

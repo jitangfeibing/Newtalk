@@ -2,6 +2,7 @@ from typing import Any
 
 import httpx
 
+from newtalk.memory.models import MemoryItem, MemorySearchResult, MemoryWriteReceipt
 from newtalk.profile.models import ProfileScope, ProfileSnapshot, parse_profile_fields
 from newtalk.profile.provider import (
     ProfileProviderError,
@@ -99,6 +100,85 @@ class MemosProfileProvider:
         if not isinstance(data, dict) or data.get("success") is not True:
             raise ProfileProviderError("MemOS did not confirm Profile binding")
 
+    async def search(
+        self,
+        scope: ProfileScope,
+        *,
+        query: str,
+        conversation_id: str,
+        limit: int,
+        relativity: float,
+    ) -> MemorySearchResult:
+        payload = await self._post(
+            "/search/memory",
+            {
+                "user_id": scope.memos_user_id,
+                "conversation_id": conversation_id,
+                "query": query,
+                "include_memory_view": [
+                    "detail_factual",
+                    "preference",
+                    "event",
+                ],
+                "memory_limit_number": limit,
+                "relativity": relativity,
+            },
+        )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ProfileProviderError("MemOS search/memory returned invalid data")
+        items = _parse_search_items(data)
+        items.sort(key=lambda item: item.relativity, reverse=True)
+        return MemorySearchResult(tuple(items[:limit]))
+
+    async def add_completed_turn(
+        self,
+        scope: ProfileScope,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        speaker_name: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> MemoryWriteReceipt:
+        payload = await self._post(
+            "/add/message",
+            {
+                "user_id": scope.memos_user_id,
+                "conversation_id": conversation_id,
+                "messages": [
+                    {
+                        "role": "user",
+                        "role_id": scope.identity_id,
+                        "role_name": speaker_name,
+                        "content": user_text,
+                    },
+                    {"role": "assistant", "content": assistant_text},
+                ],
+                "allow_memory_view": [
+                    "detail_factual",
+                    "preference",
+                    "profile",
+                    "event",
+                ],
+                "info": {
+                    "device_id": scope.device_id,
+                    "identity_id": scope.identity_id,
+                    "turn_id": turn_id,
+                },
+                "async_mode": True,
+            },
+        )
+        data = payload.get("data")
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise ProfileProviderError("MemOS did not accept completed Turn")
+        task_id = data.get("task_id")
+        status = data.get("status", "accepted")
+        return MemoryWriteReceipt(
+            provider_task_id=task_id if isinstance(task_id, str) else None,
+            status=status if isinstance(status, str) else "accepted",
+        )
+
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         try:
             response = await self._client.post(path, json=body, headers=self._headers)
@@ -126,3 +206,43 @@ class MemosProfileProvider:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _parse_search_items(data: dict[str, Any]) -> list[MemoryItem]:
+    items: list[MemoryItem] = []
+    definitions = (
+        ("memory_detail_list", "fact", "memory_key", "memory_value"),
+        ("preference_detail_list", "preference", "preference_type", "preference"),
+        ("event_detail_list", "event", "event_key", "event_value"),
+    )
+    for list_name, kind, title_name, content_name in definitions:
+        raw_items = data.get(list_name, [])
+        if not isinstance(raw_items, list):
+            raise ProfileProviderError(f"MemOS {list_name} must be a list")
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            memory_id = raw.get("id")
+            content = raw.get(content_name)
+            if not isinstance(memory_id, str) or not isinstance(content, str):
+                continue
+            content = content.strip()
+            if not content:
+                continue
+            title = raw.get(title_name)
+            raw_relativity = raw.get("relativity", 0)
+            relativity = (
+                float(raw_relativity)
+                if isinstance(raw_relativity, (int, float))
+                else 0.0
+            )
+            items.append(
+                MemoryItem(
+                    memory_id=memory_id,
+                    kind=kind,
+                    title=title.strip() if isinstance(title, str) else "",
+                    content=content,
+                    relativity=relativity,
+                )
+            )
+    return items

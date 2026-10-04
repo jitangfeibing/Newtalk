@@ -270,6 +270,21 @@ class FailingProfileProvider:
         return None
 
 
+class RecordingMemoryWriter:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def start(self) -> None:
+        return None
+
+    async def enqueue_completed_turn(self, turn, assistant_text: str) -> bool:
+        self.calls.append((turn, assistant_text))
+        return True
+
+    async def close(self) -> None:
+        return None
+
+
 def test_completed_turns_are_sent_as_dialogue_context() -> None:
     model = RecordingModel()
     context_client = make_client(chat_service=ChatService(model))
@@ -458,6 +473,41 @@ def test_profile_failure_does_not_block_member_chat() -> None:
     }
     assert completed["type"] == "turn_completed"
     assert all(message.role != "system" for message in model.requests[0])
+
+
+def test_only_completed_member_turn_is_enqueued_for_long_term_memory() -> None:
+    writer = RecordingMemoryWriter()
+    memory_client = make_client(memory_writer=writer)
+    member = memory_client.post(
+        "/api/members", json={"display_name": "小明", "relationship": "儿子"}
+    ).json()
+
+    with memory_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "member-memory",
+                "text": "记住这件事",
+                "identity_id": member["identity_id"],
+            }
+        )
+        receive_turn(websocket)
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "guest-memory",
+                "text": "访客不写入",
+                "identity_id": None,
+            }
+        )
+        receive_turn(websocket)
+
+    assert len(writer.calls) == 1
+    turn, assistant_text = writer.calls[0]
+    assert turn.speaker_identity_id == member["identity_id"]
+    assert turn.user_text == "记住这件事"
+    assert assistant_text == "我收到了：记住这件事"
 
 
 def test_unknown_text_member_is_rejected_without_starting_turn() -> None:

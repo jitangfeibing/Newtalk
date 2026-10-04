@@ -57,6 +57,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         ),
         profile_cache=profile_cache,
         profile_max_chars=websocket.app.state.config.profile_max_chars,
+        memory_writer=websocket.app.state.memory_writer,
     )
     await runtime.start()
     await runtime.send_json(

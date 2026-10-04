@@ -1,4 +1,4 @@
-# P7.4 HTTP、VoicePrint、Profile 与 WebSocket 协议
+# P7.5 HTTP、VoicePrint、Memory 与 WebSocket 协议
 
 WebSocket Endpoint 为 `GET /ws`，协议版本 `0.7`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
@@ -198,3 +198,42 @@ Guest Turn
 ```
 
 MemOS API Key 只存在于服务端环境变量。浏览器协议没有 `memos_user_id`、模板 ID 或任意 Memory Scope 参数。
+
+## P7.5 Memory Tool 调用链
+
+P7.5 没有新增 WebSocket 客户端消息，协议版本仍为 `0.7`。Tool Call 是 ChatModel 与 ChatService 之间的内部事件，不发送浏览器，也不进入 TTS。
+
+```text
+Member Turn + Memory enabled
+-> 主 LLM 收到 memory_search Tool 定义
+   |-> 不调用 -> 直接流式文本
+   `-> 调用一次 -> ChatService 校验 JSON query
+                 -> 使用 Turn.device_id + Turn.speaker_identity_id
+                 -> POST /search/memory
+                 -> assistant tool_call + tool result
+                 -> 第二轮 LLM（不再提供 Tool）
+                 -> 最终流式文本
+
+Guest / Memory disabled
+-> 不向主 LLM注册 memory_search
+```
+
+`POST /search/memory` 请求由后端生成 `user_id` 和 `conversation_id`，查询 `detail_factual`、`preference` 与 `event`。返回内容按相关度排序并受条数和字符预算限制。鉴权、超时、格式错误等异常会变成 `unavailable` Tool Result，当前 Turn 仍可继续生成回答。
+
+## P7.5 长期记忆写入链
+
+```text
+当前活动 Member Turn 完成
+-> Dialogue commit
+-> INSERT memory_jobs（turn_id 唯一）
+-> turn_completed / 当前回复结束
+
+后台 Worker
+-> FOR UPDATE SKIP LOCKED 领取到期任务
+-> 设置 processing 租约并增加 attempts
+-> POST /add/message（user + final assistant，async_mode=true）
+   |-> accepted -> completed + provider_task_id
+   `-> failed -> 延迟重试，超过上限标记 failed
+```
+
+只写入成功完成的 Member 用户消息和最终助手回答。Guest、被打断 Turn、生成失败 Turn、旧 Turn 迟到结果、Tool Result 和检索返回的旧记忆均不写入。该 Outbox 保证本地去重和至少一次投递；真实 MemOS 是否按 `info.turn_id` 提供远端幂等，需要在真实账号验收中确认。

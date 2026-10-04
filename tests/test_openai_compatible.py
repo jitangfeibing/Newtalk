@@ -2,7 +2,14 @@ import asyncio
 from contextlib import aclosing
 from types import SimpleNamespace
 
-from newtalk.chat import ChatMessage, ChatService, OpenAICompatibleChatModel
+import pytest
+
+from newtalk.chat import (
+    ChatMessage,
+    ChatService,
+    ModelToolCall,
+    OpenAICompatibleChatModel,
+)
 
 
 class StubStream:
@@ -43,6 +50,24 @@ class StubClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class SequencedCompletions:
+    def __init__(self, streams: list[StubStream]) -> None:
+        self._streams = iter(streams)
+        self.requests: list[dict] = []
+
+    def stream(self, **request):
+        self.requests.append(request)
+        return next(self._streams)
+
+
+class SequencedClient:
+    def __init__(self, streams: list[StubStream]) -> None:
+        self.chat = SimpleNamespace(completions=SequencedCompletions(streams))
+
+    async def close(self) -> None:
+        return None
 
 
 def test_openai_compatible_model_uses_chat_service_and_closes_resources() -> None:
@@ -142,3 +167,123 @@ def test_openai_stream_is_closed_when_consumer_stops_early() -> None:
         return stream
 
     assert asyncio.run(exercise()).exited
+
+
+def test_openai_compatible_model_serializes_streamed_tool_call_and_result() -> None:
+    def tool_chunk(*, call_id=None, name=None, arguments=None):
+        function = SimpleNamespace(name=name, arguments=arguments)
+        raw_call = SimpleNamespace(index=0, id=call_id, function=function)
+        choice = SimpleNamespace(delta=SimpleNamespace(tool_calls=[raw_call]))
+        return SimpleNamespace(
+            type="chunk",
+            chunk=SimpleNamespace(choices=[choice]),
+        )
+
+    async def exercise():
+        first = StubStream(
+            [
+                tool_chunk(
+                    call_id="call-1",
+                    name="memory_search",
+                    arguments='{"query":"上次',
+                ),
+                tool_chunk(arguments='面试"}'),
+            ]
+        )
+        second = StubStream([SimpleNamespace(type="content.delta", delta="记得")])
+        client = SequencedClient([first, second])
+        model = OpenAICompatibleChatModel(
+            api_key="not-used-by-stub",
+            model="test-model",
+            client=client,
+        )
+        tools = (
+            {
+                "type": "function",
+                "function": {"name": "memory_search", "parameters": {}},
+            },
+        )
+
+        first_events = [
+            event
+            async for event in model.stream(
+                (ChatMessage("user", "回忆一下"),),
+                tools=tools,
+            )
+        ]
+        call = first_events[0]
+        assert isinstance(call, ModelToolCall)
+        second_events = [
+            event
+            async for event in model.stream(
+                (
+                    ChatMessage("user", "回忆一下"),
+                    ChatMessage("assistant", "", tool_calls=(call,)),
+                    ChatMessage("tool", '{"status":"ok"}', tool_call_id=call.call_id),
+                )
+            )
+        ]
+        return first_events, second_events, client
+
+    first_events, second_events, client = asyncio.run(exercise())
+
+    assert first_events == [
+        ModelToolCall("call-1", "memory_search", '{"query":"上次面试"}')
+    ]
+    assert second_events == ["记得"]
+    first_request, second_request = client.chat.completions.requests
+    assert first_request["tool_choice"] == "auto"
+    assert first_request["tools"][0]["function"]["name"] == "memory_search"
+    assert second_request["messages"][-2]["tool_calls"][0]["id"] == "call-1"
+    assert second_request["messages"][-1] == {
+        "role": "tool",
+        "content": '{"status":"ok"}',
+        "tool_call_id": "call-1",
+    }
+
+
+def test_openai_compatible_model_rejects_mixed_text_and_tool_call() -> None:
+    async def exercise() -> None:
+        raw_call = SimpleNamespace(
+            index=0,
+            id="call-1",
+            function=SimpleNamespace(name="memory_search", arguments="{}"),
+        )
+        stream = StubStream(
+            [
+                SimpleNamespace(type="content.delta", delta="半截回复"),
+                SimpleNamespace(
+                    type="chunk",
+                    chunk=SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(tool_calls=[raw_call])
+                            )
+                        ]
+                    ),
+                ),
+            ]
+        )
+        model = OpenAICompatibleChatModel(
+            api_key="not-used-by-stub",
+            model="test-model",
+            client=StubClient(stream),
+        )
+        with pytest.raises(ValueError, match="mixed text"):
+            _ = [
+                event
+                async for event in model.stream(
+                    (ChatMessage("user", "回忆一下"),),
+                    tools=(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "memory_search",
+                                "parameters": {},
+                            },
+                        },
+                    ),
+                )
+            ]
+
+    asyncio.run(exercise())

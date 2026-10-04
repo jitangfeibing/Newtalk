@@ -27,6 +27,7 @@ from newtalk.chat import (
     TurnCompleted,
 )
 from newtalk.identity import Identity, IdentityNotFoundError, IdentityService
+from newtalk.memory import MemoryWriter
 from newtalk.profile import SessionProfileCache
 from newtalk.voiceprint import (
     VoicePrintClient,
@@ -84,6 +85,7 @@ class ConnectionRuntime:
         voiceprint_join_timeout_seconds: float,
         profile_cache: SessionProfileCache,
         profile_max_chars: int,
+        memory_writer: MemoryWriter,
     ) -> None:
         self.websocket = websocket
         self.session_id = session_id
@@ -107,6 +109,7 @@ class ConnectionRuntime:
         self._voiceprint_join_timeout_seconds = voiceprint_join_timeout_seconds
         self._profile_cache = profile_cache
         self._profile_max_chars = profile_max_chars
+        self._memory_writer = memory_writer
         self._voice_joins: dict[str, _VoiceJoinState] = {}
         self._seen_event_ids: set[str] = set()
         self._outbound: asyncio.Queue[_OutboundFrame] = asyncio.Queue(maxsize=256)
@@ -482,14 +485,27 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
                     elif isinstance(output, TurnCompleted):
+                        committed = False
                         if self._active_turn_id == turn.turn_id:
                             dialogue.commit(turn, output.text)
+                            committed = True
                             logger.info(
                                 "dialogue_committed session_id=%s turn_id=%s completed_turns=%s",
                                 self.session_id,
                                 turn.turn_id,
                                 len(dialogue.exchanges),
                             )
+                        if committed and turn.speaker_identity_id is not None:
+                            try:
+                                await self._memory_writer.enqueue_completed_turn(
+                                    turn, output.text
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "memory_job_enqueue_failed session_id=%s turn_id=%s",
+                                    self.session_id,
+                                    turn.turn_id,
+                                )
                         await self.send_json(
                             {
                                 "type": "turn_completed",

@@ -2,7 +2,7 @@
 
 本文记录 P7 已经确认的产品和数据边界，以及需要通过真实环境确定的实现参数。
 
-当前状态为“总体设计基线已确认，P7.1-P7.4 已完成代码和自动测试，P7.4 待真实 MemOS 验收，下一阶段为 P7.5”。P1-P6 的聊天和语音行为保持不变。
+当前状态为“总体设计基线已确认，P7.1-P7.5 已完成代码和自动测试，MemOS 真实账号验收待完成，下一阶段为 P7.6”。P1-P6 的聊天和语音行为保持不变。
 
 Memory 的读取、写入、Provider 和前端管理方向已记录在本文中。所有内容仍是设计基线，不表示功能已经实现。
 
@@ -350,13 +350,15 @@ Member Turn 成功完成
 
 - Guest、被取消和未完成的 Turn 默认不写入长期记忆。
 - Job 必须携带 `device_id`、`speaker_identity_id`、`session_id` 和 `turn_id`。
-- `turn_id` 防止后台重试产生重复写入。
+- `turn_id` 唯一约束防止同一 Turn 在 Newtalk 本地重复入队；远端重试是否重复仍取决于 MemOS 幂等行为，真实验收前不能承诺严格一次写入。
 - 后台失败只记录日志并有限重试，不影响已完成的聊天。
 - 视觉观察和 Tool Result 默认不写入，除非后续为具体类型制定策略。
 - 不把检索结果再次原样保存，避免记忆自我复制。
 - 不把整个家庭 Dialogue 无区分地写给某一个成员。
 - 第一版使用 PostgreSQL `memory_jobs` 持久化任务表，不使用仅存在于进程内存中的队列。
 - Worker 领取 Pending Job，成功后标记 Completed；失败按有限次数重试，最终进入 Failed 供日志和管理页面查看。
+
+P7.5 已按上述边界实现。当前 Worker 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 和处理租约支持多 Worker 竞争及崩溃恢复；自动测试已覆盖查询降级、本地去重、重试和租约恢复。真实 MemOS Search/Add Message、Provider Task 状态与远端幂等仍待账号联调。
 
 Profile 字段由 MemOS Profile 实例保存，Newtalk 在 Session 中只保留 Snapshot。Memory Center 将字段映射为：
 
@@ -579,13 +581,13 @@ P7.6：Memory Center、Profile 锁定、记忆编辑删除和成员完整删除
 P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
 ```
 
-P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5-P7.6 再开放长期记忆读写，避免 Memory 在 Identity 尚未稳定时产生污染；P7.7 最后处理连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
+P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5 已开放受控的长期记忆读写；P7.6 再提供人工查看、纠正、锁定和完整删除；P7.7 最后处理连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
 
 ## 剩余主要风险
 
 - P7 运行时将包含 Newtalk 主服务、PostgreSQL、VoicePrint 独立服务和 MemOS 外部 API，开发启动与部署需要在后续 Docker/脚本中统一。
 - VoicePrint 模型推理是计算密集型任务，单实例并发、模型预热和 CPU/GPU 资源必须实测；超时只能降级 Guest，不能阻塞聊天。
-- 当前 `ChatModel` 只有文本增量，P7.5 需要增加 Tool Call/Tool Result 和第二次模型调用，同时保证中间事件不进入 TTS。
+- `ChatModel` 已支持一次 Tool Call/Tool Result 和第二次模型调用，并保证中间事件不进入 TTS；真实 DeepSeek/MemOS 组合仍需观察 Tool 选择质量和延迟。
 - MemOS 查询轮次会增加一次远程查询和第二次 LLM 调用，必须分别记录耗时并设置可降级超时。
 - 成员完整删除横跨 PostgreSQL、VoicePrint 和 MemOS，必须依赖持久化删除任务和重试，不能伪装成单数据库事务。
 - 主 LLM 是否调用 `memory_search` 和 MemOS 如何抽取记忆都具有概率性，必须通过真实对话样本、Memory Center 人工纠正和隔离测试控制风险。
