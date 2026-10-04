@@ -1,4 +1,5 @@
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from newtalk.chat.models import ChatMessage, Turn, format_user_message
@@ -42,6 +43,7 @@ class DialogueSession:
         speaker_identity_id: str | None = None,
         speaker_display_name: str = "Guest",
         speaker_relationship: str | None = None,
+        context_messages: Sequence[ChatMessage] = (),
     ) -> tuple[ChatMessage, ...]:
         current = ChatMessage(
             role="user",
@@ -62,7 +64,7 @@ class DialogueSession:
             selected.append(exchange)
             remaining_chars -= exchange_chars
 
-        messages: list[ChatMessage] = []
+        messages: list[ChatMessage] = list(context_messages)
         for exchange in reversed(selected):
             messages.extend(
                 (

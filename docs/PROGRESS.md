@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P7.3 ASR/VoicePrint 汇合和说话人 Turn |
-| 阶段状态 | 已完成：代码、协议文档和自动测试通过 |
-| 开发分支 | `codex/p7-3-speaker-turn` |
-| 项目版本 | `0.9.0` |
+| 当前阶段 | P7.4 Identity Profile Snapshot |
+| 阶段状态 | 代码、协议文档和自动测试通过；待真实 MemOS 验收 |
+| 开发分支 | `codex/p7-4-profile-snapshots` |
+| 项目版本 | `0.10.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 主项目 105 项通过、3 项 live/环境跳过；声纹服务 3 项通过、1 项 CAM++ live 跳过 |
+| 自动测试 | 主项目 118 项通过、3 项 live/环境跳过；声纹服务沿用 P7.3 验收结果 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
-| 最后更新 | 2026-08-29 |
+| 最后更新 | 2026-09-07 |
 
 ## P1：基础运行骨架
 
@@ -417,11 +417,31 @@ text_input
 - Family/Guest Dialogue 仍与当前 WebSocket 同生命周期，刷新恢复属于后续 Session 持久化阶段。
 - Profile 和长期 Memory 尚未接入，P7.3 只保证 Turn 的身份和短期上下文归属正确。
 
+## P7.4：按 Identity 隔离的 Profile Snapshot（待真实验收）
+
+### 已实现
+
+- 新增最小 `ProfileProvider` 契约、关闭实现和异步 `MemosProfileProvider`，没有提前扩展为完整 Memory Provider 世界。
+- MemOS 鉴权使用服务端 `Authorization: Token`；读取只请求 `profile` 类型。
+- 后端根据 `device_id + identity_id` 生成稳定的 MemOS `user_id`，不接受浏览器或 LLM 指定 Scope。
+- WebSocket 启动后异步预取当前家庭 Active Identity；缺少 Profile 时绑定配置的 Template 后重新读取。
+- `SessionProfileCache` 按 `identity_id` 保存不可变 Snapshot；连接建立后新增的成员在第一次选择时异步调度加载。
+- Member Turn 只把当前说话人已经就绪的 Profile 作为有独立字符预算的 `system` 消息注入模型。
+- Guest 不绑定、不加载、不注入 Profile；关闭 Memory、预取未完成和 Provider 失败均按无 Profile 继续聊天。
+- WebSocket 协议升级为 `0.7`，`hello` 暴露 Profile 是否启用，`turn_started` 暴露本 Turn 的 ready/field count。
+
+### 自动验证与当前边界
+
+- 主项目 121 项测试中 118 项通过、3 项显式 live/环境测试跳过。
+- 测试覆盖 MemOS Token、读取/绑定/再读取、Profile-only 请求、预取非阻塞、两成员不串、Guest 跳过、失败降级和 OpenAI-compatible system 消息顺序。
+- 本轮尚未使用真实 MemOS API Key 和 Profile Template 验收，因此外部账号权限、真实字段树和响应内容仍待浏览器/日志联调。
+- P7.4 不包含 `memory_search`、Tool Calling、长期记忆写入、Profile 自动更新或 Memory Center。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.3 已完成，下一阶段进入 P7.4：绑定 Profile Template、后台预取并按 `identity_id` 缓存 Profile Snapshot，同时保证关闭 Memory 或预取失败时聊天正常降级。同一 Session 的不同 Member 不能复用画像。
+P7.4 合并后进入 P7.5：扩展主 LLM 的最小 Tool Calling 契约，接入按需 `memory_search`，并增加不阻塞回复的长期记忆后台写入任务。P7.6 完成 Memory Center 后，P7.7 再实现页面刷新后的 Session/Dialogue 恢复；该能力已经确认纳入 P7，但不混入 P7.4。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -456,3 +476,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-08-29 | P7.1 | 增加 PostgreSQL/Alembic、Device Cookie/恢复码、成员隔离 CRUD 与管理页面 | 真实 PostgreSQL 下 95 项通过、2 项 live 跳过；正式 `/ready` 数据库检查、浏览器桌面交互与 390px 移动布局通过 |
 | 2026-08-29 | P7.2 | 增加独立 VoicePrint 服务、三段声纹录入/删除、家庭范围模板和 Web 录音界面 | 主项目 99 项通过、3 项 live/环境跳过；声纹服务测试通过；真实 CAM++ CPU 加载和 512 维家庭模板写入通过 |
 | 2026-09-07 | P7.3 | 增加 ASR/VoicePrint 有限汇合、Member/Guest Turn 映射和多人 Dialogue | 主项目 105 项通过、3 项跳过；声纹服务 3 项通过、1 项跳过；协议和前端语法检查通过 |
+| 2026-09-07 | P7.4 | 增加 MemOS Profile 懒绑定、连接后台预取、Identity Snapshot 隔离和无阻塞降级 | 主项目 118 项通过、3 项跳过；真实 MemOS 账号验收待完成 |

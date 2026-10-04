@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,7 @@ from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
 from newtalk.chat import ChatMessage, ChatService, FakeLLM, format_user_message
 from newtalk.config import AppConfig
 from newtalk.identity import IdentityService, InMemoryIdentityStore
+from newtalk.profile import ProfileField, ProfileScope, ProfileSnapshot
 from newtalk.voiceprint import VoicePrintIdentification
 
 
@@ -63,7 +65,8 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.6"
+        assert hello["protocol_version"] == "0.7"
+        assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]
         assert hello["audio"] == {
@@ -149,6 +152,11 @@ def test_text_input_streams_one_turn() -> None:
                 "display_name": "Guest",
                 "guest": True,
             },
+            "profile": {
+                "enabled": False,
+                "ready": False,
+                "fields": 0,
+            },
         }
         assert [event["delta"] for event in deltas] == ["我收到了：", "你好"]
         assert [event["sequence"] for event in deltas] == [1, 2]
@@ -225,6 +233,40 @@ class IdentifyingVoicePrintClient:
         return None
 
     async def aclose(self):
+        return None
+
+
+class RecordingProfileProvider:
+    enabled = True
+
+    def __init__(self, expected: int = 1) -> None:
+        self.expected = expected
+        self.values: dict[str, str] = {}
+        self.scopes: list[ProfileScope] = []
+        self.loaded = threading.Event()
+
+    async def prepare_profile(self, scope: ProfileScope) -> ProfileSnapshot:
+        self.scopes.append(scope)
+        if len(self.scopes) >= self.expected:
+            asyncio.get_running_loop().call_soon(self.loaded.set)
+        value = self.values.get(scope.identity_id, "未设置")
+        return ProfileSnapshot(
+            identity_id=scope.identity_id,
+            profile_template_id="template-1",
+            fields=(ProfileField("稳定资料.称呼", value),),
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+class FailingProfileProvider:
+    enabled = True
+
+    async def prepare_profile(self, scope: ProfileScope) -> ProfileSnapshot:
+        raise RuntimeError("MemOS unavailable")
+
+    async def aclose(self) -> None:
         return None
 
 
@@ -319,6 +361,103 @@ def test_two_members_share_family_dialogue_with_speaker_labels() -> None:
 
     assert model.requests[1][0].content == "[说话人：小明；家庭关系：儿子]\n我明天考试"
     assert model.requests[1][-1].content == "[说话人：妈妈；家庭关系：母亲]\n他刚才说什么"
+
+
+def test_member_profiles_are_prefetched_and_scoped_per_turn() -> None:
+    model = RecordingModel()
+    provider = RecordingProfileProvider(expected=2)
+    profile_client = make_client(
+        chat_service=ChatService(model),
+        profile_provider=provider,
+    )
+    first = profile_client.post(
+        "/api/members", json={"display_name": "小明", "relationship": "儿子"}
+    ).json()
+    second = profile_client.post(
+        "/api/members", json={"display_name": "妈妈", "relationship": "母亲"}
+    ).json()
+    provider.values = {
+        first["identity_id"]: "小明专属",
+        second["identity_id"]: "妈妈专属",
+    }
+
+    with profile_client.websocket_connect("/ws") as websocket:
+        hello = websocket.receive_json()
+        assert hello["profile"] == {"enabled": True}
+        assert provider.loaded.wait(timeout=1)
+
+        for event_id, member in (("profile-a", first), ("profile-b", second)):
+            websocket.send_json(
+                {
+                    "type": "text_input",
+                    "event_id": event_id,
+                    "text": "我的资料是什么",
+                    "identity_id": member["identity_id"],
+                }
+            )
+            started, _, completed, _, _ = receive_turn(websocket)
+            assert completed["type"] == "turn_completed"
+            assert started["profile"] == {
+                "enabled": True,
+                "ready": True,
+                "fields": 1,
+            }
+
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "profile-guest",
+                "text": "访客问题",
+                "identity_id": None,
+            }
+        )
+        guest_started, _, _, _, _ = receive_turn(websocket)
+        assert guest_started["profile"] == {
+            "enabled": True,
+            "ready": False,
+            "fields": 0,
+        }
+
+    first_profile = model.requests[0][0]
+    second_profile = model.requests[1][0]
+    assert first_profile.role == "system"
+    assert "小明专属" in first_profile.content
+    assert "妈妈专属" not in first_profile.content
+    assert second_profile.role == "system"
+    assert "妈妈专属" in second_profile.content
+    assert "小明专属" not in second_profile.content
+    assert all(message.role != "system" for message in model.requests[2])
+
+
+def test_profile_failure_does_not_block_member_chat() -> None:
+    model = RecordingModel()
+    profile_client = make_client(
+        chat_service=ChatService(model),
+        profile_provider=FailingProfileProvider(),
+    )
+    member = profile_client.post(
+        "/api/members", json={"display_name": "小明", "relationship": "儿子"}
+    ).json()
+
+    with profile_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "profile-failure",
+                "text": "远端失败也要聊天",
+                "identity_id": member["identity_id"],
+            }
+        )
+        started, _, completed, _, _ = receive_turn(websocket)
+
+    assert started["profile"] == {
+        "enabled": True,
+        "ready": False,
+        "fields": 0,
+    }
+    assert completed["type"] == "turn_completed"
+    assert all(message.role != "system" for message in model.requests[0])
 
 
 def test_unknown_text_member_is_rejected_without_starting_turn() -> None:

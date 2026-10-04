@@ -8,12 +8,12 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 文档口径：
 
-- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.3 运行时。
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.4 运行时。
 - `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
-- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.3 已完成。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.4 已完成代码和自动测试。
 - `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
 
-## 当前阶段：P7.3 已完成
+## 当前阶段：P7.4 待真实 MemOS 验收
 
 P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声纹服务：
 
@@ -40,6 +40,16 @@ P7.3 把声纹识别正式接入对话 Turn：
 - Member 使用家庭共享 Dialogue，并在发给 LLM 的每条用户消息中标注说话人；Guest 使用独立 Dialogue。
 - 文本输入可以显式选择当前家庭成员或 Guest，同样遵守 Family/Guest Dialogue 边界。
 - `Turn` 固定保存 `device_id` 和说话人信息，创建后不接受迟到声纹结果修改。
+
+P7.4 增加按成员隔离的稳定 Profile：
+
+- Memory 默认关闭，不配置 MemOS 时原有聊天链路不发起任何 Memory 请求。
+- 开启后，WebSocket 建连会在后台预取当前家庭全部成员的 Profile，不阻塞 `hello`。
+- 后端使用 `device_id + identity_id` 生成 MemOS `user_id`，浏览器不能指定 Memory Scope。
+- 未绑定的既有成员会懒绑定到配置的 Profile Template，再读取 Profile Snapshot。
+- 每个 Member Turn 只注入当前 `speaker_identity_id` 已就绪的 Profile；不同成员不会共用 Snapshot。
+- Guest、预取尚未完成、MemOS 超时或失败均按无 Profile 继续聊天。
+- 本阶段没有实现 `memory_search`、长期记忆写入或 Memory Center。
 
 继承能力包括：
 
@@ -70,7 +80,7 @@ P7.3 把声纹识别正式接入对话 Turn：
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未接入长期 Memory、Profile、Vision 和 Provider Registry。P7.3 的自动测试已覆盖 ASR/VoicePrint 汇合、Guest 降级和多人 Dialogue；真实家庭环境中的 CAM++ 分数、阈值和延迟属于后续持续校准项。
+当前阶段尚未接入长期 Memory 检索/写入、Vision 和通用 Provider Registry。P7.4 自动测试已覆盖 Profile 绑定、成员隔离、Guest 跳过和失败降级；真实 MemOS API Key、Profile Template 和返回数据仍需本地验收。
 
 ## 本地启动
 
@@ -88,7 +98,7 @@ newtalk
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P7.3 数据库、设备和声纹客户端配置：
+P7.4 数据库、设备、声纹和可选 Profile 配置：
 
 ```dotenv
 NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk
@@ -101,6 +111,17 @@ NEWTALK_VOICEPRINT_URL=http://127.0.0.1:8010
 NEWTALK_VOICEPRINT_API_TOKEN=local-voiceprint-token
 NEWTALK_VOICEPRINT_TIMEOUT_SECONDS=30
 NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS=1.5
+```
+
+启用 MemOS Profile 时，再在本地 `.env` 设置以下内容；密钥不提交到 Git：
+
+```dotenv
+NEWTALK_MEMORY_BACKEND=memos
+NEWTALK_MEMOS_BASE_URL=https://memos.memtensor.cn/api/openmem/v1
+NEWTALK_MEMOS_API_KEY=replace-with-local-secret
+NEWTALK_MEMOS_PROFILE_TEMPLATE_ID=replace-with-profile-template-id
+NEWTALK_MEMOS_TIMEOUT_SECONDS=5
+NEWTALK_PROFILE_MAX_CHARS=2000
 ```
 
 CI 和接口联调使用轻量测试后端：

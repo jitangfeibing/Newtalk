@@ -63,6 +63,13 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_VOICEPRINT_URL": "http://voiceprint.test:8010",
             "NEWTALK_VOICEPRINT_API_TOKEN": "voiceprint-secret",
             "NEWTALK_VOICEPRINT_TIMEOUT_SECONDS": "7.5",
+            "NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS": "1.25",
+            "NEWTALK_MEMORY_BACKEND": "memos",
+            "NEWTALK_MEMOS_BASE_URL": "https://memos.test/v1/",
+            "NEWTALK_MEMOS_API_KEY": "memos-secret",
+            "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID": "template-1",
+            "NEWTALK_MEMOS_TIMEOUT_SECONDS": "4.5",
+            "NEWTALK_PROFILE_MAX_CHARS": "1500",
         }
     )
 
@@ -108,10 +115,18 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.voiceprint_url == "http://voiceprint.test:8010"
     assert config.voiceprint_api_token == "voiceprint-secret"
     assert config.voiceprint_timeout_seconds == 7.5
+    assert config.voiceprint_join_timeout_seconds == 1.25
+    assert config.memory_backend == "memos"
+    assert config.memos_base_url == "https://memos.test/v1"
+    assert config.memos_api_key == "memos-secret"
+    assert config.memos_profile_template_id == "template-1"
+    assert config.memos_timeout_seconds == 4.5
+    assert config.profile_max_chars == 1500
     assert "test-secret" not in repr(config)
     assert "tts-secret" not in repr(config)
     assert "asr-secret" not in repr(config)
     assert "voiceprint-secret" not in repr(config)
+    assert "memos-secret" not in repr(config)
 
 
 @pytest.mark.parametrize(
@@ -147,6 +162,11 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_ASR_TIMEOUT_SECONDS", "0"),
         ("NEWTALK_ASR_USE_SYSTEM_PROXY", "sometimes"),
         ("NEWTALK_VOICEPRINT_TIMEOUT_SECONDS", "0"),
+        ("NEWTALK_MEMORY_BACKEND", "unknown"),
+        ("NEWTALK_MEMOS_BASE_URL", "not-an-http-url"),
+        ("NEWTALK_MEMOS_TIMEOUT_SECONDS", "0"),
+        ("NEWTALK_PROFILE_MAX_CHARS", "99"),
+        ("NEWTALK_PROFILE_MAX_CHARS", "10001"),
     ],
 )
 def test_config_rejects_invalid_values(name: str, value: str) -> None:
@@ -168,6 +188,32 @@ def test_config_rejects_invalid_values(name: str, value: str) -> None:
     ],
 )
 def test_openai_config_requires_secret_and_model(
+    values: dict[str, str], missing_name: str
+) -> None:
+    with pytest.raises(ConfigError, match=missing_name):
+        load_config(values)
+
+
+@pytest.mark.parametrize(
+    ("values", "missing_name"),
+    [
+        (
+            {
+                "NEWTALK_MEMORY_BACKEND": "memos",
+                "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID": "template-1",
+            },
+            "NEWTALK_MEMOS_API_KEY",
+        ),
+        (
+            {
+                "NEWTALK_MEMORY_BACKEND": "memos",
+                "NEWTALK_MEMOS_API_KEY": "secret",
+            },
+            "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID",
+        ),
+    ],
+)
+def test_memos_config_requires_secret_and_template(
     values: dict[str, str], missing_name: str
 ) -> None:
     with pytest.raises(ConfigError, match=missing_name):

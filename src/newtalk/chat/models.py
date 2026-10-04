@@ -7,7 +7,7 @@ from newtalk.tts import AudioFormat
 
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
-    role: Literal["user", "assistant"]
+    role: Literal["system", "user", "assistant"]
     content: str
 
 
@@ -22,6 +22,8 @@ class Turn:
     speaker_identity_id: str | None = None
     speaker_display_name: str = "Guest"
     speaker_relationship: str | None = None
+    profile_ready: bool = False
+    profile_field_count: int = 0
 
 
 def format_user_message(

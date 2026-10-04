@@ -367,6 +367,7 @@ P7 的 Session、Device、Identity、Dialogue、Guest、Memory 和 Profile 设�
 - Profile 保存字段来源、更新时间和锁定状态，MemOS 自动更新不能覆盖锁定字段。
 - 提供 Memory Center，让成员查看、搜索、编辑、删除、纠正记忆和锁定 Profile 字段。
 - Memory 可通过配置关闭；关闭后不加载 Profile、不注册 Memory Tool、不执行长期写入。
+- 持久化 Session/Dialogue，使同一家庭页面刷新或短暂重连后能够恢复最近对话；恢复范围仍受窗口限制，不把全部长期 Memory 当作短期 Dialogue。
 
 完成标准：不同家庭成员的 Context、Memory 和 Profile 不串数据；普通聊天不承担 MemOS 查询延迟；MemOS 失败和关闭 Memory 均不影响聊天主链；用户可以看见并纠正系统保存的内容。
 

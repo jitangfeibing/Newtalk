@@ -21,11 +21,13 @@ from newtalk.chat import (
     AudioFrame,
     AudioStarted,
     ChatService,
+    ChatMessage,
     DialogueSession,
     TextDelta,
     TurnCompleted,
 )
 from newtalk.identity import Identity, IdentityNotFoundError, IdentityService
+from newtalk.profile import SessionProfileCache
 from newtalk.voiceprint import (
     VoicePrintClient,
     VoicePrintError,
@@ -80,6 +82,8 @@ class ConnectionRuntime:
         dialogue_max_turns: int,
         dialogue_max_chars: int,
         voiceprint_join_timeout_seconds: float,
+        profile_cache: SessionProfileCache,
+        profile_max_chars: int,
     ) -> None:
         self.websocket = websocket
         self.session_id = session_id
@@ -101,6 +105,8 @@ class ConnectionRuntime:
             max_chars=dialogue_max_chars,
         )
         self._voiceprint_join_timeout_seconds = voiceprint_join_timeout_seconds
+        self._profile_cache = profile_cache
+        self._profile_max_chars = profile_max_chars
         self._voice_joins: dict[str, _VoiceJoinState] = {}
         self._seen_event_ids: set[str] = set()
         self._outbound: asyncio.Queue[_OutboundFrame] = asyncio.Queue(maxsize=256)
@@ -119,6 +125,7 @@ class ConnectionRuntime:
 
     async def start(self) -> None:
         self._sender_task = asyncio.create_task(self._send_loop())
+        self._profile_cache.start()
 
     async def send_json(
         self,
@@ -189,11 +196,27 @@ class ConnectionRuntime:
         speaker_display_name = identity.display_name if identity is not None else "Guest"
         speaker_relationship = identity.relationship if identity is not None else None
         speaker_identity_id = identity.identity_id if identity is not None else None
+        profile_snapshot = (
+            self._profile_cache.snapshot_for(speaker_identity_id)
+            if speaker_identity_id is not None
+            else None
+        )
+        profile_prompt = (
+            profile_snapshot.to_prompt(max_chars=self._profile_max_chars)
+            if profile_snapshot is not None
+            else None
+        )
+        context_messages = (
+            (ChatMessage(role="system", content=profile_prompt),)
+            if profile_prompt
+            else ()
+        )
         messages = dialogue.messages_for(
             text,
             speaker_identity_id=speaker_identity_id,
             speaker_display_name=speaker_display_name,
             speaker_relationship=speaker_relationship,
+            context_messages=context_messages,
         )
         turn = self._chat_service.create_turn(
             session_id=self.session_id,
@@ -203,6 +226,10 @@ class ConnectionRuntime:
             speaker_identity_id=speaker_identity_id,
             speaker_display_name=speaker_display_name,
             speaker_relationship=speaker_relationship,
+            profile_ready=profile_snapshot is not None,
+            profile_field_count=(
+                len(profile_snapshot.fields) if profile_snapshot is not None else 0
+            ),
         )
         self._active_turn_id = turn.turn_id
         self._active_stream_id = None
@@ -231,6 +258,11 @@ class ConnectionRuntime:
                     "identity_id": speaker_identity_id,
                     "display_name": speaker_display_name,
                     "guest": identity is None,
+                },
+                "profile": {
+                    "enabled": self._profile_cache.enabled,
+                    "ready": turn.profile_ready,
+                    "fields": turn.profile_field_count,
                 },
             },
             turn_id=turn.turn_id,
@@ -367,6 +399,7 @@ class ConnectionRuntime:
         if self._closing:
             return
         self._closing = True
+        await self._profile_cache.close()
         if self._audio_session is not None:
             session = self._audio_session
             self._audio_session = None

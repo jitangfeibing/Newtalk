@@ -1,6 +1,6 @@
-# P7.3 Architecture
+# P7.4 Architecture
 
-P7.3 将独立 VoicePrint 识别结果接入语音 Turn，并建立 Member Family Dialogue 与 Guest Dialogue 的明确边界。
+P7.4 在 P7.3 的说话人边界上增加可选 Profile Provider。Profile 只以后台预取的 Identity Snapshot 进入 Member Turn，不成为聊天前置依赖。
 
 ```text
 Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
@@ -13,11 +13,16 @@ Browser 3 x WAV -> authenticated member VoicePrint API
                    -> device_id + identity_id scoped PostgreSQL template
 
 Browser cookie -> authenticated WebSocket
+       -> SessionProfileCache -> background MemosProfileProvider
+              |                    |-> get Profile only
+              |                    `-> bind missing Profile Template
+              `-> identity_id scoped immutable Snapshot
 Browser text_input + selected identity -----------+
 Browser microphone -> recorder AudioWorklet       |
        -> 16k mono PCM -> WebSocket binary        |
                                                    v
 WebSocket receive loop -> ConnectionRuntime
+                              |-> current Member Profile Snapshot
                               |-> Family Dialogue / Guest Dialogue -> immutable Turn
                               |                                         `-> ChatService -> LLM/TTS
                               `-> AudioInputSession
@@ -33,6 +38,8 @@ all server output -> one ConnectionRuntime send queue -> WebSocket
 ## 当前职责
 
 - `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
+- `newtalk.profile.provider.ProfileProvider` 是 P7.4 实际需要的最小 Profile 契约；默认实现关闭，MemOS 实现负责 Profile Template 懒绑定和读取。
+- `newtalk.profile.session.SessionProfileCache` 在连接开始后异步预取成员 Profile，按 `identity_id` 保存 Snapshot；Turn 读取只访问内存，不等待 MemOS。
 - `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要。
 - `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
 - `newtalk.identity.store.IdentityStore` 是持久化契约；正式进程使用异步 SQLAlchemy/PostgreSQL，内存实现只用于自动测试。
@@ -73,6 +80,7 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 - 浏览器“停止播放”仍是本地操作；`audio_stop` 才表示服务端 Turn 已取消。
 - 声纹录入、识别、`speaker_identity_id` 映射和 Guest 降级已进入主链。
 - `deterministic-test-v1` 只供 CI；真实 CAM++ 已完成模型加载和录入，识别分数、阈值与有限等待期限仍需在家庭样本中校准。
-- 长期 Memory、Profile、Vision 和 Tool 仍未进入当前运行链。
+- Profile Snapshot 已进入 Member Turn；长期 Memory 检索/写入、Vision 和 Tool 仍未进入当前运行链。
 - Session 当前与 WebSocket 连接同生命周期，刷新页面后历史清空；跨连接恢复和长期 Memory 尚未实现。
-- 当前消息角色只有 `user` 和 `assistant`；Tool 消息等到 P9 出现真实 Tool 调用时再扩展契约。
+- 当前消息角色为 `system`、`user` 和 `assistant`；动态 Profile 使用 `system`，Tool 消息等到出现真实 Tool 调用时再扩展契约。
+- Profile 预取失败在当前 Session 内不会持续重试；该轮及后续轮次按无 Profile 聊天，重新连接后可再次预取。
