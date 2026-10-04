@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from time import perf_counter
+from weakref import WeakSet
 
 from newtalk.identity import IdentityService
 from newtalk.profile.models import ProfileScope, ProfileSnapshot
@@ -43,6 +44,13 @@ class SessionProfileCache:
         if snapshot is None:
             self.schedule(identity_id)
         return snapshot
+
+    def set_snapshot(self, snapshot: ProfileSnapshot) -> None:
+        if not self._closed:
+            self._snapshots[snapshot.identity_id] = snapshot
+
+    def remove_snapshot(self, identity_id: str) -> None:
+        self._snapshots.pop(identity_id, None)
 
     def schedule(self, identity_id: str) -> None:
         if (
@@ -113,3 +121,26 @@ class SessionProfileCache:
 
     def _task_finished(self, task: asyncio.Task[None]) -> None:
         self._tasks.discard(task)
+
+
+class ProfileCacheCoordinator:
+    """Propagates Memory Center changes to active WebSocket session caches."""
+
+    def __init__(self) -> None:
+        self._caches: WeakSet[SessionProfileCache] = WeakSet()
+
+    def register(self, cache: SessionProfileCache) -> None:
+        self._caches.add(cache)
+
+    def unregister(self, cache: SessionProfileCache) -> None:
+        self._caches.discard(cache)
+
+    def update(self, device_id: str, snapshot: ProfileSnapshot) -> None:
+        for cache in tuple(self._caches):
+            if cache.device_id == device_id:
+                cache.set_snapshot(snapshot)
+
+    def remove(self, device_id: str, identity_id: str) -> None:
+        for cache in tuple(self._caches):
+            if cache.device_id == device_id:
+                cache.remove_snapshot(identity_id)

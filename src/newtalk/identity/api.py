@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from newtalk.config import AppConfig
 from newtalk.identity.models import Device, Identity
+from newtalk.identity.deletion import IdentityDeletionScheduler
 from newtalk.identity.service import (
     DeviceAuthenticationError,
     DeviceRecoveryError,
@@ -125,6 +126,10 @@ def _service(request: Request) -> IdentityService:
 
 def _config(request: Request) -> AppConfig:
     return request.app.state.config
+
+
+def _deletion_service(request: Request) -> IdentityDeletionScheduler:
+    return request.app.state.identity_deletion_service
 
 
 def _device_response(device: Device, recovery_code: str | None = None) -> DeviceResponse:
@@ -295,17 +300,23 @@ async def update_member(
     return _identity_response(identity)
 
 
-@router.delete("/members/{identity_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/members/{identity_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_member(
     identity_id: str,
     device: Device = Depends(require_device),
     service: IdentityService = Depends(_service),
-) -> Response:
+    deletion: IdentityDeletionScheduler = Depends(_deletion_service),
+) -> dict[str, str]:
     try:
-        await service.delete_identity(
+        await service.get_identity(
             device_id=device.device_id,
             identity_id=identity_id,
         )
     except IdentityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if not await deletion.request(
+        device_id=device.device_id,
+        identity_id=identity_id,
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deletion already requested")
+    return {"identity_id": identity_id, "status": "deletion_pending"}

@@ -40,6 +40,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         identity_service=websocket.app.state.identity_service,
         provider=websocket.app.state.profile_provider,
     )
+    websocket.app.state.profile_cache_coordinator.register(profile_cache)
     runtime = ConnectionRuntime(
         websocket,
         session_id=session_id,
@@ -201,3 +202,4 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         return
     finally:
         await runtime.close()
+        websocket.app.state.profile_cache_coordinator.unregister(profile_cache)

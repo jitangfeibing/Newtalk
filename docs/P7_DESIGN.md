@@ -2,7 +2,7 @@
 
 本文记录 P7 已经确认的产品和数据边界，以及需要通过真实环境确定的实现参数。
 
-当前状态为“总体设计基线已确认，P7.1-P7.5 已完成代码和自动测试，MemOS 真实账号验收待完成，下一阶段为 P7.6”。P1-P6 的聊天和语音行为保持不变。
+当前状态为“总体设计基线已确认，P7.1-P7.6 已完成代码和自动测试，MemOS 真实账号验收待完成，下一阶段为 P7.7”。P1-P6 的聊天和语音行为保持不变。
 
 Memory 的读取、写入、Provider 和前端管理方向已记录在本文中。所有内容仍是设计基线，不表示功能已经实现。
 
@@ -412,7 +412,7 @@ Memory Center 让 Member 查看 Newtalk 保存了什么，避免长期记忆成�
 - 显示类型、更新时间和来源；实际字段取决于 MemOS 返回结构。
 - 浏览器只请求 Newtalk 后端，不直接访问 MemOS，也不持有 MemOS Token。
 
-Newtalk 对浏览器提供以下概念接口，正式请求和响应模型在实现该子阶段时定稿：
+P7.6 已按以下接口实现：
 
 ```text
 GET    /api/members/{identity_id}/profile
@@ -466,7 +466,7 @@ POST /edit/profile           # 编辑、删除和锁定 Profile 字段
 POST /delete/profile         # 删除用户的 Profile 实例
 ```
 
-这套 API 足以支持 P7 的后台写入、`memory_search`、Memory Center、Profile 自动更新和成员完整删除。实现时仍需用真实 API Key 做 Live Test，确认账号权限、配额、异步任务返回和错误码。
+这套 API 已用于 P7 的后台写入、`memory_search`、Memory Center、Profile 自动更新和成员完整删除。仍需用真实 API Key 做 Live Test，确认账号权限、配额、异步任务返回和错误码。
 
 P7 的 MemOS 映射确定为：
 
@@ -553,7 +553,7 @@ P7 第一版的 Family Dialogue 和 Guest Dialogue 均沿用 P6 的 8 轮、1200
 - `memory_search` 的结果上限、字符预算、超时和 Tool Call 次数在真实测试后的取值。
 - MemOS 的幂等、去重、冲突、更新、过期和删除行为是否满足需求。
 - 敏感信息、视觉内容和 Tool 结果是否允许进入 Memory。
-- Memory Center 第一版具体页面布局和字段展示。
+- Memory Center 真实 MemOS 数据下的字段展示、更新时间格式和错误文案。
 
 ### Profile
 
@@ -581,7 +581,7 @@ P7.6：Memory Center、Profile 锁定、记忆编辑删除和成员完整删除
 P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
 ```
 
-P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5 已开放受控的长期记忆读写；P7.6 再提供人工查看、纠正、锁定和完整删除；P7.7 最后处理连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
+P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5 已开放受控的长期记忆读写；P7.6 已提供人工查看、纠正、锁定和完整删除；P7.7 最后处理连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
 
 ## 剩余主要风险
 

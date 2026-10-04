@@ -1,6 +1,6 @@
-# P7.5 Architecture
+# P7.6 Architecture
 
-P7.5 在 Profile Snapshot 基础上增加按需长期记忆检索和后台写入。Profile 仍由连接后台预取；普通 Turn 不查询 MemOS，只有 Member 的主 LLM 主动调用 `memory_search` 时才进入检索链。
+P7.6 在按需长期记忆读写基础上增加 Memory Center 和持久化成员删除。聊天主链不变；管理操作经 Newtalk HTTP API 验证 Device/Identity Scope，成员删除通过 PostgreSQL Job 跨 VoicePrint 与 MemOS 收敛。
 
 ```text
 Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
@@ -47,7 +47,7 @@ completed current Member Turn
 ## 当前职责
 
 - `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
-- `newtalk.memory.provider.MemoryProvider` 是 P7.5 实际需要的最小 Memory 契约，包含 Profile 准备、长期记忆查询和已完成 Turn 写入；默认实现关闭。
+- `newtalk.memory.provider.MemoryProvider` 是当前实际需要的最小 Memory 契约，包含 Profile、检索、写入和人工管理；默认实现关闭。
 - `newtalk.profile.memos.MemosProfileProvider` 当前同时实现上述契约，负责 Profile Template 懒绑定、Search Memory 和 Add Message 的 HTTP 协议细节。
 - `newtalk.chat.service.ChatService` 只给 Member 注册 `memory_search`，每个 Turn 最多执行一次，并使用 Turn 内不可变身份建立服务端 Scope。
 - `newtalk.memory.jobs.MemoryWriteService` 消费 PostgreSQL Outbox；本地入队按 `turn_id` 去重，任务领取使用租约，远端失败有限重试。
@@ -96,7 +96,20 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 - 浏览器“停止播放”仍是本地操作；`audio_stop` 才表示服务端 Turn 已取消。
 - 声纹录入、识别、`speaker_identity_id` 映射和 Guest 降级已进入主链。
 - `deterministic-test-v1` 只供 CI；真实 CAM++ 已完成模型加载和录入，识别分数、阈值与有限等待期限仍需在家庭样本中校准。
-- Profile Snapshot、`memory_search` 和后台长期记忆写入已进入 Member 运行链；Memory Center、Vision 和其他实用 Tool 尚未实现。
+- Profile Snapshot、`memory_search`、后台长期记忆写入和 Memory Center 已进入 Member 数据链；Vision、Session 刷新恢复和其他实用 Tool 尚未实现。
+
+Memory Center 调用链：
+
+```text
+Browser Memory Center
+-> Newtalk /api/members/{identity_id}/profile|memories
+-> HttpOnly Device Cookie 鉴权
+-> IdentityService 校验 Active 成员归属
+-> MemoryProvider 绑定 device_id + identity_id
+-> MemOS Get/Search/Edit/Update/Delete
+```
+
+成员删除不是跨服务事务。HTTP 请求只负责把 Identity 原子改为 `deletion_pending` 并写入 `identity_deletion_jobs`；该成员随即从列表、聊天和 Memory API 消失。后台 Worker 删除 VoicePrint、MemOS 全部 Memory 和 Profile，全部成功后才物理删除本地 Identity。Provider 关闭时会跳过对应远端清理，因此曾经启用 Provider 后再关闭所遗留的数据仍需人工确认。
 - Session 当前与 WebSocket 连接同生命周期，刷新页面后历史清空；跨连接恢复在 P7.7 实现。
 - 当前消息角色为 `system`、`user`、`assistant` 和内部 `tool`；WebSocket 不暴露中间 Tool 消息。
 - Profile 预取失败在当前 Session 内不会持续重试；该轮及后续轮次按无 Profile 聊天，重新连接后可再次预取。

@@ -1,4 +1,5 @@
 import {initializeIdentity, selectedTextSpeaker} from './identity.js';
+import {initializeMemoryCenter} from './memory-center.js';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
@@ -581,4 +582,5 @@ micButton.addEventListener('click', async () => {
 });
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
+initializeMemoryCenter();
 initializeIdentity(() => connect());

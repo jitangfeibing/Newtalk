@@ -6,7 +6,7 @@ from newtalk.profile.provider import (
     ProfileProviderError,
     ProfileProviderUnavailableError,
 )
-from newtalk.profile.session import SessionProfileCache
+from newtalk.profile.session import ProfileCacheCoordinator, SessionProfileCache
 
 __all__ = [
     "DisabledProfileProvider",
@@ -17,5 +17,6 @@ __all__ = [
     "ProfileProviderUnavailableError",
     "ProfileScope",
     "ProfileSnapshot",
+    "ProfileCacheCoordinator",
     "SessionProfileCache",
 ]

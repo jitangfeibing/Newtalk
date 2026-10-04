@@ -10,7 +10,7 @@
     <main class="shell">
         <header class="masthead">
             <div>
-                <p class="eyebrow">NEWTALK / PART 07.3</p>
+                <p class="eyebrow">NEWTALK / PART 07.6</p>
                 <h1>Voice Console</h1>
             </div>
             <div class="status" data-state="offline" id="connectionStatus">
@@ -97,6 +97,68 @@
                 </div>
             </div>
             <p class="identity-feedback" id="identityFeedback" role="status"></p>
+        </section>
+
+        <section class="memory-panel" id="memoryCenter" aria-labelledby="memoryTitle" hidden>
+            <header class="panel-header memory-header">
+                <div>
+                    <span class="label">MEMORY CENTER</span>
+                    <h3 id="memoryTitle">画像与长期记忆</h3>
+                </div>
+                <label class="memory-member-select" for="memoryMemberSelect">
+                    <span>当前成员</span>
+                    <select id="memoryMemberSelect"></select>
+                </label>
+            </header>
+
+            <div class="memory-layout">
+                <section class="profile-column" aria-labelledby="profileTitle">
+                    <div class="memory-section-heading">
+                        <div>
+                            <span class="label">PROFILE / ALWAYS AVAILABLE</span>
+                            <h4 id="profileTitle">稳定画像</h4>
+                        </div>
+                        <button type="button" class="text-button" id="addProfileFieldButton">添加字段</button>
+                    </div>
+                    <form class="profile-add-form" id="profileAddForm" hidden>
+                        <input id="profilePathInput" maxlength="240" placeholder="字段路径，例如：偏好.饮料" required>
+                        <input id="profileValueInput" maxlength="2000" placeholder="字段内容" required>
+                        <label><input type="checkbox" id="profileLockedInput"> 锁定，禁止后台自动更新</label>
+                        <div class="inline-actions">
+                            <button type="submit" class="button">保存字段</button>
+                            <button type="button" class="button secondary" id="cancelProfileFieldButton">取消</button>
+                        </div>
+                    </form>
+                    <div class="profile-list" id="profileList"></div>
+                </section>
+
+                <section class="memories-column" aria-labelledby="memoriesTitle">
+                    <div class="memory-section-heading">
+                        <div>
+                            <span class="label">MEMOS / ON DEMAND</span>
+                            <h4 id="memoriesTitle">历史记忆</h4>
+                        </div>
+                        <span class="memory-count" id="memoryCount">0 条</span>
+                    </div>
+                    <form class="memory-search" id="memorySearchForm">
+                        <select id="memoryKindSelect" aria-label="记忆类型">
+                            <option value="all">全部类型</option>
+                            <option value="fact">事实</option>
+                            <option value="preference">偏好</option>
+                            <option value="event">经历</option>
+                        </select>
+                        <input id="memorySearchInput" maxlength="500" placeholder="搜索这个成员的长期记忆">
+                        <button type="submit" class="button secondary">查询</button>
+                    </form>
+                    <div class="memory-list" id="memoryList"></div>
+                    <div class="memory-pagination" id="memoryPagination" hidden>
+                        <button type="button" class="text-button" id="memoryPreviousButton">上一页</button>
+                        <span id="memoryPageLabel"></span>
+                        <button type="button" class="text-button" id="memoryNextButton">下一页</button>
+                    </div>
+                </section>
+            </div>
+            <p class="memory-feedback" id="memoryFeedback" role="status"></p>
         </section>
 
         <div class="workspace">

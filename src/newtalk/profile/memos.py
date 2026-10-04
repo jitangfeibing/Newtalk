@@ -2,7 +2,14 @@ from typing import Any
 
 import httpx
 
-from newtalk.memory.models import MemoryItem, MemorySearchResult, MemoryWriteReceipt
+from newtalk.memory.models import (
+    MemoryItem,
+    MemoryPage,
+    MemoryRecord,
+    MemorySearchResult,
+    MemoryWriteReceipt,
+)
+from newtalk.memory.models import MemoryNotFoundError
 from newtalk.profile.models import ProfileScope, ProfileSnapshot, parse_profile_fields
 from newtalk.profile.provider import (
     ProfileProviderError,
@@ -179,6 +186,141 @@ class MemosProfileProvider:
             status=status if isinstance(status, str) else "accepted",
         )
 
+    async def list_memories(
+        self,
+        scope: ProfileScope,
+        *,
+        page: int,
+        size: int,
+        kinds: tuple[str, ...],
+    ) -> MemoryPage:
+        views = tuple(_MEMORY_VIEWS[kind] for kind in kinds)
+        payload = await self._post(
+            "/get/memory",
+            {
+                "user_id": scope.memos_user_id,
+                "page": page,
+                "size": size,
+                "include_memory_view": list(views),
+            },
+        )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ProfileProviderError("MemOS get/memory returned invalid data")
+        items = _parse_memory_records(data, kinds)
+        items.sort(key=lambda item: item.updated_at or item.created_at or "", reverse=True)
+        return MemoryPage(
+            items=tuple(items),
+            page=_positive_int(data.get("current"), page),
+            size=_positive_int(data.get("size"), size),
+            total=_nonnegative_int(data.get("total"), len(items)),
+            pages=_nonnegative_int(data.get("pages"), 1 if items else 0),
+        )
+
+    async def update_memory(
+        self,
+        scope: ProfileScope,
+        *,
+        memory_id: str,
+        title: str,
+        content: str,
+    ) -> None:
+        await self._assert_memory_owned(scope, memory_id)
+        await self._expect_success(
+            "/update/memory",
+            {"memory_id": memory_id, "title": title, "content": content},
+            "MemOS did not update Memory",
+        )
+
+    async def delete_memory(self, scope: ProfileScope, *, memory_id: str) -> None:
+        await self._assert_memory_owned(scope, memory_id)
+        await self._expect_success(
+            "/delete/memory",
+            {"memory_ids": [memory_id]},
+            "MemOS did not delete Memory",
+        )
+
+    async def update_profile(
+        self,
+        scope: ProfileScope,
+        *,
+        path: str,
+        value: str | None,
+        locked: bool,
+        remove: bool,
+    ) -> ProfileSnapshot:
+        body: dict[str, Any] = {
+            "user_id": scope.memos_user_id,
+            "profile_template_id": self.profile_template_id,
+        }
+        if remove:
+            body["remove_fields"] = [path]
+        else:
+            if value is None:
+                raise ValueError("Profile value is required")
+            body["metadata"] = _profile_metadata(
+                path,
+                value=value,
+                algorithm_updatable=not locked,
+            )
+        await self._expect_success(
+            "/edit/profile",
+            body,
+            "MemOS did not update Profile",
+        )
+        snapshot = await self._load_profile(scope)
+        if snapshot is None:
+            raise ProfileProviderError("MemOS Profile disappeared after update")
+        return snapshot
+
+    async def delete_all_memories(self, scope: ProfileScope) -> None:
+        await self._expect_success(
+            "/delete/memory",
+            {"user_id": scope.memos_user_id},
+            "MemOS did not delete member memories",
+        )
+
+    async def delete_profile(self, scope: ProfileScope) -> None:
+        await self._expect_success(
+            "/delete/profile",
+            {
+                "user_id": scope.memos_user_id,
+                "profile_template_id": self.profile_template_id,
+            },
+            "MemOS did not delete member Profile",
+        )
+
+    async def _assert_memory_owned(
+        self,
+        scope: ProfileScope,
+        memory_id: str,
+    ) -> None:
+        page = 1
+        while True:
+            memories = await self.list_memories(
+                scope,
+                page=page,
+                size=50,
+                kinds=("fact", "preference", "event"),
+            )
+            if any(item.memory_id == memory_id for item in memories.items):
+                return
+            if page >= memories.pages:
+                break
+            page += 1
+        raise MemoryNotFoundError("Memory does not belong to this member")
+
+    async def _expect_success(
+        self,
+        path: str,
+        body: dict[str, Any],
+        error: str,
+    ) -> None:
+        payload = await self._post(path, body)
+        data = payload.get("data")
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise ProfileProviderError(error)
+
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         try:
             response = await self._client.post(path, json=body, headers=self._headers)
@@ -246,3 +388,81 @@ def _parse_search_items(data: dict[str, Any]) -> list[MemoryItem]:
                 )
             )
     return items
+
+
+_MEMORY_VIEWS = {
+    "fact": "detail_factual",
+    "preference": "preference",
+    "event": "event",
+}
+
+
+def _parse_memory_records(
+    data: dict[str, Any],
+    kinds: tuple[str, ...],
+) -> list[MemoryRecord]:
+    definitions = {
+        "fact": ("memory_detail_list", "memory_key", "memory_value"),
+        "preference": (
+            "preference_detail_list",
+            "preference_type",
+            "preference",
+        ),
+        "event": ("event_detail_list", "event_key", "event_value"),
+    }
+    records: list[MemoryRecord] = []
+    for kind in kinds:
+        list_name, title_name, content_name = definitions[kind]
+        raw_items = data.get(list_name, [])
+        if not isinstance(raw_items, list):
+            raise ProfileProviderError(f"MemOS {list_name} must be a list")
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            memory_id = raw.get("id")
+            content = raw.get(content_name)
+            if not isinstance(memory_id, str) or not isinstance(content, str):
+                continue
+            title = raw.get(title_name)
+            records.append(
+                MemoryRecord(
+                    memory_id=memory_id,
+                    kind=kind,
+                    title=title.strip() if isinstance(title, str) else "",
+                    content=content.strip(),
+                    created_at=_optional_string(raw.get("create_time")),
+                    updated_at=_optional_string(raw.get("update_time")),
+                )
+            )
+    return records
+
+
+def _profile_metadata(
+    path: str,
+    *,
+    value: str,
+    algorithm_updatable: bool,
+) -> dict[str, Any]:
+    parts = [part.strip() for part in path.split(".") if part.strip()]
+    if not parts:
+        raise ValueError("Profile path is required")
+    leaf: dict[str, Any] = {
+        "value": value,
+        "algorithm_updatable": algorithm_updatable,
+    }
+    result: dict[str, Any] = {parts[-1]: leaf}
+    for part in reversed(parts[:-1]):
+        result = {part: result}
+    return result
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _positive_int(value: Any, default: int) -> int:
+    return value if isinstance(value, int) and value > 0 else default
+
+
+def _nonnegative_int(value: Any, default: int) -> int:
+    return value if isinstance(value, int) and value >= 0 else default

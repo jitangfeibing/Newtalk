@@ -100,7 +100,9 @@ def test_member_crud_is_scoped_to_authenticated_device() -> None:
         assert updated.status_code == 200
         assert updated.json()["display_name"] == "小明同学"
         assert updated.json()["nickname"] is None
-        assert family_a.delete(f"/api/members/{identity_id}").status_code == 204
+        deletion = family_a.delete(f"/api/members/{identity_id}")
+        assert deletion.status_code == 202
+        assert deletion.json()["status"] == "deletion_pending"
         assert family_a.get("/api/members").json() == []
 
 
