@@ -1,6 +1,6 @@
-# P7.3 HTTP、VoicePrint 与 WebSocket 协议
+# P7.4 HTTP、VoicePrint、Profile 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.6`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.7`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
 WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前连接运行时；Family Dialogue 和 Guest Dialogue 当前都在断线后清空。
 
@@ -37,9 +37,10 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.6",
+  "protocol_version": "0.7",
   "session_id": "generated UUID",
   "device_id": "02:11:22:33:44:55",
+  "profile": {"enabled": true},
   "audio": {
     "input": {"codec":"pcm_s16le","sample_rate":16000,"channels":1,"frame_duration_ms":20},
     "output": {"codec":"pcm_s16le","sample_rate":24000,"channels":1}
@@ -125,11 +126,14 @@ ASR 和 VoicePrint 使用相同 `utterance_id`。非空 `asr_final` 会先发给
     "identity_id": "member UUID or null",
     "display_name": "小明 or Guest",
     "guest": false
-  }
+  },
+  "profile": {"enabled": true, "ready": true, "fields": 4}
 }
 ```
 
 Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名和家庭关系；Guest Turn 使用独立 Guest Dialogue。说话人字段在 Turn 创建后固定，迟到声纹结果不能修改当前回复归属。
+
+`profile.enabled` 表示服务端是否配置 Profile Provider；`ready` 表示当前成员的 Snapshot 在本 Turn 创建时已经就绪；`fields` 是本次 Snapshot 的非空字段数。`ready=false` 不属于聊天错误，当前 Turn 会在不等待 MemOS 的情况下继续。Guest 的 `ready` 始终为 `false`。
 
 新文本输入或 VAD 说话开始取消旧 Turn：
 
@@ -172,3 +176,25 @@ Browser getUserMedia
 -> text_delta + TTS binary PCM -> PcmPlayer / AudioWorklet
 -> turn_completed -> DialogueSession.commit
 ```
+
+## P7.4 Profile 调用链
+
+```text
+WebSocket authenticated
+-> hello 立即进入发送队列
+-> SessionProfileCache 后台列出当前 device_id 的 Active Identity
+-> 每个 Identity 生成服务端 MemOS user_id
+-> GET /get/memory（只请求 profile）
+   |-> 已绑定 -> 缓存 Profile Snapshot
+   `-> 未绑定 -> POST /bind/profile_template -> 再次读取 -> 缓存
+
+Member Turn
+-> 按 speaker_identity_id 只读当前 Session 缓存
+   |-> 已就绪 -> 有字符预算的 Profile system message -> Dialogue -> LLM
+   `-> 未就绪/失败 -> 无 Profile -> Dialogue -> LLM
+
+Guest Turn
+-> 不读取、不绑定、不注入 Profile
+```
+
+MemOS API Key 只存在于服务端环境变量。浏览器协议没有 `memos_user_id`、模板 ID 或任意 Memory Scope 参数。

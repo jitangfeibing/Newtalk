@@ -68,6 +68,7 @@ def test_openai_compatible_model_uses_chat_service_and_closes_resources() -> Non
             session_id="test-session",
             user_text="介绍一下自己",
             messages=(
+                ChatMessage("system", "[当前说话人画像]\n- 兴趣: 科幻小说"),
                 ChatMessage("user", "我叫小明"),
                 ChatMessage("assistant", "你好，小明"),
                 ChatMessage("user", "介绍一下自己"),
@@ -84,6 +85,10 @@ def test_openai_compatible_model_uses_chat_service_and_closes_resources() -> Non
         "model": "test-model",
         "messages": [
             {"role": "system", "content": "你是测试助手"},
+            {
+                "role": "system",
+                "content": "[当前说话人画像]\n- 兴趣: 科幻小说",
+            },
             {"role": "user", "content": "我叫小明"},
             {"role": "assistant", "content": "你好，小明"},
             {"role": "user", "content": "介绍一下自己"},

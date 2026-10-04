@@ -42,11 +42,16 @@ DEFAULT_RECOVERY_MAX_ATTEMPTS = 5
 DEFAULT_RECOVERY_WINDOW_SECONDS = 900
 DEFAULT_VOICEPRINT_TIMEOUT_SECONDS = 30.0
 DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS = 1.5
+DEFAULT_MEMORY_BACKEND = "disabled"
+DEFAULT_MEMOS_BASE_URL = "https://memos.memtensor.cn/api/openmem/v1"
+DEFAULT_MEMOS_TIMEOUT_SECONDS = 5.0
+DEFAULT_PROFILE_MAX_CHARS = 2000
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
 VALID_TTS_SAMPLE_RATES = {8000, 16000, 24000, 48000}
 VALID_ASR_BACKENDS = {"doubao", "fake"}
+VALID_MEMORY_BACKENDS = {"disabled", "memos"}
 
 
 class ConfigError(ValueError):
@@ -100,6 +105,12 @@ class AppConfig:
     voiceprint_api_token: str | None = field(default=None, repr=False)
     voiceprint_timeout_seconds: float = DEFAULT_VOICEPRINT_TIMEOUT_SECONDS
     voiceprint_join_timeout_seconds: float = DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS
+    memory_backend: str = DEFAULT_MEMORY_BACKEND
+    memos_base_url: str = DEFAULT_MEMOS_BASE_URL
+    memos_api_key: str | None = field(default=None, repr=False)
+    memos_profile_template_id: str | None = None
+    memos_timeout_seconds: float = DEFAULT_MEMOS_TIMEOUT_SECONDS
+    profile_max_chars: int = DEFAULT_PROFILE_MAX_CHARS
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -363,6 +374,43 @@ class AppConfig:
                 "NEWTALK_VOICEPRINT_API_TOKEN is required when VoicePrint is enabled"
             )
 
+        memory_backend = values.get(
+            "NEWTALK_MEMORY_BACKEND", DEFAULT_MEMORY_BACKEND
+        ).strip().lower()
+        if memory_backend not in VALID_MEMORY_BACKENDS:
+            allowed = ", ".join(sorted(VALID_MEMORY_BACKENDS))
+            raise ConfigError(f"NEWTALK_MEMORY_BACKEND must be one of: {allowed}")
+        memos_base_url = values.get(
+            "NEWTALK_MEMOS_BASE_URL", DEFAULT_MEMOS_BASE_URL
+        ).strip().rstrip("/")
+        if not memos_base_url.startswith(("http://", "https://")):
+            raise ConfigError("NEWTALK_MEMOS_BASE_URL must be an HTTP URL")
+        memos_api_key = _optional_value(values.get("NEWTALK_MEMOS_API_KEY"))
+        memos_profile_template_id = _optional_value(
+            values.get("NEWTALK_MEMOS_PROFILE_TEMPLATE_ID")
+        )
+        memos_timeout_seconds = _positive_float_value(
+            values,
+            "NEWTALK_MEMOS_TIMEOUT_SECONDS",
+            DEFAULT_MEMOS_TIMEOUT_SECONDS,
+        )
+        profile_max_chars = _bounded_int_value(
+            values,
+            "NEWTALK_PROFILE_MAX_CHARS",
+            DEFAULT_PROFILE_MAX_CHARS,
+            minimum=100,
+            maximum=10000,
+        )
+        if memory_backend == "memos":
+            if not memos_api_key:
+                raise ConfigError(
+                    "NEWTALK_MEMOS_API_KEY is required when MemOS is enabled"
+                )
+            if not memos_profile_template_id:
+                raise ConfigError(
+                    "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID is required when MemOS is enabled"
+                )
+
         return cls(
             host=host,
             port=port,
@@ -409,6 +457,12 @@ class AppConfig:
             voiceprint_api_token=voiceprint_api_token,
             voiceprint_timeout_seconds=voiceprint_timeout_seconds,
             voiceprint_join_timeout_seconds=voiceprint_join_timeout_seconds,
+            memory_backend=memory_backend,
+            memos_base_url=memos_base_url,
+            memos_api_key=memos_api_key,
+            memos_profile_template_id=memos_profile_template_id,
+            memos_timeout_seconds=memos_timeout_seconds,
+            profile_max_chars=profile_max_chars,
         )
 
 
@@ -461,6 +515,24 @@ def _positive_int_value(
         raise ConfigError(f"{name} must be an integer") from exc
     if value <= 0:
         raise ConfigError(f"{name} must be greater than zero")
+    return value
+
+
+def _bounded_int_value(
+    values: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw_value = values.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise ConfigError(f"{name} must be between {minimum} and {maximum}")
     return value
 
 

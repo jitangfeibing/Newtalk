@@ -2,7 +2,7 @@
 
 本文记录 P7 已经确认的产品和数据边界，以及需要通过真实环境确定的实现参数。
 
-当前状态为“总体设计基线已确认，P7.1-P7.3 已完成，下一阶段为 P7.4”。P1-P6 的聊天和语音行为保持不变。
+当前状态为“总体设计基线已确认，P7.1-P7.4 已完成代码和自动测试，P7.4 待真实 MemOS 验收，下一阶段为 P7.5”。P1-P6 的聊天和语音行为保持不变。
 
 Memory 的读取、写入、Provider 和前端管理方向已记录在本文中。所有内容仍是设计基线，不表示功能已经实现。
 
@@ -217,6 +217,32 @@ Profile 保存姓名、称呼、喜好、兴趣、家庭关系、长期目标和
 - 用户在 Memory Center 手工编辑 Profile 时，只同步更新当前 Session 中对应 `identity_id` 的 Snapshot。
 - Session 结束时可以补充校正，但不能作为唯一保存时机，因为异常断线不保证执行。
 - 用户锁定的 Profile 字段不能被后台自动更新覆盖。
+
+P7.4 已按上述读取边界实现 `ProfileProvider`、`MemosProfileProvider` 和 `SessionProfileCache`。当前实现读取 `/get/memory` 时只请求 `profile`，未找到配置模板则调用 `/bind/profile_template` 后再次读取。自动测试已证明两个 Identity 不复用 Snapshot，Guest 和 Provider 失败不阻塞 Turn；真实 MemOS 账号、模板字段和数据更新仍待联调。
+
+P7 第一版 Profile Template 使用以下字段树作为验收基线：
+
+```json
+{
+  "基本资料": {
+    "职业或身份": {"value": "", "algorithm_updatable": true},
+    "居住城市": {"value": "", "algorithm_updatable": true}
+  },
+  "长期偏好": {
+    "饮食偏好": {"value": "", "algorithm_updatable": true},
+    "兴趣爱好": {"value": "", "algorithm_updatable": true},
+    "喜欢的内容": {"value": "", "algorithm_updatable": true},
+    "沟通偏好": {"value": "", "algorithm_updatable": true}
+  },
+  "长期事项": {
+    "长期目标": {"value": "", "algorithm_updatable": true},
+    "当前项目": {"value": "", "algorithm_updatable": true},
+    "重要关系": {"value": "", "algorithm_updatable": true}
+  }
+}
+```
+
+成员显示名和家庭关系继续以 PostgreSQL Identity 为权威来源，不在 MemOS Profile 中重复维护。P7.5 的对话写入允许 MemOS 更新上述字段；P7.6 再提供人工纠正和字段锁定，锁定后将 `algorithm_updatable` 改为 `false`。
 
 MemOS 保存上个月的一次面试、以前讨论过的项目方案、某次旅行、曾经提过的人和过去具体经历等情景型历史。这些内容不长期全部放进 Prompt。
 
@@ -529,7 +555,6 @@ P7 第一版的 Family Dialogue 和 Guest Dialogue 均沿用 P6 的 8 轮、1200
 
 ### Profile
 
-- MemOS 控制台中第一版 Profile Template 的具体字段树。
 - MemOS 自动更新完成时间和下一 Session 加载结果的真实验收。
 
 ### 存储与并发
@@ -551,9 +576,10 @@ P7.3：ASR/VoicePrint 汇合、Identity/Guest 映射和多人 Dialogue
 P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 降级
 P7.5：主 LLM Tool Calling、memory_search 和 PostgreSQL 后台写入任务
 P7.6：Memory Center、Profile 锁定、记忆编辑删除和成员完整删除
+P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
 ```
 
-P7.1-P7.4 先建立可靠的数据归属，P7.5-P7.6 再开放长期记忆读写，避免 Memory 在 Identity 尚未稳定时产生污染。
+P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5-P7.6 再开放长期记忆读写，避免 Memory 在 Identity 尚未稳定时产生污染；P7.7 最后处理连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
 
 ## 剩余主要风险
 

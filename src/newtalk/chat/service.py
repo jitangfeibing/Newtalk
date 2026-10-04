@@ -52,6 +52,8 @@ class ChatService:
         speaker_identity_id: str | None = None,
         speaker_display_name: str = "Guest",
         speaker_relationship: str | None = None,
+        profile_ready: bool = False,
+        profile_field_count: int = 0,
     ) -> Turn:
         current_message = format_user_message(
             user_text,
@@ -72,6 +74,8 @@ class ChatService:
             speaker_identity_id=speaker_identity_id,
             speaker_display_name=speaker_display_name,
             speaker_relationship=speaker_relationship,
+            profile_ready=profile_ready,
+            profile_field_count=profile_field_count,
         )
 
     async def stream_reply(self, turn: Turn) -> AsyncIterator[str]:

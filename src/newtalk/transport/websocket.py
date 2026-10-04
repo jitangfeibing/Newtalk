@@ -9,6 +9,7 @@ from newtalk.transport.protocol import PROTOCOL_VERSION
 from newtalk.transport.runtime import ConnectionRuntime
 from newtalk.transport.text_chat import handle_text_input
 from newtalk.identity import DeviceAuthenticationError
+from newtalk.profile import SessionProfileCache
 
 
 router = APIRouter()
@@ -34,6 +35,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         session_id,
         device.device_id,
     )
+    profile_cache = SessionProfileCache(
+        device_id=device.device_id,
+        identity_service=websocket.app.state.identity_service,
+        provider=websocket.app.state.profile_provider,
+    )
     runtime = ConnectionRuntime(
         websocket,
         session_id=session_id,
@@ -49,6 +55,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         voiceprint_join_timeout_seconds=(
             websocket.app.state.config.voiceprint_join_timeout_seconds
         ),
+        profile_cache=profile_cache,
+        profile_max_chars=websocket.app.state.config.profile_max_chars,
     )
     await runtime.start()
     await runtime.send_json(
@@ -57,6 +65,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "protocol_version": PROTOCOL_VERSION,
             "session_id": session_id,
             "device_id": device.device_id,
+            "profile": {"enabled": profile_cache.enabled},
             "audio": {
                 "input": {
                     "codec": INPUT_AUDIO_FORMAT.codec,

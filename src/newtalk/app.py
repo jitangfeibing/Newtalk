@@ -15,6 +15,11 @@ from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
 from newtalk.identity.api import RecoveryRateLimiter, router as identity_router
+from newtalk.profile import (
+    DisabledProfileProvider,
+    MemosProfileProvider,
+    ProfileProvider,
+)
 from newtalk.transport import websocket_router
 from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
 from newtalk.voiceprint import DisabledVoicePrintClient, HttpVoicePrintClient, VoicePrintClient
@@ -123,6 +128,19 @@ def create_voiceprint_client(config: AppConfig) -> VoicePrintClient:
     )
 
 
+def create_profile_provider(config: AppConfig) -> ProfileProvider:
+    if config.memory_backend == "disabled":
+        return DisabledProfileProvider()
+    if not config.memos_api_key or not config.memos_profile_template_id:
+        raise RuntimeError("MemOS Profile configuration is incomplete")
+    return MemosProfileProvider(
+        base_url=config.memos_base_url,
+        api_key=config.memos_api_key,
+        profile_template_id=config.memos_profile_template_id,
+        timeout_seconds=config.memos_timeout_seconds,
+    )
+
+
 def create_app(
     config: AppConfig | None = None,
     *,
@@ -132,6 +150,7 @@ def create_app(
     recognizer: SpeechRecognizer | None = None,
     identity_service: IdentityService | None = None,
     voiceprint_client: VoicePrintClient | None = None,
+    profile_provider: ProfileProvider | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -143,13 +162,14 @@ def create_app(
     resolved_recognizer = recognizer or create_recognizer(config)
     resolved_identity_service = identity_service or create_identity_service(config)
     resolved_voiceprint_client = voiceprint_client or create_voiceprint_client(config)
+    resolved_profile_provider = profile_provider or create_profile_provider(config)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
             await resolved_identity_service.start()
             logger.info(
-                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s identity_service=%s",
+                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s memory_backend=%s identity_service=%s",
                 config.host,
                 config.port,
                 config.web_root,
@@ -157,6 +177,7 @@ def create_app(
                 config.llm_model or "fake",
                 config.tts_backend,
                 config.asr_backend,
+                config.memory_backend,
                 type(resolved_identity_service).__name__,
             )
             yield
@@ -165,6 +186,7 @@ def create_app(
             await resolved_recognizer.aclose()
             await resolved_identity_service.close()
             await resolved_voiceprint_client.aclose()
+            await resolved_profile_provider.aclose()
             logger.info("service_stopped")
 
     app = FastAPI(title="Newtalk", version=__version__, lifespan=lifespan)
@@ -174,6 +196,7 @@ def create_app(
     app.state.recognizer = resolved_recognizer
     app.state.identity_service = resolved_identity_service
     app.state.voiceprint_client = resolved_voiceprint_client
+    app.state.profile_provider = resolved_profile_provider
     app.state.recovery_rate_limiter = RecoveryRateLimiter(
         max_attempts=config.recovery_max_attempts,
         window_seconds=config.recovery_window_seconds,
