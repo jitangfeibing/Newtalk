@@ -64,6 +64,15 @@ PR：https://github.com/jitangfeibing/Newtalk/pull/14
 状态：代码、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
 ```
 
+P7.6 交付记录：
+
+```text
+提交：800c156 feat: complete P7.6 memory center
+PR：https://github.com/jitangfeibing/Newtalk/pull/16
+合并提交：bdd0bd8 Merge pull request #16 ... P7.6
+状态：Memory Center、完整成员删除、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
+```
+
 从远端 `main` 阅读本文时，应先用下列命令核对最新状态：
 
 ```powershell
@@ -72,7 +81,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2-P7.5 已通过 PR/CI 合并，后续 P7.6 应从最新 `main` 创建新分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.6 已通过 PR/CI 合并，后续 P7.7 应从最新 `main` 创建新分支。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
