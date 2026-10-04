@@ -17,15 +17,15 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P7.6 Memory Center 与完整成员删除 |
-| 阶段状态 | PR #16 和 CI 已通过并合并；待真实 MemOS 验收 |
-| 开发分支 | `main`（P7.6 已合并） |
-| 项目版本 | `0.12.0` |
+| 当前阶段 | P7.7 Session/Dialogue 刷新恢复 |
+| 阶段状态 | 代码与本地全量验证完成，等待 PR/CI |
+| 开发分支 | `codex/p7-7-session-recovery` |
+| 项目版本 | `0.13.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 主项目全量测试通过，包含 3 项真实 PostgreSQL 集成测试；2 项 live 跳过 |
+| 自动测试 | 主项目 148 项通过，包含 5 项真实 PostgreSQL 集成测试；2 项付费 live 跳过 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
 | 最后更新 | 2026-10-04 |
 
@@ -482,11 +482,36 @@ text_input
 - 真实 MemOS 账号仍未配置，因此 Profile/Edit/Get、Memory Get/Search/Update/Delete 和跨服务删除仍需真实浏览器验收。
 - P7.6 不包含页面刷新后的 Dialogue 恢复、Vision 或删除任务管理后台。
 
+## P7.7：Session/Dialogue 刷新恢复
+
+### 已实现
+
+- PostgreSQL 新增 `dialogue_sessions` 和 `dialogue_exchanges`；一个 `device_id` 唯一对应一个当前 Dialogue Session。
+- WebSocket 鉴权后先打开该家庭 Session，再发送带稳定 `session_id` 和 `dialogue` 快照的 `hello`。
+- Family 与 Guest 分别恢复到独立 `DialogueSession`，继续沿用最近轮数和总字符预算。
+- 只有当前活动 Turn 成功完成并提交到内存窗口后才写入 PostgreSQL；取消、失败、旧 Turn 和进行中 Turn 不持久化。
+- `turn_id` 唯一约束实现幂等；同一 Session 追加时锁定 Session 行，避免多页面并发提交破坏窗口裁剪。
+- 浏览器收到 `hello.dialogue.items` 后重建最近消息；空快照也会清理本地旧视图。
+- 成员完整删除会同时清理该成员的持久化 Dialogue 和活动 Family 缓存，Guest 交换不受影响。
+- Member Turn 完成提交前重新校验 Active Identity，覆盖“删除 Worker 已清理、旧 Turn 随后完成”的竞态。
+- WebSocket 协议升级为 `0.8`，Alembic 升级到 `20261004_05`，项目版本升级为 `0.13.0`。
+
+### 自动验证与当前边界
+
+- 主项目在真实 PostgreSQL 下 `148 passed, 2 skipped`；跳过项为显式开启的付费 LLM/TTS live 测试。
+- VoicePrint 子服务 `4 passed`；Python compileall、JavaScript 语法检查、`pip check` 和 `git diff --check` 均通过。
+- 自动测试覆盖同设备恢复、稳定 Session ID、Family/Guest 分窗、滑动裁剪、重复 Turn、不同设备隔离和成员删除清理。
+- 真实浏览器验证 Member 文本交换在刷新后恢复，刷新前后 `session_id` 一致；390px 视口无横向溢出且控制台无 warning/error。
+- Dialogue 持久化失败会记录异常但不撤销已经完成的用户回复；本次连接内上下文仍可继续使用。
+- 第一版不提供跨页面实时消息广播；两个页面在下一次刷新或重连时读取数据库中的最新窗口。
+- Guest 仍是每个家庭的一条共享 Guest 短期窗口，不区分多位未知访客。
+- P7.7 不包含 Vision、全部 Session 历史列表或任意 Session ID 选择。
+
 ## 下一阶段
 
 P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
 
-P7.6 合并后进入 P7.7：实现页面刷新后的 Session/Dialogue 恢复。
+P7.7 完成后进入 P8：以统一聊天输入实现摄像头/图片理解，不复用旧小智“图片转描述后伪装文本”的链路。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -524,3 +549,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-09-07 | P7.4 | 增加 MemOS Profile 懒绑定、连接后台预取、Identity Snapshot 隔离和无阻塞降级 | 主项目 118 项通过、3 项跳过；真实 MemOS 账号验收待完成 |
 | 2026-10-04 | P7.5 | 增加主 LLM `memory_search`、服务端 Scope、PostgreSQL Outbox 和 MemOS 后台写入 | 主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过；真实 MemOS 账号验收待完成 |
 | 2026-10-04 | P7.6 | 增加 Memory Center、Profile 锁定、记忆人工管理和持久化成员完整删除 | 全量测试通过；3 项真实 PostgreSQL 集成测试通过；真实 MemOS 验收待完成 |
+| 2026-10-04 | P7.7 | 增加 PostgreSQL Dialogue Session、刷新恢复、Family/Guest 分窗和成员删除清理 | 主项目 148 项通过、2 项付费 live 跳过；5 项真实 PostgreSQL 集成测试通过 |

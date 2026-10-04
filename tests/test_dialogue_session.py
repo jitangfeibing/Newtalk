@@ -1,6 +1,12 @@
 import pytest
 
-from newtalk.chat import ChatMessage, ChatService, DialogueSession, format_user_message
+from newtalk.chat import (
+    ChatMessage,
+    ChatService,
+    DialogueExchange,
+    DialogueSession,
+    format_user_message,
+)
 
 
 def guest(text: str) -> str:
@@ -81,3 +87,17 @@ def test_dialogue_session_rejects_cross_session_and_duplicate_commits() -> None:
     other_turn = service.create_turn(session_id="session-2", user_text="错误")
     with pytest.raises(ValueError, match="different session"):
         session.commit(other_turn, "错误")
+
+
+def test_dialogue_session_restores_completed_exchanges_once() -> None:
+    session = DialogueSession("session-1", max_turns=2, max_chars=100)
+    restored = (
+        DialogueExchange("turn-1", "一", "答一", None, "Guest", None),
+        DialogueExchange("turn-2", "二", "答二", None, "Guest", None),
+    )
+
+    session.restore(restored)
+
+    assert session.exchanges == restored
+    with pytest.raises(ValueError, match="already been initialized"):
+        session.restore(restored)

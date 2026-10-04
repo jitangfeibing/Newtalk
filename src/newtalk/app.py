@@ -10,7 +10,15 @@ from fastapi.staticfiles import StaticFiles
 from newtalk import __version__
 from newtalk.asr import DoubaoStreamingASR, FakeASR, SpeechRecognizer
 from newtalk.audio import SileroVad, VoiceActivityDetector
-from newtalk.chat import ChatService, FakeLLM, OpenAICompatibleChatModel
+from newtalk.chat import (
+    ChatService,
+    DialogueCacheCoordinator,
+    DialogueStore,
+    FakeLLM,
+    InMemoryDialogueStore,
+    OpenAICompatibleChatModel,
+    SqlAlchemyDialogueStore,
+)
 from newtalk.config import AppConfig, load_config
 from newtalk.logging_config import configure_logging
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
@@ -195,6 +203,7 @@ def create_app(
     profile_provider: MemoryProvider | None = None,
     memory_writer: MemoryWriter | None = None,
     identity_deletion_service: IdentityDeletionScheduler | None = None,
+    dialogue_store: DialogueStore | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if web_root is not None:
@@ -208,8 +217,14 @@ def create_app(
     resolved_vad = vad or create_vad(config)
     resolved_recognizer = recognizer or create_recognizer(config)
     resolved_identity_service = identity_service or create_identity_service(config)
+    resolved_dialogue_store = dialogue_store or (
+        InMemoryDialogueStore()
+        if identity_service is not None
+        else SqlAlchemyDialogueStore(config.database_url)
+    )
     resolved_voiceprint_client = voiceprint_client or create_voiceprint_client(config)
     profile_cache_coordinator = ProfileCacheCoordinator()
+    dialogue_cache_coordinator = DialogueCacheCoordinator()
     resolved_memory_writer = memory_writer or create_memory_writer(
         config, resolved_profile_provider
     )
@@ -225,6 +240,8 @@ def create_app(
             resolved_voiceprint_client,
             resolved_profile_provider,
             profile_cache_coordinator,
+            dialogue_store=resolved_dialogue_store,
+            dialogue_coordinator=dialogue_cache_coordinator,
             poll_seconds=config.memory_job_poll_seconds,
             max_attempts=config.memory_job_max_attempts,
         )
@@ -233,6 +250,7 @@ def create_app(
     async def lifespan(_: FastAPI):
         try:
             await resolved_identity_service.start()
+            await resolved_dialogue_store.start()
             await resolved_memory_writer.start()
             await resolved_identity_deletion_service.start()
             logger.info(
@@ -251,6 +269,7 @@ def create_app(
         finally:
             await resolved_identity_deletion_service.close()
             await resolved_memory_writer.close()
+            await resolved_dialogue_store.close()
             await resolved_chat_service.aclose()
             await resolved_recognizer.aclose()
             await resolved_identity_service.close()
@@ -264,10 +283,12 @@ def create_app(
     app.state.vad = resolved_vad
     app.state.recognizer = resolved_recognizer
     app.state.identity_service = resolved_identity_service
+    app.state.dialogue_store = resolved_dialogue_store
     app.state.voiceprint_client = resolved_voiceprint_client
     app.state.profile_provider = resolved_profile_provider
     app.state.memory_writer = resolved_memory_writer
     app.state.profile_cache_coordinator = profile_cache_coordinator
+    app.state.dialogue_cache_coordinator = dialogue_cache_coordinator
     app.state.identity_deletion_service = resolved_identity_deletion_service
     app.state.recovery_rate_limiter = RecoveryRateLimiter(
         max_attempts=config.recovery_max_attempts,

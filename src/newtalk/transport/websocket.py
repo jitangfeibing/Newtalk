@@ -1,6 +1,5 @@
 import json
 import logging
-from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -28,8 +27,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=4401, reason="device registration required")
         return
 
+    dialogue_snapshot = await websocket.app.state.dialogue_store.open(
+        device_id=device.device_id,
+        max_turns=config.dialogue_max_turns,
+    )
     await websocket.accept()
-    session_id = str(uuid4())
+    session_id = dialogue_snapshot.session_id
     logger.info(
         "websocket_connected session_id=%s device_id=%s",
         session_id,
@@ -59,6 +62,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         profile_cache=profile_cache,
         profile_max_chars=websocket.app.state.config.profile_max_chars,
         memory_writer=websocket.app.state.memory_writer,
+        dialogue_store=websocket.app.state.dialogue_store,
+        dialogue_snapshot=dialogue_snapshot,
+        dialogue_coordinator=websocket.app.state.dialogue_cache_coordinator,
     )
     await runtime.start()
     await runtime.send_json(
@@ -67,6 +73,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "protocol_version": PROTOCOL_VERSION,
             "session_id": session_id,
             "device_id": device.device_id,
+            "dialogue": {
+                "resumed": dialogue_snapshot.resumed,
+                "family_turns": len(dialogue_snapshot.family),
+                "guest_turns": len(dialogue_snapshot.guest),
+                "items": [
+                    {
+                        "lane": item.lane,
+                        "turn_id": item.exchange.turn_id,
+                        "user_text": item.exchange.user_text,
+                        "assistant_text": item.exchange.assistant_text,
+                        "speaker": {
+                            "identity_id": item.exchange.speaker_identity_id,
+                            "display_name": item.exchange.speaker_display_name,
+                            "guest": item.exchange.speaker_identity_id is None,
+                        },
+                        "created_at": item.created_at.isoformat(),
+                    }
+                    for item in dialogue_snapshot.history
+                ],
+            },
             "profile": {"enabled": profile_cache.enabled},
             "audio": {
                 "input": {
@@ -83,7 +109,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             },
         }
     )
-
     try:
         while True:
             frame = await websocket.receive()

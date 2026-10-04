@@ -22,8 +22,12 @@ from newtalk.chat import (
     AudioStarted,
     ChatService,
     ChatMessage,
+    DialogueSnapshot,
+    DialogueStore,
+    DialogueCacheCoordinator,
     DialogueSession,
     TextDelta,
+    Turn,
     TurnCompleted,
 )
 from newtalk.identity import Identity, IdentityNotFoundError, IdentityService
@@ -86,6 +90,9 @@ class ConnectionRuntime:
         profile_cache: SessionProfileCache,
         profile_max_chars: int,
         memory_writer: MemoryWriter,
+        dialogue_store: DialogueStore,
+        dialogue_snapshot: DialogueSnapshot,
+        dialogue_coordinator: DialogueCacheCoordinator,
     ) -> None:
         self.websocket = websocket
         self.session_id = session_id
@@ -106,6 +113,11 @@ class ConnectionRuntime:
             max_turns=dialogue_max_turns,
             max_chars=dialogue_max_chars,
         )
+        self._family_dialogue.restore(dialogue_snapshot.family)
+        self._guest_dialogue.restore(dialogue_snapshot.guest)
+        self._dialogue_store = dialogue_store
+        self._dialogue_coordinator = dialogue_coordinator
+        self._dialogue_coordinator.register(device_id, self._family_dialogue)
         self._voiceprint_join_timeout_seconds = voiceprint_join_timeout_seconds
         self._profile_cache = profile_cache
         self._profile_max_chars = profile_max_chars
@@ -402,6 +414,7 @@ class ConnectionRuntime:
         if self._closing:
             return
         self._closing = True
+        self._dialogue_coordinator.unregister(self._family_dialogue)
         await self._profile_cache.close()
         if self._audio_session is not None:
             session = self._audio_session
@@ -486,9 +499,30 @@ class ConnectionRuntime:
                         )
                     elif isinstance(output, TurnCompleted):
                         committed = False
-                        if self._active_turn_id == turn.turn_id:
+                        if (
+                            self._active_turn_id == turn.turn_id
+                            and await self._can_commit_turn(turn)
+                        ):
                             dialogue.commit(turn, output.text)
                             committed = True
+                            lane = (
+                                "family"
+                                if turn.speaker_identity_id is not None
+                                else "guest"
+                            )
+                            try:
+                                await self._dialogue_store.append(
+                                    session_id=self.session_id,
+                                    lane=lane,
+                                    exchange=dialogue.exchanges[-1],
+                                    max_turns=dialogue.max_turns,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "dialogue_persist_failed session_id=%s turn_id=%s",
+                                    self.session_id,
+                                    turn.turn_id,
+                                )
                             logger.info(
                                 "dialogue_committed session_id=%s turn_id=%s completed_turns=%s",
                                 self.session_id,
@@ -544,6 +578,35 @@ class ConnectionRuntime:
                     self.session_id,
                     turn.turn_id,
                 )
+
+    async def _can_commit_turn(self, turn: Turn) -> bool:
+        if turn.speaker_identity_id is None:
+            return True
+        try:
+            await self._identity_service.get_identity(
+                device_id=turn.device_id,
+                identity_id=turn.speaker_identity_id,
+            )
+            return True
+        except IdentityNotFoundError:
+            logger.info(
+                "dialogue_commit_skipped_inactive_identity "
+                "session_id=%s turn_id=%s identity_id=%s",
+                self.session_id,
+                turn.turn_id,
+                turn.speaker_identity_id,
+            )
+            return False
+        except Exception:
+            logger.exception(
+                "dialogue_commit_identity_check_failed "
+                "session_id=%s turn_id=%s identity_id=%s",
+                self.session_id,
+                turn.turn_id,
+                turn.speaker_identity_id,
+            )
+            # Keep this connection usable; PostgreSQL persistence has its own failure boundary.
+            return True
 
     async def _on_speech_boundary(self, event: SpeechBoundary) -> None:
         if self._closing:

@@ -8,12 +8,12 @@ Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
 
 文档口径：
 
-- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.6 运行时。
+- `README.md`、`docs/architecture.md` 和 `docs/protocol.md` 描述当前 P7.7 运行时。
 - `docs/PROGRESS.md` 记录已经完成并验证的历史，不把规划当作完成状态。
-- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.6 已完成代码和自动测试。
+- `docs/P7_DESIGN.md` 是 P7 总体设计基线，其中 P7.1-P7.7 已完成代码和自动测试。
 - `PROJECT_PLAN.md` 描述项目总体目标和后续路线。
 
-## 当前阶段：P7.6 Memory Center 与完整成员删除已完成
+## 当前阶段：P7.7 Session/Dialogue 刷新恢复已完成
 
 P7.1 已完成家庭设备与成员基础。P7.2 在此基础上增加独立声纹服务：
 
@@ -70,6 +70,16 @@ P7.6 增加可见、可纠正的 Memory Center 与完整成员删除：
 - 删除成员立即改为 `deletion_pending`，后台再删除 VoicePrint、MemOS 记忆与 Profile。
 - 删除任务持久化在 PostgreSQL，外部清理成功后才物理删除 Identity。
 
+P7.7 增加同一家庭的短期 Dialogue 恢复：
+
+- 每个 `device_id` 在 PostgreSQL 中只有一个当前 Dialogue Session，页面刷新或短暂重连后复用同一 `session_id`。
+- Family 与 Guest 分别维护滑动窗口，只持久化成功完成的用户/助手交换；取消、失败和进行中的 Turn 不落库。
+- WebSocket `hello.dialogue` 原子返回恢复状态和最近交换，浏览器据此重建消息列表。
+- `turn_id` 唯一约束防止重复提交；同一 Session 的行锁保证并发页面提交时窗口裁剪一致。
+- 不同 `device_id` 的 Session 和历史强制隔离；成员完整删除同时清理该成员的持久化交换和活动 Family 缓存。
+- Member Turn 完成提交前重新校验 Active Identity，删除期间尚未结束的旧 Turn 不会重新写回 Dialogue 或长期 Memory。
+- Dialogue 仍受 `NEWTALK_DIALOGUE_MAX_TURNS` 与 `NEWTALK_DIALOGUE_MAX_CHARS` 限制，不替代 MemOS 长期记忆。
+
 继承能力包括：
 
 - `GET /health` 健康检查。
@@ -91,7 +101,7 @@ P7.6 增加可见、可纠正的 Memory Center 与完整成员删除：
 - Fake ASR 继续用于自动测试；豆包 ASR 使用官方 V3 二进制 WebSocket 协议。
 - 豆包 ASR 按 100ms 聚合 PCM，实时返回 partial，并在 final 时只创建一个 Turn。
 - ASR 记录首个识别结果和完整识别耗时；失败会返回 `asr_failed`，不会关闭 WebSocket。
-- 每条 WebSocket 连接持有独立 `DialogueSession`，不同连接不共享历史。
+- 每条 WebSocket 连接从当前 `device_id` 的持久化 Session 恢复独立内存窗口；不同家庭不共享历史。
 - 只有成功完成的用户/助手轮次进入 Dialogue History；取消或失败的 Turn 不写入历史。
 - 上下文按最近轮次和总字符数双重限制，默认最多 8 轮、12000 字符。
 - Fake 和 OpenAI-compatible LLM 使用同一个多轮消息契约。
@@ -99,7 +109,7 @@ P7.6 增加可见、可纠正的 Memory Center 与完整成员删除：
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未接入 Vision、Session/Dialogue 刷新恢复和通用 Provider Registry。P7.6 自动测试与 PostgreSQL 集成测试已覆盖 Memory Center 家庭隔离、MemOS 所有权校验、Profile Cache 更新和持久化成员删除；真实 MemOS API Key、Profile Template、Search/Add/Edit/Delete 返回数据仍需本地验收。
+当前阶段尚未接入 Vision 和通用 Provider Registry。P7.7 自动测试与 PostgreSQL 集成测试已覆盖 Session 恢复、Family/Guest 分窗、窗口裁剪、重复 Turn、家庭隔离和成员删除清理；真实 MemOS API Key、Profile Template、Search/Add/Edit/Delete 返回数据仍需本地验收。
 
 ## 本地启动
 
@@ -117,7 +127,7 @@ newtalk
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
 
-P7.6 数据库、设备、声纹和可选 Memory 配置：
+P7.7 数据库、设备、声纹和可选 Memory 配置：
 
 ```dotenv
 NEWTALK_DATABASE_URL=postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk
@@ -176,7 +186,7 @@ NEWTALK_DIALOGUE_MAX_TURNS=8
 NEWTALK_DIALOGUE_MAX_CHARS=12000
 ```
 
-窗口只保存当前 WebSocket 连接内成功完成的对话；刷新或断开页面后历史会清空。
+窗口只保存成功完成的对话，并在同一 `device_id` 页面刷新或短暂重连后恢复。Family 与 Guest 分别裁剪到最近 `NEWTALK_DIALOGUE_MAX_TURNS` 轮；取消、失败和未完成 Turn 不会恢复。
 
 使用智谱或其他 OpenAI-compatible 服务时，在本地 `.env` 配置：
 

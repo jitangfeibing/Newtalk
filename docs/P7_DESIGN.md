@@ -2,9 +2,9 @@
 
 本文记录 P7 已经确认的产品和数据边界，以及需要通过真实环境确定的实现参数。
 
-当前状态为“总体设计基线已确认，P7.1-P7.6 已完成代码和自动测试，MemOS 真实账号验收待完成，下一阶段为 P7.7”。P1-P6 的聊天和语音行为保持不变。
+当前状态为“总体设计基线已确认，P7.1-P7.7 已完成代码和自动测试，MemOS 真实账号验收待完成，下一阶段为 P8 Vision”。P1-P6 的聊天和语音行为保持不变。
 
-Memory 的读取、写入、Provider 和前端管理方向已记录在本文中。所有内容仍是设计基线，不表示功能已经实现。
+Memory 的读取、写入、Provider、前端管理和 Dialogue 恢复方向已记录在本文中。各节明确标注实际落地状态；未标注完成的内容仍只代表设计基线。
 
 ## 已确认边界
 
@@ -482,19 +482,39 @@ async_mode            <- true
 
 默认只允许 MemOS 从成功完成的 Member Turn 中形成事实、偏好、Profile 和事件记忆，不生成 Tool Memory，也不提交检索得到的旧记忆、Vision 观察或被取消 Turn。
 
-### 对当前代码的影响
+### 实际代码落地
 
-当前 P6 只支持文本增量模型流，后续至少需要：
+P7.3-P7.6 已完成以下变化：
 
-- `Turn` 增加不可变的 `device_id` 和 `speaker_identity_id`。
-- 模型消息能够表达 System、Tool Call 和 Tool Result。
-- `ChatModel` 从纯字符串流扩展为 Text 与 Tool Call 事件流。
-- `OpenAICompatibleChatModel` 解析流式 Tool Call，并将 Tool Result 继续发送给主 LLM。
-- `ChatService` 增加有上限的 Tool 执行循环，只有最终文本进入 TTS。
-- Profile Snapshot 由 Session/Identity 相关对象持有，不继续加重 `ConnectionRuntime`。
-- Memory 后台任务和当前 Turn 任务分离，但携带完整归属和幂等键。
+- `Turn` 已增加不可变的 `device_id` 和 `speaker_identity_id`。
+- 模型消息已能表达 System、Tool Call 和 Tool Result。
+- `ChatModel` 已从纯字符串流扩展为 Text 与 Tool Call 事件流。
+- `OpenAICompatibleChatModel` 已解析流式 Tool Call，并将 Tool Result 继续发送给主 LLM。
+- `ChatService` 已增加单次 `memory_search` 执行边界，只有最终文本进入 TTS。
+- Profile Snapshot 由 `SessionProfileCache` 持有并按 Identity 隔离。
+- Memory 后台任务和当前 Turn 任务已经分离，并携带完整归属和幂等键。
 
 这不是一次性引入通用 Agent Framework。P7 只实现 `memory_search` 所需的最小 Tool Calling 闭环，其他工具留在对应 Part 再扩展。
+
+### P7.7 Dialogue 恢复基线
+
+P7.7 已按以下规则落地：
+
+```text
+device_id
+-> 唯一当前 dialogue_session
+-> Family 最近窗口
+-> Guest 最近窗口
+```
+
+- WebSocket 建连时由服务端根据已认证 `device_id` 打开 Session，浏览器不能提交或切换 `session_id`。
+- `hello.dialogue` 携带当前窗口快照，浏览器刷新后重建可见消息，Runtime 同时恢复给 LLM 使用的上下文。
+- 只有成功完成并提交的 Turn 持久化；取消、失败、迟到和进行中 Turn 不恢复。
+- Family 和 Guest 分 lane 保存、分别裁剪，继续使用默认 8 轮和 12000 字符预算。
+- `turn_id` 全局唯一，同一 Session 追加使用数据库行锁；不同设备拥有不同 Session 行。
+- 第一版不保存无限历史、不提供历史 Session 列表、不做多个页面之间的实时广播。
+- 删除 Member 时清理其用户/助手交换；Guest 交换和其他成员交换保留。
+- Member Turn 在提交 Dialogue/Memory 前重新校验 Identity 仍为 Active，删除过程中的旧 Turn 不能重新写回。
 
 ### Memory 验收重点
 
@@ -581,7 +601,7 @@ P7.6：Memory Center、Profile 锁定、记忆编辑删除和成员完整删除
 P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试
 ```
 
-P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5 已开放受控的长期记忆读写；P7.6 已提供人工查看、纠正、锁定和完整删除；P7.7 最后处理连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
+P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5 已开放受控的长期记忆读写；P7.6 已提供人工查看、纠正、锁定和完整删除；P7.7 已完成连接重建后的短期 Dialogue 恢复，避免把连接生命周期和长期 Memory 混成同一个概念。
 
 ## 剩余主要风险
 
@@ -595,6 +615,6 @@ P7.1-P7.4 已建立本地 Identity 与远端 Profile 的归属边界；P7.5 已�
 ## 讨论原则
 
 - 先确认真实产品行为，再定义数据模型和接口。
-- 不因为概念上可能扩展，就在 P7 第一版引入 Household、多设备家庭或 Session 恢复。
+- 不因为概念上可能扩展，就在 P7 第一版引入 Household、多设备家庭或历史 Session 列表。
 - 已确认的 Memory、Profile 和 VoicePrint 基线不得在子阶段实现时被隐式改回 Legacy 行为。
 - 每个子阶段仍需形成可运行、可测试、可回退的纵向闭环。

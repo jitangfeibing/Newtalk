@@ -14,7 +14,14 @@ from newtalk.chat.models import (
     format_user_message,
 )
 from newtalk.chat.openai_compatible import OpenAICompatibleChatModel
-from newtalk.chat.session import DialogueExchange, DialogueSession
+from newtalk.chat.persistence import (
+    DialogueSnapshot,
+    DialogueStore,
+    InMemoryDialogueStore,
+    PersistedDialogueExchange,
+    SqlAlchemyDialogueStore,
+)
+from newtalk.chat.session import DialogueCacheCoordinator, DialogueExchange, DialogueSession
 from newtalk.chat.service import ChatService
 
 
@@ -28,9 +35,15 @@ __all__ = [
     "ChatMessage",
     "ModelToolCall",
     "DialogueExchange",
+    "DialogueCacheCoordinator",
+    "DialogueSnapshot",
+    "DialogueStore",
     "DialogueSession",
     "FakeLLM",
+    "InMemoryDialogueStore",
     "OpenAICompatibleChatModel",
+    "PersistedDialogueExchange",
+    "SqlAlchemyDialogueStore",
     "TextDelta",
     "Turn",
     "TurnCompleted",

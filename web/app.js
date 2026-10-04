@@ -336,6 +336,7 @@ function handleIncoming(payload) {
         advertisedInputFormat = payload.audio.input;
         advertisedAudioFormat = payload.audio.output;
         audioStatus.textContent = `${advertisedAudioFormat.sample_rate / 1000}k PCM 待命`;
+        renderDialogueSnapshot(payload.dialogue?.items || []);
         return;
     }
 
@@ -455,6 +456,19 @@ function handleIncoming(payload) {
     if (payload.type === 'error') {
         if (payload.event_id) pendingEvents.delete(payload.event_id);
         appendMessage('assistant', `消息未处理：${payload.message}`, payload.code);
+    }
+}
+
+function renderDialogueSnapshot(items) {
+    messageList.replaceChildren();
+    messagesByTurn.clear();
+    if (!items.length) return;
+    for (const item of items) {
+        const user = appendMessage('user', item.user_text, item.turn_id.slice(0, 8));
+        user.querySelector('.message-role').textContent = item.speaker.display_name;
+        const assistant = appendMessage('assistant', item.assistant_text, item.turn_id.slice(0, 8));
+        assistant.dataset.state = 'completed';
+        messagesByTurn.set(item.turn_id, assistant);
     }
 }
 

@@ -1,8 +1,8 @@
-# P7.6 HTTP、VoicePrint、Memory 与 WebSocket 协议
+# P7.7 HTTP、VoicePrint、Memory 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.7`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.8`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
-WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前连接运行时；Family Dialogue 和 Guest Dialogue 当前都在断线后清空。
+WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID，并分别恢复 Family 和 Guest 的最近窗口。
 
 ## Device 与成员 HTTP API
 
@@ -42,9 +42,28 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.7",
-  "session_id": "generated UUID",
+  "protocol_version": "0.8",
+  "session_id": "stable dialogue session UUID",
   "device_id": "02:11:22:33:44:55",
+  "dialogue": {
+    "resumed": true,
+    "family_turns": 1,
+    "guest_turns": 0,
+    "items": [
+      {
+        "lane": "family",
+        "turn_id": "completed Turn UUID",
+        "user_text": "我今天面试了",
+        "assistant_text": "感觉怎么样？",
+        "speaker": {
+          "identity_id": "member UUID",
+          "display_name": "小明",
+          "guest": false
+        },
+        "created_at": "2026-10-04T12:00:00+00:00"
+      }
+    ]
+  },
   "profile": {"enabled": true},
   "audio": {
     "input": {"codec":"pcm_s16le","sample_rate":16000,"channels":1,"frame_duration_ms":20},
@@ -52,6 +71,8 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
   }
 }
 ```
+
+`dialogue.items` 只包含当前滑动窗口内成功完成的交换，并按时间排序。取消、失败、进行中的 Turn 不返回。浏览器只能接收快照，协议不接受客户端提供 `session_id` 或请求其他家庭 Session。
 
 ## 麦克风输入
 
@@ -242,3 +263,25 @@ Guest / Memory disabled
 ```
 
 只写入成功完成的 Member 用户消息和最终助手回答。Guest、被打断 Turn、生成失败 Turn、旧 Turn 迟到结果、Tool Result 和检索返回的旧记忆均不写入。该 Outbox 保证本地去重和至少一次投递；真实 MemOS 是否按 `info.turn_id` 提供远端幂等，需要在真实账号验收中确认。
+
+## P7.7 Dialogue 恢复链
+
+P7.7 没有新增客户端上行事件；协议版本升级为 `0.8`，变化集中在 `hello.dialogue`。
+
+```text
+WebSocket 握手携带 HttpOnly Device Cookie
+-> 服务端认证 device_id
+-> DialogueStore.open(device_id)
+   |-> 首次连接：创建唯一 Session，resumed=false
+   `-> 再次连接：读取 Family/Guest 最近窗口，resumed=true
+-> hello(session_id, dialogue snapshot)
+-> 浏览器重建消息列表
+-> ConnectionRuntime 恢复两个内存 DialogueSession
+
+当前 Turn 成功完成
+-> 内存 Dialogue commit
+-> PostgreSQL append(turn_id unique, lane)
+-> 分 lane 裁剪最近 max_turns
+```
+
+同一家庭多个页面共享持久化 Session，但第一版不推送跨页面实时更新。每个页面建立连接时获得当时的快照，后续在刷新或重连时再次同步。
