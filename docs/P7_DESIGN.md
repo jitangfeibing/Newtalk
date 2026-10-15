@@ -2,7 +2,7 @@
 
 本文记录 P7 已经确认的产品和数据边界，以及需要通过真实环境确定的实现参数。
 
-当前状态为“总体设计基线已确认，P7.1-P7.7 已完成代码和自动测试，MemOS 真实账号验收待完成，下一阶段为 P8 Vision”。P1-P6 的聊天和语音行为保持不变。
+当前状态为“总体设计基线已确认，P7.1-P7.7 已完成代码、自动测试和核心人工验收；先进入 P7.8 Web 产品界面完善，再进入 P8 Vision”。P1-P6 的聊天和语音行为保持不变。
 
 Memory 的读取、写入、Provider、前端管理和 Dialogue 恢复方向已记录在本文中。各节明确标注实际落地状态；未标注完成的内容仍只代表设计基线。
 
@@ -218,7 +218,7 @@ Profile 保存姓名、称呼、喜好、兴趣、家庭关系、长期目标和
 - Session 结束时可以补充校正，但不能作为唯一保存时机，因为异常断线不保证执行。
 - 用户锁定的 Profile 字段不能被后台自动更新覆盖。
 
-P7.4 已按上述读取边界实现 `ProfileProvider`、`MemosProfileProvider` 和 `SessionProfileCache`。当前实现读取 `/get/memory` 时只请求 `profile`，未找到配置模板则调用 `/bind/profile_template` 后再次读取。自动测试已证明两个 Identity 不复用 Snapshot，Guest 和 Provider 失败不阻塞 Turn；真实 MemOS 账号、模板字段和数据更新仍待联调。
+P7.4 已按上述读取边界实现 `ProfileProvider`、`MemosProfileProvider` 和 `SessionProfileCache`。当前实现读取 `/get/memory` 时只请求 `profile`，未找到配置模板则调用 `/bind/profile_template` 后再次读取。自动测试已证明两个 Identity 不复用 Snapshot，Guest 和 Provider 失败不阻塞 Turn；真实 MemOS 核心链路和 Memory Center 已完成人工验收。
 
 P7 第一版 Profile Template 使用以下字段树作为验收基线：
 
@@ -340,7 +340,8 @@ Member Turn 成功完成
 后台 Memory Pipeline
 -> 使用 turn_id 做幂等键
 -> MemOS Add Message
--> async_mode=true 后立即结束当前 Job 请求
+-> async_mode=true 返回 task_id 后持久化 submitted
+-> 使用 Get Task Status 跟踪 running/completed/failed
 -> MemOS 后台提取事实、偏好、Profile 和事件
 -> MemOS 按 Profile Template 和 algorithm_updatable 更新字段
 -> 记录成功、失败和耗时
@@ -356,9 +357,9 @@ Member Turn 成功完成
 - 不把检索结果再次原样保存，避免记忆自我复制。
 - 不把整个家庭 Dialogue 无区分地写给某一个成员。
 - 第一版使用 PostgreSQL `memory_jobs` 持久化任务表，不使用仅存在于进程内存中的队列。
-- Worker 领取 Pending Job，成功后标记 Completed；失败按有限次数重试，最终进入 Failed 供日志和管理页面查看。
+- Worker 领取 Pending Job 后提交一次；拿到 `task_id` 后进入 Submitted，并在服务重启后继续查询而非重复提交；远端 Completed 才标记完成，远端 Failed 按有限次数重试。
 
-P7.5 已按上述边界实现。当前 Worker 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 和处理租约支持多 Worker 竞争及崩溃恢复；自动测试已覆盖查询降级、本地去重、重试和租约恢复。真实 MemOS Search/Add Message、Provider Task 状态与远端幂等仍待账号联调。
+P7.5 已按上述边界实现。当前 Worker 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 和处理租约支持多 Worker 竞争及崩溃恢复；迁移 `20261015_06` 增加 Submitted 状态。自动测试已覆盖查询降级、本地去重、提交后恢复查询、状态查询故障不重发、重试和租约恢复。官方 Add Message 文档未提供幂等键，远端接收与本地保存 `task_id` 之间的极小崩溃窗口仍需接受。
 
 Profile 字段由 MemOS Profile 实例保存，Newtalk 在 Session 中只保留 Snapshot。Memory Center 将字段映射为：
 
@@ -567,17 +568,17 @@ P7 第一版的 Family Dialogue 和 Guest Dialogue 均沿用 P6 的 8 轮、1200
 
 ### Memory
 
-- MemOS 真实账号的项目权限、配额、异步任务返回和错误行为。
+- MemOS 项目配额、长期运行稳定性、异步任务失败样本和错误行为。
 - `allow_memory_view`、Search Memory 类型过滤和结果注入的最终字段。
 - 多人对话中的第三方描述、代词和事实归属。
 - `memory_search` 的结果上限、字符预算、超时和 Tool Call 次数在真实测试后的取值。
 - MemOS 的幂等、去重、冲突、更新、过期和删除行为是否满足需求。
 - 敏感信息、视觉内容和 Tool 结果是否允许进入 Memory。
-- Memory Center 真实 MemOS 数据下的字段展示、更新时间格式和错误文案。
+- Memory Center 更多真实数据类型下的字段展示、更新时间格式和错误文案。
 
 ### Profile
 
-- MemOS 自动更新完成时间和下一 Session 加载结果的真实验收。
+- MemOS 自动更新完成时间和下一 Session 加载结果的持续观察。
 
 ### 存储与并发
 

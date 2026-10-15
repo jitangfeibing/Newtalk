@@ -17,17 +17,17 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P7.7 Session/Dialogue 刷新恢复 |
-| 阶段状态 | PR #18 和 CI 已通过并合并；P7 代码阶段完成，真实 MemOS 验收仍待执行 |
-| 开发分支 | `main`（P7.7 已合并） |
+| 当前阶段 | P7 稳定性收尾 |
+| 阶段状态 | P7.1-P7.7、真实语音打断、短语音声纹与 MemOS 异步任务状态已完成；真实 MemOS 核心链路已验收 |
+| 开发分支 | 合并后以 `main` 为准 |
 | 项目版本 | `0.13.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 主项目 148 项通过，包含 5 项真实 PostgreSQL 集成测试；2 项付费 live 跳过 |
+| 自动测试 | 主项目 `146 passed / 7 skipped`；VoicePrint `7 passed / 1 skipped`；Memory Job 真实 PostgreSQL 集成测试通过 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
-| 最后更新 | 2026-10-04 |
+| 最后更新 | 2026-10-15 |
 
 ## P1：基础运行骨架
 
@@ -509,9 +509,17 @@ text_input
 
 ## 下一阶段
 
-P6 合并后进入 P7 Identity、Memory 和 User Profile，但会继续拆成可独立验证的小步骤。
+语音打断链路已补齐“服务端生成完成、浏览器仍在播放缓冲 PCM”的生命周期：浏览器在 `vad_speech_start` 时立即清空 AudioWorklet 队列，并通过 `playback_drained` 回执告知服务端播放真正结束；服务端在回执前保留播放流状态，因此用户开口时即使旧 Turn 已完成，仍会发送 `audio_stop`。WebSocket 协议升级为 `0.9`，真实浏览器打断已由用户验收通过。
 
-P7.7 完成后进入 P8：以统一聊天输入实现摄像头/图片理解，不复用旧小智“图片转描述后伪装文本”的链路。
+声纹服务已将录入与识别的最短音频时长拆开：三段录入样本继续要求至少 `2` 秒，日常识别默认允许 `0.8` 秒，低于识别下限才返回 `422`。该调整不补静音、不修改 CAM++ 模型，也不要求重新录入已有模板。
+
+MemOS 异步任务状态机已补齐：迁移 `20261015_06` 增加 `submitted`，`/add/message` 返回的 `task_id` 会先落 PostgreSQL，再通过 `/get/status` 跟踪到远端 `completed/failed`。服务重启和状态查询短暂失败只恢复查询，不重复 Add Message；真实 PostgreSQL 迁移与恢复领取测试通过。官方接口没有声明幂等键，因此远端接收请求但本地尚未保存响应时的极小崩溃窗口仍然存在。
+
+本轮完成后的自动验证为主项目 `146 passed / 7 skipped`、VoicePrint `7 passed / 1 skipped`；Memory Job 使用本机 PostgreSQL 的独立集成测试通过，数据库 revision 为 `20261015_06 (head)`，Python 编译、前端语法、依赖和差异检查通过。
+
+下一阶段为 P7.8 Web 产品界面完善，再进入 P8 Vision。P7.8 保持当前原生 HTML/CSS/JavaScript 技术栈，重点整理聊天、成员、声纹、Profile、Memory Center、服务状态和开发日志的信息层级，不在本阶段迁移前端框架。
+
+P7.8 完成后进入 P8：以统一聊天输入实现摄像头/图片理解，不复用旧小智“图片转描述后伪装文本”的链路。
 
 P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
 
@@ -550,3 +558,4 @@ P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`
 | 2026-10-04 | P7.5 | 增加主 LLM `memory_search`、服务端 Scope、PostgreSQL Outbox 和 MemOS 后台写入 | 主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过；真实 MemOS 账号验收待完成 |
 | 2026-10-04 | P7.6 | 增加 Memory Center、Profile 锁定、记忆人工管理和持久化成员完整删除 | 全量测试通过；3 项真实 PostgreSQL 集成测试通过；真实 MemOS 验收待完成 |
 | 2026-10-04 | P7.7 | 增加 PostgreSQL Dialogue Session、刷新恢复、Family/Guest 分窗和成员删除清理 | 主项目 148 项通过、2 项付费 live 跳过；5 项真实 PostgreSQL 集成测试通过 |
+| 2026-10-15 | P7 稳定性收尾 | 修复浏览器真实语音打断、短语音声纹识别下限，补齐 MemOS 异步任务状态恢复与运行日志 | 主项目 146 项通过、7 项按环境跳过；VoicePrint 7 项通过、1 项环境跳过；真实 PostgreSQL Memory Job 集成测试通过 |

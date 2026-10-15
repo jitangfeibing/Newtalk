@@ -59,6 +59,7 @@ P7.5 增加按需长期记忆读写：
 - MemOS 查询失败会作为受控 Tool Result 返回主 LLM，普通聊天不因 Memory 故障而中止。
 - 只有成功提交 Dialogue 的 Member Turn 才写入长期记忆；Guest、取消、失败和旧 Turn 均不写入。
 - 写入先落 PostgreSQL `memory_jobs` Outbox，再由后台 Worker 调用 MemOS Add Message，不把远程写入延迟放进当前回复。
+- MemOS 返回异步 `task_id` 后，Job 进入 `submitted` 并通过 `/get/status` 跟踪到远端 `completed/failed`；服务重启时恢复状态查询而不是重复 Add Message。
 - `turn_id` 唯一约束避免本地重复入队；数据库任务使用领取租约和有限重试，支持服务重启和多 Worker 竞争。
 
 P7.6 增加可见、可纠正的 Memory Center 与完整成员删除：
@@ -109,7 +110,7 @@ P7.7 增加同一家庭的短期 Dialogue 恢复：
 - 环境变量配置和 Newtalk 应用日志。
 - HTTP、WebSocket 与真实服务进程自动测试。
 
-当前阶段尚未接入 Vision 和通用 Provider Registry。P7.7 自动测试与 PostgreSQL 集成测试已覆盖 Session 恢复、Family/Guest 分窗、窗口裁剪、重复 Turn、家庭隔离和成员删除清理；真实 MemOS API Key、Profile Template、Search/Add/Edit/Delete 返回数据仍需本地验收。
+当前阶段尚未接入 Vision 和通用 Provider Registry。P7 自动测试与 PostgreSQL 集成测试已覆盖 Session 恢复、Family/Guest 分窗、窗口裁剪、重复 Turn、家庭隔离、成员删除清理和 Memory Job 恢复；用户已完成真实 MemOS 核心链路与浏览器 Memory Center 验收。外部服务权限、配额和返回结构变化仍应以实际运行日志为准。
 
 ## 本地启动
 
@@ -171,11 +172,14 @@ docker compose up -d postgres voiceprint
 ```powershell
 $env:VOICEPRINT_EXTRAS="campplus"
 $env:VOICEPRINT_BACKEND="campplus"
+$env:VOICEPRINT_MIN_SAMPLE_SECONDS="2"
+$env:VOICEPRINT_IDENTIFY_MIN_SAMPLE_SECONDS="0.8"
 docker compose build voiceprint
 docker compose up -d postgres voiceprint
 ```
 
 首次启动会下载 `iic/speech_campplus_sv_zh-cn_3dspeaker_16k`，模型缓存保存在 Docker Volume。`deterministic` 后端不具备真实说话人识别能力，不能用于产品演示。
+声纹录入的三段样本默认每段至少 `2` 秒；日常识别样本默认至少 `0.8` 秒。两者分开配置，避免正常短句因录入质量门槛而返回 `422`。
 
 生产 HTTPS 环境必须将 `NEWTALK_DEVICE_COOKIE_SECURE` 设为 `true`。仓库中的 Docker 密码只用于本地开发。
 
