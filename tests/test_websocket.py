@@ -44,7 +44,11 @@ def guest(text: str) -> str:
 client = make_client()
 
 
-def receive_turn(websocket) -> tuple[dict, list[dict], dict, list[dict], list[bytes]]:
+def receive_turn(
+    websocket,
+    *,
+    acknowledge_playback: bool = True,
+) -> tuple[dict, list[dict], dict, list[dict], list[bytes]]:
     started = websocket.receive_json()
     deltas: list[dict] = []
     audio_events: list[dict] = []
@@ -61,6 +65,24 @@ def receive_turn(websocket) -> tuple[dict, list[dict], dict, list[dict], list[by
         if event["type"] in {"audio_start", "audio_end", "audio_failed"}:
             audio_events.append(event)
             continue
+        if acknowledge_playback and event["type"] == "turn_completed":
+            audio_started = next(
+                (
+                    audio_event
+                    for audio_event in audio_events
+                    if audio_event["type"] == "audio_start"
+                ),
+                None,
+            )
+            if audio_started is not None:
+                websocket.send_json(
+                    {
+                        "type": "playback_drained",
+                        "event_id": f"drained-{event['turn_id']}",
+                        "turn_id": event["turn_id"],
+                        "stream_id": audio_started["stream_id"],
+                    }
+                )
         return started, deltas, event, audio_events, audio_frames
 
 
@@ -69,7 +91,7 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with isolated_client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.8"
+        assert hello["protocol_version"] == "0.9"
         assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]
@@ -883,6 +905,76 @@ def test_vad_speech_start_cancels_the_active_turn() -> None:
         assert stopped["type"] == "audio_stop"
         assert stopped["turn_id"] == old_turn["turn_id"]
         assert stopped["reason"] == "barge_in"
+
+
+def test_vad_speech_start_stops_buffered_browser_playback_after_turn_completed() -> None:
+    barge_in_client = make_client(vad=ScriptedVad(), recognizer=FakeASR())
+    with barge_in_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        assert websocket.receive_json()["type"] == "audio_input_ready"
+        websocket.send_json(
+            {"type": "text_input", "event_id": "completed-turn", "text": "请说一段话"}
+        )
+        started, _, completed, audio_events, _ = receive_turn(
+            websocket,
+            acknowledge_playback=False,
+        )
+        assert completed["type"] == "turn_completed"
+        stream_id = next(
+            event["stream_id"]
+            for event in audio_events
+            if event["type"] == "audio_start"
+        )
+
+        websocket.send_bytes(bytes(640))
+        assert websocket.receive_json()["type"] == "vad_speech_start"
+        stopped = websocket.receive_json()
+
+        assert stopped == {
+            "type": "audio_stop",
+            "turn_id": started["turn_id"],
+            "stream_id": stream_id,
+            "reason": "barge_in",
+        }
+
+
+def test_playback_drained_prevents_stale_audio_stop_on_later_speech() -> None:
+    barge_in_client = make_client(vad=ScriptedVad(), recognizer=FakeASR())
+    with barge_in_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(audio_input_start())
+        assert websocket.receive_json()["type"] == "audio_input_ready"
+        websocket.send_json(
+            {"type": "text_input", "event_id": "drained-turn", "text": "请说一段话"}
+        )
+        started, _, completed, audio_events, _ = receive_turn(
+            websocket,
+            acknowledge_playback=False,
+        )
+        assert completed["type"] == "turn_completed"
+        stream_id = next(
+            event["stream_id"]
+            for event in audio_events
+            if event["type"] == "audio_start"
+        )
+        websocket.send_json(
+            {
+                "type": "playback_drained",
+                "event_id": "playback-drained",
+                "turn_id": started["turn_id"],
+                "stream_id": stream_id,
+            }
+        )
+
+        websocket.send_bytes(bytes(640))
+        assert websocket.receive_json()["type"] == "vad_speech_start"
+        websocket.send_json({"type": "ping", "event_id": "after-drained"})
+        assert websocket.receive_json() == {
+            "type": "pong",
+            "session_id": started["session_id"],
+            "event_id": "after-drained",
+        }
 
 
 def test_asr_failure_is_reported_without_closing_websocket() -> None:

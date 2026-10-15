@@ -1,7 +1,7 @@
 from fastapi import WebSocket
 
 
-PROTOCOL_VERSION = "0.8"
+PROTOCOL_VERSION = "0.9"
 
 
 async def send_protocol_error(

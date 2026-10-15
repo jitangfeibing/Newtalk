@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 import os
 from uuid import uuid4
 
@@ -43,10 +44,16 @@ def test_postgres_memory_job_claim_is_idempotent() -> None:
             assert claimed is not None
             assert claimed.turn_id == job.turn_id
             assert claimed.attempts == 1
+            await store.submit(
+                claimed.job_id,
+                "provider-task",
+                check_at=datetime.now(timezone.utc),
+            )
             reclaimed = await store.claim()
             assert reclaimed is not None
             assert reclaimed.job_id == claimed.job_id
-            assert reclaimed.attempts == 2
+            assert reclaimed.attempts == 1
+            assert reclaimed.provider_task_id == "provider-task"
             await store.complete(reclaimed.job_id, "provider-task")
             assert await store.claim() is None
         finally:

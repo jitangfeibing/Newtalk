@@ -1,6 +1,6 @@
 # P7.7 Architecture
 
-P7.7 在 Identity、Memory Center 和成员完整删除基础上增加 PostgreSQL Dialogue Session。聊天主链仍由连接内 Runtime 执行，但短期上下文不再等同于 WebSocket 生命周期；同一 `device_id` 刷新或短暂重连后恢复最近窗口。
+当前架构在 Identity、Memory Center 和成员完整删除基础上使用 PostgreSQL Dialogue Session。聊天主链仍由连接内 Runtime 执行，但短期上下文不再等同于 WebSocket 生命周期；同一 `device_id` 刷新或短暂重连后恢复最近窗口。
 
 ```text
 Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
@@ -47,6 +47,8 @@ completed current Member Turn
        -> PostgreSQL memory_jobs Outbox
        -> background MemoryWriteService
        -> MemOS Add Message (async mode)
+       -> submitted(task_id) -> MemOS Get Task Status
+       -> remote completed or failed
 
 completed current Guest Turn
        -> DialogueStore.append(guest) -> PostgreSQL dialogue_exchanges
@@ -58,7 +60,7 @@ completed current Guest Turn
 - `newtalk.memory.provider.MemoryProvider` 是当前实际需要的最小 Memory 契约，包含 Profile、检索、写入和人工管理；默认实现关闭。
 - `newtalk.profile.memos.MemosProfileProvider` 当前同时实现上述契约，负责 Profile Template 懒绑定、Search Memory 和 Add Message 的 HTTP 协议细节。
 - `newtalk.chat.service.ChatService` 只给 Member 注册 `memory_search`，每个 Turn 最多执行一次，并使用 Turn 内不可变身份建立服务端 Scope。
-- `newtalk.memory.jobs.MemoryWriteService` 消费 PostgreSQL Outbox；本地入队按 `turn_id` 去重，任务领取使用租约，远端失败有限重试。
+- `newtalk.memory.jobs.MemoryWriteService` 消费 PostgreSQL Outbox；本地入队按 `turn_id` 去重，任务领取使用租约，并持久化 MemOS `task_id` 直到远端最终完成，远端失败有限重试。
 - `newtalk.profile.session.SessionProfileCache` 在连接开始后异步预取成员 Profile，按 `identity_id` 保存 Snapshot；Turn 读取只访问内存，不等待 MemOS。
 - `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要。
 - `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
@@ -96,18 +98,18 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 
 刷新或重连时，服务端分别加载最近的 Family 和 Guest 交换并恢复两个内存窗口。`hello.dialogue.items` 只返回当前窗口内的交换供页面重建，不允许浏览器提交或选择 `session_id`。第一版没有跨页面实时广播，已打开的另一个页面要到下一次重连才看到新交换。
 
-同一个提交点还会把 Member Turn 写入 `memory_jobs`。Runtime 只等待一次本地数据库入队，不等待 MemOS；Guest 不进入队列。多个 Worker 通过 PostgreSQL `FOR UPDATE SKIP LOCKED` 竞争任务，租约过期后可由其他 Worker 恢复。该链路提供本地至少一次投递，MemOS 接收成功但本地完成标记失败时仍可能产生远端重复，后续需要结合真实 MemOS 幂等行为验收。
+同一个提交点还会把 Member Turn 写入 `memory_jobs`。Runtime 只等待一次本地数据库入队，不等待 MemOS；Guest 不进入队列。多个 Worker 通过 PostgreSQL `FOR UPDATE SKIP LOCKED` 竞争任务，租约过期后可由其他 Worker 恢复。Add Message 返回后先持久化 `provider_task_id` 和 `submitted`，后续 Worker 只调用 Get Task Status；查询失败同样保留任务 ID，因此不会因轮询故障重复提交。远端已接收但 HTTP 响应尚未持久化时进程崩溃的极小窗口仍无法由当前 MemOS 文档中的接口完全消除。
 
 主 LLM 调用 `memory_search` 时会增加一次 MemOS 查询和第二次 LLM 调用。查询超时或失败被转换为 Tool Result，第二轮模型仍可根据 Dialogue/Profile 回答；Tool Call 及 Tool Result 不进入 TTS，只有最终文本播放。
 
 ## 当前边界
 
-- 豆包 ASR 每个 utterance 新建一条 Provider WebSocket，尚未复用连接。
+- 豆包 ASR 按官方单次识别会话模型为每个 utterance 新建一条 Provider WebSocket；这是当前协议边界，不列为连接复用缺陷，后续只需观察高并发下的建连耗时和配额。
 - `enable_nonstream=false`，本地 Silero 仍是当前语音边界和打断的唯一判定来源。
 - 输入固定为 16kHz、16-bit、单声道 PCM，输出继续采用 TTS 配置的 PCM 采样率。
 - 浏览器启用系统回声消除、降噪和自动增益；服务端 AEC 尚未实现，真实扬声器场景仍需手工测试。
 - Silero 模型固定为 v6.2.1 并随仓库保存，运行时不联网下载。
-- 浏览器“停止播放”仍是本地操作；`audio_stop` 才表示服务端 Turn 已取消。
+- 浏览器手工“停止播放”仍是本地操作。VAD `speech_start` 会先在浏览器立即清空播放队列，再由服务端用 `turn_cancelled` 取消仍在生成的 Turn，并用 `audio_stop` 终止仍在浏览器缓冲的播放流。
 - 声纹录入、识别、`speaker_identity_id` 映射和 Guest 降级已进入主链。
 - `deterministic-test-v1` 只供 CI；真实 CAM++ 已完成模型加载和录入，识别分数、阈值与有限等待期限仍需在家庭样本中校准。
 - Profile Snapshot、`memory_search`、后台长期记忆写入、Memory Center 和 Dialogue 刷新恢复已进入 Member 数据链；Vision 和其他实用 Tool 尚未实现。
@@ -128,4 +130,4 @@ Browser Memory Center
 - Family 与 Guest 都会恢复，但仍是两条相互隔离的有限窗口；Guest 不读取 Profile 或 MemOS。
 - 当前消息角色为 `system`、`user`、`assistant` 和内部 `tool`；WebSocket 不暴露中间 Tool 消息。
 - Profile 预取失败在当前 Session 内不会持续重试；该轮及后续轮次按无 Profile 聊天，重新连接后可再次预取。
-- 真实 MemOS Search/Add/Profile 尚未使用用户账号完成端到端验收，当前外部协议结论来自官方文档和 Mock 测试。
+- 真实 MemOS Profile、Search/Add 和 Memory Center 核心链路已由用户完成浏览器验收；异步任务的 `submitted -> /get/status -> completed/failed` 恢复逻辑由自动测试和真实 PostgreSQL 集成测试覆盖，部署后仍需通过日志观察外部任务状态与配额。

@@ -32,6 +32,8 @@ class MemoryProvider(Protocol):
         assistant_text: str,
     ) -> MemoryWriteReceipt: ...
 
+    async def get_write_status(self, provider_task_id: str) -> MemoryWriteReceipt: ...
+
     async def list_memories(
         self,
         scope: ProfileScope,
@@ -98,6 +100,9 @@ class DisabledMemoryProvider:
         user_text: str,
         assistant_text: str,
     ) -> MemoryWriteReceipt:
+        raise ProfileProviderUnavailableError("Memory provider is disabled")
+
+    async def get_write_status(self, provider_task_id: str) -> MemoryWriteReceipt:
         raise ProfileProviderUnavailableError("Memory provider is disabled")
 
     async def list_memories(

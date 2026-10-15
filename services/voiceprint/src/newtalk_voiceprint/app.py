@@ -40,6 +40,7 @@ def create_service(config: VoicePrintConfig) -> VoicePrintService:
         embedder,
         threshold=config.similarity_threshold,
         min_sample_seconds=config.min_sample_seconds,
+        identify_min_sample_seconds=config.identify_min_sample_seconds,
         max_sample_seconds=config.max_sample_seconds,
         max_audio_bytes=config.max_audio_bytes,
     )
@@ -111,12 +112,18 @@ def create_app(
         device_id: str = Form(...),
         sample: UploadFile = File(...),
     ) -> IdentificationResponse:
+        sample_bytes = await sample.read(config.max_audio_bytes + 1)
         try:
             result = await resolved_service.identify(
                 device_id=device_id,
-                sample=await sample.read(config.max_audio_bytes + 1),
+                sample=sample_bytes,
             )
         except InvalidAudioError as exc:
+            logger.warning(
+                "voiceprint_identify_rejected bytes=%s reason=%s",
+                len(sample_bytes),
+                exc,
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return IdentificationResponse(
             identity_id=result.identity_id,

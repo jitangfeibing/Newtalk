@@ -8,7 +8,7 @@
 - 优先完成当前功能，不提前设计尚未使用的完整 Provider 或 Manager 体系。
 - Legacy 小智项目保持只读，只用于核对协议、参数和历史行为。
 - 实际完成情况记录在 `docs/PROGRESS.md`，规划不能代替代码证据。
-- CD 暂不启用；当前自动化只负责 CI 测试，不负责部署。
+- CD 暂不启用；当前尚未确定云服务器、容器仓库、域名、Secret 和回滚策略，自动化只负责 CI 测试，不负责部署。
 
 ## 默认流程
 
@@ -104,6 +104,10 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 
 当前 CI 不使用真实 ASR、LLM、TTS、Vision 或 Memory 密钥。Provider 测试默认使用 Fake 或 Mock；真实 LLM 冒烟测试标记为 `live`，只有显式设置 `NEWTALK_RUN_LIVE_LLM=1` 才会产生外部调用和费用。
 
+## 当前 CD 边界
+
+仓库目前没有自动部署工作流。这不是漏跑步骤，而是主动边界：在部署目标和 Secret 管理方式确认前，不让 `main` 的每次合并自动操作未知服务器。后续启用 CD 时，至少需要先确认目标主机或容器平台、镜像仓库、PostgreSQL 迁移时机、环境变量注入、健康检查和失败回滚；确认后再增加独立 deployment workflow，并让部署依赖 CI 成功。
+
 ## 可简化情况
 
 以下改动可以根据风险缩短流程，不要求机械地为每个字词修改创建独立 Part：
@@ -116,4 +120,4 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 
 ## 当前应用
 
-P1 使用 `codex/p1-bootstrap` 分支完成，P2 使用 `codex/p2-text-chat` 完成并通过 PR #2。P3 使用 `codex/p3-real-llm` 接入第一个真实流式模型；后续 Part 默认沿用该方式，并根据实际问题调整。
+P1-P7 均按“功能分支 -> 本地测试 -> PR -> GitHub Actions CI -> 合并 main”交付。当前下一阶段为 P7.8 Web 产品界面完善；除非部署目标已经明确，否则合并只触发 CI，不触发生产部署。

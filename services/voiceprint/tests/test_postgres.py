@@ -48,6 +48,7 @@ def test_real_postgres_template_lifecycle() -> None:
             DeterministicEmbedder(),
             threshold=0.9,
             min_sample_seconds=2,
+            identify_min_sample_seconds=0.8,
             max_sample_seconds=10,
             max_audio_bytes=500_000,
         )

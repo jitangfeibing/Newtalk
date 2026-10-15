@@ -1,6 +1,6 @@
-# P7.7 HTTP、VoicePrint、Memory 与 WebSocket 协议
+# Newtalk HTTP、VoicePrint、Memory 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.8`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.9`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
 WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID，并分别恢复 Family 和 Guest 的最近窗口。
 
@@ -42,7 +42,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.8",
+  "protocol_version": "0.9",
   "session_id": "stable dialogue session UUID",
   "device_id": "02:11:22:33:44:55",
   "dialogue": {
@@ -94,7 +94,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 {"type":"vad_speech_end","capture_id":"capture ID","utterance_id":"UUID","probability":0.08,"audio_ms":1248.0}
 ```
 
-`vad_speech_start` 会取消当前旧 Turn。ASR 事件为：
+`vad_speech_start` 会立即停止浏览器本地播放，并取消仍在生成的旧 Turn；即使服务端已经完成 TTS 发送，只要浏览器尚未确认播放队列耗尽，服务端仍会发送 `audio_stop`。ASR 事件为：
 
 ```json
 {"type":"asr_partial","utterance_id":"UUID","text":"中间文本"}
@@ -170,6 +170,14 @@ Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名�
 
 客户端收到 `audio_stop` 必须立即清空播放队列。服务端先使旧 `turn_id` 失效，再取消 LLM/TTS 任务；发送队列会丢弃已经失效 Turn 的迟到帧。
 
+浏览器 AudioWorklet 播放完 `audio_end` 前已经收到的全部 PCM 后，上报：
+
+```json
+{"type":"playback_drained","event_id":"client ID","turn_id":"Turn UUID","stream_id":"stream UUID"}
+```
+
+服务端收到匹配当前播放流的回执后清除播放状态。迟到或不匹配的回执会被忽略，避免旧流影响新流。`turn_cancelled` 只表示生成中的 Turn 被取消；若 Turn 已完成但浏览器仍有缓冲音频，打断只发送 `audio_stop`。
+
 ## 错误和生命周期
 
 - 二进制音频未先开始采集：`audio_input_not_started`。
@@ -181,6 +189,7 @@ Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名�
 - 文本选择了当前家庭不存在的成员：`identity_not_found`。
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
 - `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
+- `playback_drained` 表示浏览器已经播放完指定流，不产生响应事件。
 
 ## P7.3 调用链
 
@@ -189,7 +198,8 @@ Browser getUserMedia
 -> mic-recorder-worklet (resample -> 16kHz / 20ms / PCM S16LE)
 -> WebSocket binary frames
 -> AudioInputSession -> SileroVadStream
-   |-> speech_start -> cancel old Turn -> turn_cancelled + audio_stop
+   |-> speech_start -> local playback reset + cancel active Turn/buffered playback
+   |                   -> turn_cancelled（仍在生成时）+ audio_stop（仍有播放流时）
    `-> same utterance PCM
        |-> SpeechRecognizer.stream -> ASR partial/final
        `-> WAV -> VoicePrint /v1/identify
@@ -256,17 +266,22 @@ Guest / Memory disabled
 
 后台 Worker
 -> FOR UPDATE SKIP LOCKED 领取到期任务
--> 设置 processing 租约并增加 attempts
+-> 设置 processing 租约；仅首次提交或远端明确失败重试时增加 attempts
 -> POST /add/message（user + final assistant，async_mode=true）
-   |-> accepted -> completed + provider_task_id
-   `-> failed -> 延迟重试，超过上限标记 failed
+   |-> running -> 持久化 submitted + provider_task_id
+   |                -> POST /get/status
+   |                   |-> running -> 保留 task_id，延后再查
+   |                   |-> completed -> 本地 completed
+   |                   `-> failed -> 延迟重新提交，超过上限标记 failed
+   |-> completed -> 本地 completed
+   `-> failed/请求失败 -> 延迟重试，超过上限标记 failed
 ```
 
-只写入成功完成的 Member 用户消息和最终助手回答。Guest、被打断 Turn、生成失败 Turn、旧 Turn 迟到结果、Tool Result 和检索返回的旧记忆均不写入。该 Outbox 保证本地去重和至少一次投递；真实 MemOS 是否按 `info.turn_id` 提供远端幂等，需要在真实账号验收中确认。
+只写入成功完成的 Member 用户消息和最终助手回答。Guest、被打断 Turn、生成失败 Turn、旧 Turn 迟到结果、Tool Result 和检索返回的旧记忆均不写入。状态查询网络失败不会清空 `provider_task_id` 或重新 Add Message。该 Outbox 保证本地去重和至少一次投递；官方接口未声明 `info.turn_id` 为幂等键，因此 Add Message 已被远端接收但响应尚未落库时的崩溃窗口仍不能承诺严格一次写入。
 
 ## P7.7 Dialogue 恢复链
 
-P7.7 没有新增客户端上行事件；协议版本升级为 `0.8`，变化集中在 `hello.dialogue`。
+P7.7 当时没有新增客户端上行事件，协议版本升级为 `0.8`，变化集中在 `hello.dialogue`。后续语音打断补充 `playback_drained`，当前协议版本为 `0.9`。
 
 ```text
 WebSocket 握手携带 HttpOnly Device Cookie

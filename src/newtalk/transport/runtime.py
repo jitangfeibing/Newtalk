@@ -129,6 +129,8 @@ class ConnectionRuntime:
         self._active_turn_task: asyncio.Task[None] | None = None
         self._active_turn_id: str | None = None
         self._active_stream_id: str | None = None
+        self._playback_turn_id: str | None = None
+        self._playback_stream_id: str | None = None
         self._audio_session: AudioInputSession | None = None
         self._capture_id: str | None = None
         self._audio_started_at: float | None = None
@@ -290,37 +292,68 @@ class ConnectionRuntime:
         task = self._active_turn_task
         turn_id = self._active_turn_id
         stream_id = self._active_stream_id
-        if turn_id is None:
+        playback_turn_id = self._playback_turn_id
+        playback_stream_id = self._playback_stream_id
+        if turn_id is None and playback_turn_id is None:
             return
 
         self._active_turn_id = None
         self._active_stream_id = None
         self._active_turn_task = None
+        self._playback_turn_id = None
+        self._playback_stream_id = None
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if turn_id is not None:
+            logger.info(
+                "turn_cancelled session_id=%s turn_id=%s reason=%s",
+                self.session_id,
+                turn_id,
+                reason,
+            )
+        elif playback_turn_id is not None:
+            logger.info(
+                "playback_interrupted session_id=%s turn_id=%s stream_id=%s reason=%s",
+                self.session_id,
+                playback_turn_id,
+                playback_stream_id,
+                reason,
+            )
+        if notify and not self._closing:
+            if turn_id is not None:
+                await self.send_json(
+                    {
+                        "type": "turn_cancelled",
+                        "turn_id": turn_id,
+                        "reason": reason,
+                    }
+                )
+            audio_turn_id = playback_turn_id or turn_id
+            if audio_turn_id is not None:
+                await self.send_json(
+                    {
+                        "type": "audio_stop",
+                        "turn_id": audio_turn_id,
+                        "stream_id": playback_stream_id or stream_id,
+                        "reason": reason,
+                    }
+                )
+
+    async def playback_drained(self, *, turn_id: str, stream_id: str) -> None:
+        if (
+            turn_id != self._playback_turn_id
+            or stream_id != self._playback_stream_id
+        ):
+            return
+        self._playback_turn_id = None
+        self._playback_stream_id = None
         logger.info(
-            "turn_cancelled session_id=%s turn_id=%s reason=%s",
+            "browser_playback_drained session_id=%s turn_id=%s stream_id=%s",
             self.session_id,
             turn_id,
-            reason,
+            stream_id,
         )
-        if notify and not self._closing:
-            await self.send_json(
-                {
-                    "type": "turn_cancelled",
-                    "turn_id": turn_id,
-                    "reason": reason,
-                }
-            )
-            await self.send_json(
-                {
-                    "type": "audio_stop",
-                    "turn_id": turn_id,
-                    "stream_id": stream_id,
-                    "reason": reason,
-                }
-            )
 
     async def start_audio_input(self, event: dict[str, Any]) -> None:
         event_id = _string_or_none(event.get("event_id"))
@@ -463,6 +496,8 @@ class ConnectionRuntime:
                     elif isinstance(output, AudioStarted):
                         if self._active_turn_id == turn.turn_id:
                             self._active_stream_id = output.stream_id
+                            self._playback_turn_id = turn.turn_id
+                            self._playback_stream_id = output.stream_id
                         await self.send_json(
                             {
                                 "type": "audio_start",
@@ -488,6 +523,12 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
                     elif isinstance(output, AudioFailed):
+                        if (
+                            self._playback_turn_id == turn.turn_id
+                            and self._playback_stream_id == output.stream_id
+                        ):
+                            self._playback_turn_id = None
+                            self._playback_stream_id = None
                         await self.send_json(
                             {
                                 "type": "audio_failed",
@@ -720,6 +761,7 @@ class ConnectionRuntime:
 
     async def _resolve_voice_speaker(self, utterance_id: str) -> _SpeakerResolution:
         state = self._voice_joins.setdefault(utterance_id, _VoiceJoinState())
+        join_started_at = perf_counter()
         deadline = asyncio.get_running_loop().time() + self._voiceprint_join_timeout_seconds
         identification: VoicePrintIdentification | None = None
         reason = state.failure_reason or "unavailable"
@@ -756,14 +798,24 @@ class ConnectionRuntime:
             except IdentityNotFoundError:
                 reason = "identity_missing"
         elapsed_ms = (perf_counter() - state.started_at) * 1000
+        join_wait_ms = (perf_counter() - join_started_at) * 1000
         await self._discard_voice_join(utterance_id, cancel=False)
         logger.info(
-            "speaker_resolved session_id=%s utterance_id=%s identity_id=%s reason=%s score=%.4f elapsed_ms=%.1f",
+            "speaker_resolved session_id=%s utterance_id=%s identity_id=%s "
+            "reason=%s score=%.4f provider_elapsed_ms=%s join_wait_ms=%.1f "
+            "join_budget_ms=%.1f total_elapsed_ms=%.1f",
             self.session_id,
             utterance_id,
             identity.identity_id if identity is not None else "guest",
             reason,
             identification.score if identification is not None else 0.0,
+            (
+                f"{identification.elapsed_ms:.1f}"
+                if identification is not None
+                else "none"
+            ),
+            join_wait_ms,
+            self._voiceprint_join_timeout_seconds * 1000,
             elapsed_ms,
         )
         return _SpeakerResolution(

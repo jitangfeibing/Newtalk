@@ -52,7 +52,7 @@ P7.4 交付记录：
 提交：e5ff324 feat: complete P7.4 profile snapshots
 PR：https://github.com/jitangfeibing/Newtalk/pull/13
 合并提交：6fdeb8d Merge pull request #13 ... P7.4
-状态：代码和自动测试已合并；真实 MemOS 验收尚未执行
+状态：代码和自动测试已合并；真实 MemOS 核心链路已在后续统一验收中通过
 ```
 
 P7.5 交付记录：
@@ -61,7 +61,7 @@ P7.5 交付记录：
 提交：dc979c8 feat: complete P7.5 memory tools
 PR：https://github.com/jitangfeibing/Newtalk/pull/14
 合并提交：1de762e Merge pull request #14 ... P7.5
-状态：代码、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
+状态：代码、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 核心链路已在后续统一验收中通过
 ```
 
 P7.6 交付记录：
@@ -70,7 +70,7 @@ P7.6 交付记录：
 提交：800c156 feat: complete P7.6 memory center
 PR：https://github.com/jitangfeibing/Newtalk/pull/16
 合并提交：bdd0bd8 Merge pull request #16 ... P7.6
-状态：Memory Center、完整成员删除、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 验收尚未执行
+状态：Memory Center、完整成员删除、文档、自动测试和 PostgreSQL 集成验证已通过 CI 合并；真实 MemOS 核心链路和页面已在后续统一验收中通过
 ```
 
 P7.7 交付记录：
@@ -91,7 +91,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2-P7.7 已通过 PR/CI 合并，P7 的代码阶段完成，下一阶段为 P8 统一 Vision 输入。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.7 已通过 PR/CI 合并，P7 稳定性收尾已覆盖真实语音打断、短语音声纹识别和 MemOS 异步任务状态。下一阶段先做 P7.8 Web 产品界面完善，再做 P8 统一 Vision 输入。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
@@ -202,15 +202,15 @@ P7.4 已合并实现：
 
 ### P7.5 Memory Tool 与后台写入
 
-P7.5 当前分支已经实现：
+P7.5 已实现：
 
 - `ChatModel` 增加一次 `ModelToolCall` 和 Tool Result 的最小契约，OpenAI-compatible 流能聚合分片参数。
 - 只有 Member 且 Memory 开启时提供 `memory_search`，每个 Turn 最多调用一次；Guest 完全看不到该 Tool。
 - 查询的 `device_id + identity_id` 固定来自 Turn，LLM 只能提供查询文本。
 - MemOS Search 失败会作为受控 Tool Result 返回第二轮模型，不中断普通聊天；中间 Tool 事件不进入 TTS。
 - 只有成功提交 Dialogue 的 Member Turn 才进入 PostgreSQL `memory_jobs`，`turn_id` 在本地唯一。
-- 后台 Worker 使用 `FOR UPDATE SKIP LOCKED`、处理租约和有限重试调用 MemOS Add Message 异步模式。
-- 新增迁移 `20261004_03_memory_jobs.py`；应用生命周期启动和关闭 Worker。
+- 后台 Worker 使用 `FOR UPDATE SKIP LOCKED`、处理租约和有限重试调用 MemOS Add Message 异步模式，并持久化 `task_id` 后轮询 Get Task Status。
+- 迁移 `20261004_03_memory_jobs.py` 建表，`20261015_06_memory_job_submitted.py` 增加 Submitted 状态；应用生命周期启动和关闭 Worker。
 
 主要新增入口：
 
@@ -237,7 +237,7 @@ P7.5 当前分支已经实现：
 - `turn_id` 唯一约束和 Session 行锁保证幂等及同家庭并发裁剪；不同设备仍完全隔离。
 - 成员完整删除同步清理该成员的持久化交换和活动 Family Dialogue。
 - Member Turn 提交前重查 Active Identity，避免删除中的旧 Turn 重新写回 Dialogue 或 Memory。
-- 主要入口为 `src/newtalk/chat/persistence.py`、迁移 `20261004_05`、`transport/websocket.py` 和 `transport/runtime.py`。
+- 主要入口为 `src/newtalk/chat/persistence.py`、迁移 `20261004_05`、`transport/websocket.py` 和 `transport/runtime.py`；Memory Job 状态扩展迁移为 `20261015_06`。
 
 ## 5. 验证与持续校准
 
@@ -273,11 +273,11 @@ P7.3 的功能交付以自动测试、P7.2 真实 CAM++ 录入验证、协议检
 - 同人分数和异人分数。
 - CAM++ CPU 的 P50/P95 识别耗时。
 - `1.5s` 汇合期限是否经常误降级 Guest。
-- 默认阈值 `0.72` 是否适合当前麦克风和家庭环境。
+- 默认阈值现为 `0.5`；继续记录同人和异人分数，确认是否适合当前麦克风和家庭环境。
 
 不要为了让单次测试通过而盲目降低阈值。阈值必须同时观察同人和异人样本。
 
-P7.5 自动测试基线是主项目 137 项中 135 项通过、2 项付费 Provider live 测试跳过；声纹服务在本机 PostgreSQL 下 4 项全部通过。真实 MemOS 验收尚未完成，接手时必须使用用户本地 `.env`，不能让用户把 Key 发到聊天或写入仓库：
+当前自动测试基线是主项目 `146 passed / 7 skipped`、VoicePrint `7 passed / 1 skipped`；跳过项需要显式 PostgreSQL 地址、CAM++ 环境或付费 Provider。真实 MemOS 核心链路和浏览器 Memory Center 已验收；复验必须使用用户本地 `.env`，不能让用户把 Key 发到聊天或写入仓库：
 
 ```dotenv
 NEWTALK_MEMORY_BACKEND=memos
@@ -297,16 +297,7 @@ NEWTALK_MEMORY_JOB_MAX_ATTEMPTS=3
 
 ## 6. 本机环境与启动方式
 
-当前本机状态（2026-10-04 核对）：
-
-```text
-Python 虚拟环境：D:\Desktop\Newtalk\.venv
-PostgreSQL 5432：正在监听
-Alembic：20261004_05 (head)
-Newtalk 8006：未运行
-VoicePrint 8010：未运行
-根 .env：已配置 openai-compatible LLM、豆包 ASR/TTS 和 VoicePrint URL；尚未配置 MemOS
-```
+服务是否运行和本地 `.env` 内容属于易过期的机器状态，不再写死在交接文档。启动前使用 `/health`、`/ready`、`http://127.0.0.1:8010/health` 和 `alembic current` 核对；当前数据库目标 revision 为 `20261015_06 (head)`。
 
 不得把 `.env`、API Key、Token 或数据库生产密码提交到 Git。
 
@@ -340,10 +331,13 @@ $env:VOICEPRINT_BACKEND="campplus"
 $env:VOICEPRINT_DATABASE_URL="postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk"
 $env:VOICEPRINT_API_TOKEN="与根 .env 中 NEWTALK_VOICEPRINT_API_TOKEN 相同的本地值"
 $env:VOICEPRINT_DEVICE="cpu"
+$env:VOICEPRINT_MIN_SAMPLE_SECONDS="2"
+$env:VOICEPRINT_IDENTIFY_MIN_SAMPLE_SECONDS="0.8"
 .\.venv\Scripts\newtalk-voiceprint.exe
 ```
 
 默认监听 `http://127.0.0.1:8010`。首次 CAM++ 启动可能下载或加载模型，等待日志出现服务启动完成后再测试。
+录入与识别采用不同的最短时长：录入默认 `2` 秒以保证模板质量，识别默认 `0.8` 秒以覆盖正常短句；更短语音仍返回 `422` 并记录 `voiceprint_identify_rejected`。
 
 ### 启动 Newtalk
 
@@ -392,14 +386,14 @@ git diff --check
 
 - Family/Guest Dialogue 已可刷新恢复，但第一版没有多个活动页面之间的实时消息广播，也不提供历史 Session 列表。
 - Guest 是该连接内统一的访客窗口，不区分多个未知访客。
-- VoicePrint CAM++ 推理有进程内锁，单实例并发推理会串行；主聊天通过有限等待降级 Guest，但仍需测并发容量。
-- 真实扬声器环境只有浏览器回声消除，没有服务端 AEC；播放 TTS 时误触发 VAD/声纹仍需人工测试。
-- 每个 utterance 当前新建豆包 ASR Provider WebSocket，尚未复用连接。
+- VoicePrint CAM++ 推理有进程内锁，单实例并发推理会串行；主聊天通过有限等待降级 Guest，并发容量测试按用户决定延期处理。`voiceprint_identify_completed` 和 `speaker_resolved` 日志已记录模板数、分数、阈值、Provider 耗时、汇合等待与预算，供后续压测。
+- 当前浏览器和扬声器环境的真实语音打断已由用户人工验收通过；系统仍只有浏览器回声消除、没有服务端 AEC，因此更换设备或部署环境后仍需关注 TTS 回灌误触发。
+- 豆包 ASR 按官方单次识别会话模型为每个 utterance 新建 Provider WebSocket；当前不把它列为缺陷，后续只观察高并发建连耗时和配额。
 - `ConnectionRuntime` 仍承担较多编排职责；Dialogue SQL 位于 `newtalk.chat.persistence`，Memory HTTP、解析、任务领取和重试留在 `newtalk.memory`/`newtalk.profile.memos`。
 - Profile Snapshot、`memory_search`、后台 Memory Job 和 Memory Center 已进入 Member 数据链；Vision 尚未实现。
 - Profile 远端失败在同一 Session 内不会自动重试，重新连接后才会再次预取。
-- P7.4/P7.5 尚未完成真实 MemOS 账号、Template、Search 和 Add Message 验收，不能仅凭 Mock 测试宣称外部集成完成。
-- Outbox 本地按 `turn_id` 去重并提供至少一次投递；MemOS 端是否幂等尚未确认，崩溃发生在远端接收后、本地完成标记前时可能重复写入。
+- 真实 MemOS Profile、Search/Add 和 Memory Center 核心链路已由用户验收；外部配额、长时间运行与少见错误响应仍需在日志中持续观察。
+- Outbox 已增加 `submitted` 状态：MemOS `/add/message` 返回异步 `task_id` 后先持久化，再通过 `/get/status` 跟踪远端 `running/completed/failed`；重启与状态查询故障只恢复查询，不重新 Add Message。官方文档未说明 Add Message 支持幂等键，因此远端已接收但本地尚未保存响应的崩溃窗口仍可能重复写入。
 - 接手时仍应检查最新 GitHub PR 和 `origin/main`，不要只凭本地测试判断远端状态。
 
 ## 9. P7 后续顺序
@@ -407,11 +401,12 @@ git diff --check
 已经确认的后续拆分：
 
 ```text
-P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级（代码和自动测试完成，待真实验收）
-P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务（代码和自动测试完成，待真实验收）
-P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除（代码和自动测试完成，待真实 MemOS 验收）
+P7.4：Profile Template 绑定、后台预取并按 Identity 缓存 Profile Snapshot、关闭 Memory 时正常降级（代码、自动测试和核心人工验收完成）
+P7.5：主 LLM Tool Calling、memory_search、PostgreSQL 后台写入任务（代码、自动测试和核心人工验收完成）
+P7.6：Memory Center、Profile 锁定、记忆编辑删除、成员完整删除（代码、自动测试和核心人工验收完成）
 P7.7：Session/Dialogue 持久化、页面刷新恢复和恢复边界测试（PR #18、CI 已通过并合并）
-P8：统一 Vision 输入（尚未开始）
+P7.8：Web 产品界面完善（尚未开始）
+P8：统一 Vision 输入（P7.8 后开始）
 ```
 
 Memory 基线不可改回旧小智的“每轮先查 Memory 再调用 LLM”：
@@ -433,11 +428,11 @@ MemOS    -> 主 LLM 按需调用 memory_search 查询长期情景记忆
 - Memory Provider 可关闭；关闭后 Dialogue、ASR、LLM 和 TTS 必须继续工作。
 - 第一版使用 MemOS 已有 Add/Search/Profile 能力，不自建 Embedding、Rerank、知识图谱或通用 Agent Framework。
 
-详细设计见 `docs/P7_DESIGN.md`。P7.4/P7.5 代码已按官方 HTTP 文档实现，仍需真实账号确认权限、Profile Template、Search/Add Message 返回和远端幂等。
+详细设计见 `docs/P7_DESIGN.md`。P7.4-P7.6 已按官方 HTTP 文档实现并完成核心人工验收；远端严格幂等无法从现有 API 契约保证，边界见上文 Outbox 说明。
 
-### MemOS 真实验收
+### MemOS 复验与持续观察
 
-P7.4-P7.6 的真实 Memory 联调仍需从用户本地配置和真实验收得到：
+P7.4-P7.6 已完成真实 Memory 核心联调。更换账号、模板或部署环境时按以下清单复验：
 
 - MemOS API Base URL 和本地 `.env` 中的 API Key；密钥不能写入本文、测试夹具或 Git。
 - MemOS 控制台创建的 `profile_template_id`。
@@ -462,8 +457,8 @@ P7.4/P7.5 的验收边界：
 
 1. `docs/CODEX_HANDOFF.md`：当前交接状态和执行顺序。
 2. `docs/PROGRESS.md`：已经实现并验证过的历史。
-3. `docs/architecture.md`：当前 P7.7 运行时结构。
-4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.8` 协议。
+3. `docs/architecture.md`：当前运行时结构。
+4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.9` 协议。
 5. `docs/P7_DESIGN.md`：P7 已确认产品和 Memory 设计基线。
 6. `PROJECT_PLAN.md`：总体路线，不代表所有内容已经实现。
 7. `docs/DEVELOPMENT_WORKFLOW.md`：Git、PR 和 CI 协作流程。

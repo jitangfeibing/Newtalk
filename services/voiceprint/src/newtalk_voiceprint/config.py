@@ -12,8 +12,9 @@ class VoicePrintConfig:
     backend: str = "deterministic"
     model_id: str = "iic/speech_campplus_sv_zh-cn_3dspeaker_16k"
     device: str = "cpu"
-    similarity_threshold: float = 0.72
+    similarity_threshold: float = 0.5
     min_sample_seconds: float = 2.0
+    identify_min_sample_seconds: float = 0.8
     max_sample_seconds: float = 15.0
     max_audio_bytes: int = 1_000_000
 
@@ -38,6 +39,12 @@ class VoicePrintConfig:
             min_sample_seconds=float(
                 os.getenv("VOICEPRINT_MIN_SAMPLE_SECONDS", str(defaults.min_sample_seconds))
             ),
+            identify_min_sample_seconds=float(
+                os.getenv(
+                    "VOICEPRINT_IDENTIFY_MIN_SAMPLE_SECONDS",
+                    str(defaults.identify_min_sample_seconds),
+                )
+            ),
             max_sample_seconds=float(
                 os.getenv("VOICEPRINT_MAX_SAMPLE_SECONDS", str(defaults.max_sample_seconds))
             ),
@@ -53,6 +60,11 @@ class VoicePrintConfig:
             raise ValueError("VOICEPRINT_API_TOKEN must not be empty")
         if not 0 < config.similarity_threshold <= 1:
             raise ValueError("VOICEPRINT_SIMILARITY_THRESHOLD must be in (0, 1]")
-        if not 0 < config.min_sample_seconds < config.max_sample_seconds:
+        if not (
+            0
+            < config.identify_min_sample_seconds
+            <= config.min_sample_seconds
+            < config.max_sample_seconds
+        ):
             raise ValueError("VoicePrint sample duration bounds are invalid")
         return config

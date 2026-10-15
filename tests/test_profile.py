@@ -4,6 +4,7 @@ import json
 import httpx
 
 from newtalk.identity import IdentityService, InMemoryIdentityStore
+from newtalk.memory import MemoryWriteReceipt
 from newtalk.profile import (
     MemosProfileProvider,
     ProfileCacheCoordinator,
@@ -222,6 +223,19 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path.endswith("/get/status"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "task_id": "task-1",
+                        "status": "completed",
+                        "memory_views": {"added": 1, "updated": 0, "deleted": 0},
+                    },
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -255,12 +269,15 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
             user_text="我准备换工作",
             assistant_text="我会记住。",
         )
+        completed = await provider.get_write_status(receipt.provider_task_id)
         await client.aclose()
-        return receipt
+        return receipt, completed
 
-    receipt = asyncio.run(exercise())
+    receipt, completed = asyncio.run(exercise())
 
     assert receipt.provider_task_id == "task-1"
+    assert receipt.status == "running"
+    assert completed == MemoryWriteReceipt("task-1", "completed")
     body = json.loads(requests[0].content)
     assert requests[0].url.path == "/v1/add/message"
     assert body["async_mode"] is True
@@ -284,6 +301,8 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
         "identity_id": "member-1",
         "turn_id": "turn-1",
     }
+    assert requests[1].url.path == "/v1/get/status"
+    assert json.loads(requests[1].content) == {"task_id": "task-1"}
 
 
 def test_memos_provider_lists_and_mutates_only_owned_memories() -> None:
