@@ -159,9 +159,18 @@ class PcmPlayer {
             return;
         }
         if (event.type === 'playback_drained') {
+            const completed = this.active;
             this.setStatus('idle', '播放完成');
             stopAudioButton.disabled = true;
             this.active = null;
+            const metric = {
+                type: 'playback_drained',
+                event_id: nextEventId('playback'),
+                turn_id: completed.turnId,
+                stream_id: completed.streamId,
+            };
+            if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(metric));
+            appendProtocolEvent('outgoing', metric);
         }
     }
 
@@ -346,6 +355,7 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'vad_speech_start') {
+        audioPlayer.stop('检测到说话，已停止播放');
         microphone.setStatus('speech', '检测到说话');
         return;
     }

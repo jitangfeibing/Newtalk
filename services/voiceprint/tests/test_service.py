@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from io import BytesIO
 import asyncio
+import logging
 import wave
 
 import numpy as np
@@ -65,9 +66,15 @@ def make_service(store: MemoryStore | None = None) -> VoicePrintService:
         DeterministicEmbedder(),
         threshold=0.9,
         min_sample_seconds=2,
+        identify_min_sample_seconds=0.8,
         max_sample_seconds=10,
         max_audio_bytes=500_000,
     )
+
+
+def test_default_similarity_threshold_is_half() -> None:
+    assert VoicePrintConfig().similarity_threshold == 0.5
+    assert VoicePrintConfig().identify_min_sample_seconds == 0.8
 
 
 def test_three_samples_register_identify_scope_and_delete() -> None:
@@ -88,6 +95,32 @@ def test_three_samples_register_identify_scope_and_delete() -> None:
         assert (await service.identify(device_id="family-a", sample=sample)).matched is False
 
     asyncio.run(scenario())
+
+
+def test_identification_logs_score_threshold_and_elapsed(caplog) -> None:
+    async def scenario() -> None:
+        store = MemoryStore()
+        service = make_service(store)
+        sample = wav_tone(220)
+        await service.register(
+            device_id="family-a",
+            identity_id="member-a",
+            samples=[sample, sample, sample],
+        )
+        with caplog.at_level(logging.INFO, logger="newtalk_voiceprint.service"):
+            await service.identify(device_id="family-a", sample=sample)
+
+    asyncio.run(scenario())
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "voiceprint_identify_completed" in record.getMessage()
+    )
+    assert "templates=1" in message
+    assert "score=" in message
+    assert "threshold=0.9000" in message
+    assert "matched=True" in message
+    assert "elapsed_ms=" in message
 
 
 def test_registration_rejects_wrong_count_invalid_audio_and_foreign_member() -> None:
@@ -142,3 +175,49 @@ def test_http_api_requires_token_and_supports_register_identify_delete() -> None
             headers=headers,
             params={"device_id": "family-a"},
         ).status_code == 200
+
+
+def test_http_identify_logs_short_audio_rejection(caplog) -> None:
+    config = VoicePrintConfig(api_token="test-token")
+    app = create_app(config, service=make_service())
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client, caplog.at_level(
+        logging.WARNING,
+        logger="newtalk_voiceprint.app",
+    ):
+        response = client.post(
+            "/v1/identify",
+            headers=headers,
+            data={"device_id": "family-a"},
+            files={"sample": ("short.wav", wav_tone(220, seconds=0.5), "audio/wav")},
+        )
+
+    assert response.status_code == 422
+    assert "between 0.8 and 10 seconds" in response.json()["detail"]
+    assert any(
+        "voiceprint_identify_rejected" in record.getMessage()
+        and "between 0.8 and 10 seconds" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_identification_accepts_audio_shorter_than_enrollment_minimum() -> None:
+    async def scenario() -> None:
+        service = make_service()
+        enrolled_sample = wav_tone(220, seconds=3)
+        await service.register(
+            device_id="family-a",
+            identity_id="member-a",
+            samples=[enrolled_sample] * 3,
+        )
+
+        result = await service.identify(
+            device_id="family-a",
+            sample=wav_tone(220, seconds=1),
+        )
+
+        assert result.identity_id == "member-a"
+        assert result.matched is True
+
+    asyncio.run(scenario())

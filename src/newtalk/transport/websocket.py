@@ -213,6 +213,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                 continue
 
+            if event["type"] == "playback_drained":
+                turn_id = event.get("turn_id")
+                stream_id = event.get("stream_id")
+                if isinstance(turn_id, str) and isinstance(stream_id, str):
+                    await runtime.playback_drained(
+                        turn_id=turn_id,
+                        stream_id=stream_id,
+                    )
+                else:
+                    await runtime.send_error(
+                        code="invalid_playback_metric",
+                        message="playback_drained contains invalid fields",
+                        event_id=event_id,
+                    )
+                continue
+
             await runtime.send_error(
                 code="unsupported_event",
                 message=f"Unsupported event type: {event['type']}",
