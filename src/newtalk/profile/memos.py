@@ -180,11 +180,31 @@ class MemosProfileProvider:
         if not isinstance(data, dict) or data.get("success") is not True:
             raise ProfileProviderError("MemOS did not accept completed Turn")
         task_id = data.get("task_id")
-        status = data.get("status", "accepted")
+        status = data.get("status")
+        if not isinstance(task_id, str) or not task_id:
+            raise ProfileProviderError("MemOS Add Message did not return a task ID")
+        if status not in {"running", "completed", "failed"}:
+            raise ProfileProviderError("MemOS Add Message returned an invalid task status")
         return MemoryWriteReceipt(
-            provider_task_id=task_id if isinstance(task_id, str) else None,
-            status=status if isinstance(status, str) else "accepted",
+            provider_task_id=task_id,
+            status=status,
         )
+
+    async def get_write_status(self, provider_task_id: str) -> MemoryWriteReceipt:
+        payload = await self._post(
+            "/get/status",
+            {"task_id": provider_task_id},
+        )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ProfileProviderError("MemOS Get Task Status returned invalid data")
+        returned_task_id = data.get("task_id")
+        if returned_task_id != provider_task_id:
+            raise ProfileProviderError("MemOS Get Task Status returned a different task ID")
+        status = data.get("status")
+        if status not in {"running", "completed", "failed"}:
+            raise ProfileProviderError("MemOS Get Task Status returned an invalid status")
+        return MemoryWriteReceipt(provider_task_id, status)
 
     async def list_memories(
         self,

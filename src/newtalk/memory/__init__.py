@@ -14,6 +14,7 @@ from newtalk.memory.models import (
     MemoryRecord,
     MemorySearchResult,
     MemoryWriteReceipt,
+    MemoryWriteStatus,
 )
 from newtalk.memory.provider import DisabledMemoryProvider, MemoryProvider
 
@@ -32,6 +33,7 @@ __all__ = [
     "MemorySearchResult",
     "MemoryWriteJob",
     "MemoryWriteReceipt",
+    "MemoryWriteStatus",
     "MemoryWriteService",
     "SqlAlchemyMemoryJobStore",
 ]

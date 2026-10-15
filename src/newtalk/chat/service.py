@@ -35,6 +35,7 @@ _MEMORY_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "memory_search",
+        "strict": True,
         "description": (
             "仅当当前对话和用户画像不足以回答、且问题依赖这位成员更早的个人经历时，"
             "检索当前成员的长期记忆。普通知识问题不要调用。"

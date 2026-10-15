@@ -4,6 +4,7 @@ from typing import Literal
 
 
 MemoryKind = Literal["fact", "preference", "event"]
+MemoryWriteStatus = Literal["running", "completed", "failed"]
 
 
 class MemoryNotFoundError(RuntimeError):
@@ -55,7 +56,7 @@ class MemorySearchResult:
 @dataclass(frozen=True, slots=True)
 class MemoryWriteReceipt:
     provider_task_id: str | None
-    status: str
+    status: MemoryWriteStatus
 
 
 @dataclass(frozen=True, slots=True)

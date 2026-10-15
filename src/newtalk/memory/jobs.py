@@ -48,6 +48,7 @@ class MemoryWriteJob:
     user_text: str
     assistant_text: str
     attempts: int = 0
+    provider_task_id: str | None = None
 
 
 class MemoryJobStore(Protocol):
@@ -56,6 +57,15 @@ class MemoryJobStore(Protocol):
     async def enqueue(self, job: MemoryWriteJob) -> bool: ...
 
     async def claim(self) -> MemoryWriteJob | None: ...
+
+    async def submit(
+        self,
+        job_id: str,
+        provider_task_id: str,
+        *,
+        check_at: datetime,
+        error: str | None = None,
+    ) -> None: ...
 
     async def complete(self, job_id: str, provider_task_id: str | None) -> None: ...
 
@@ -82,7 +92,7 @@ class MemoryJobRow(Base):
     __tablename__ = "memory_jobs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'processing', 'completed', 'failed')",
+            "status IN ('pending', 'processing', 'submitted', 'completed', 'failed')",
             name="ck_memory_jobs_status",
         ),
     )
@@ -131,6 +141,7 @@ def _job(row: MemoryJobRow) -> MemoryWriteJob:
         user_text=row.user_text,
         assistant_text=row.assistant_text,
         attempts=row.attempts,
+        provider_task_id=row.provider_task_id,
     )
 
 
@@ -185,6 +196,10 @@ class SqlAlchemyMemoryJobStore:
                             MemoryJobRow.available_at <= now,
                         ),
                         and_(
+                            MemoryJobRow.status == "submitted",
+                            MemoryJobRow.available_at <= now,
+                        ),
+                        and_(
                             MemoryJobRow.status == "processing",
                             MemoryJobRow.available_at <= now,
                         ),
@@ -197,11 +212,28 @@ class SqlAlchemyMemoryJobStore:
             if row is None:
                 return None
             row.status = "processing"
-            row.attempts += 1
+            if row.provider_task_id is None:
+                row.attempts += 1
             row.available_at = lease_until
             row.updated_at = now
             await session.flush()
             return _job(row)
+
+    async def submit(
+        self,
+        job_id: str,
+        provider_task_id: str,
+        *,
+        check_at: datetime,
+        error: str | None = None,
+    ) -> None:
+        await self._set_result(
+            job_id,
+            status="submitted",
+            provider_task_id=provider_task_id,
+            last_error=error[:2000] if error else None,
+            available_at=check_at,
+        )
 
     async def complete(self, job_id: str, provider_task_id: str | None) -> None:
         await self._set_result(
@@ -250,7 +282,9 @@ class InMemoryMemoryJobStore:
     async def start(self) -> None:
         for job_id, status in tuple(self.statuses.items()):
             if status == "processing":
-                self.statuses[job_id] = "pending"
+                self.statuses[job_id] = (
+                    "submitted" if self.provider_task_ids.get(job_id) else "pending"
+                )
 
     async def enqueue(self, job: MemoryWriteJob) -> bool:
         if any(existing.turn_id == job.turn_id for existing in self.jobs.values()):
@@ -263,17 +297,41 @@ class InMemoryMemoryJobStore:
     async def claim(self) -> MemoryWriteJob | None:
         now = datetime.now(timezone.utc)
         for job_id, job in self.jobs.items():
-            if self.statuses[job_id] != "pending" or self.retry_at[job_id] > now:
+            if self.statuses[job_id] not in {"pending", "submitted"}:
                 continue
-            claimed = replace(job, attempts=job.attempts + 1)
+            if self.retry_at[job_id] > now:
+                continue
+            provider_task_id = self.provider_task_ids.get(job_id)
+            claimed = replace(
+                job,
+                attempts=job.attempts + (provider_task_id is None),
+                provider_task_id=provider_task_id,
+            )
             self.jobs[job_id] = claimed
             self.statuses[job_id] = "processing"
             return claimed
         return None
 
+    async def submit(
+        self,
+        job_id: str,
+        provider_task_id: str,
+        *,
+        check_at: datetime,
+        error: str | None = None,
+    ) -> None:
+        self.statuses[job_id] = "submitted"
+        self.provider_task_ids[job_id] = provider_task_id
+        self.retry_at[job_id] = check_at
+        if error:
+            self.errors[job_id] = error
+        else:
+            self.errors.pop(job_id, None)
+
     async def complete(self, job_id: str, provider_task_id: str | None) -> None:
         self.statuses[job_id] = "completed"
         self.provider_task_ids[job_id] = provider_task_id
+        self.errors.pop(job_id, None)
 
     async def fail(
         self,
@@ -284,6 +342,7 @@ class InMemoryMemoryJobStore:
     ) -> None:
         self.errors[job_id] = error
         self.statuses[job_id] = "pending" if retry_at is not None else "failed"
+        self.provider_task_ids[job_id] = None
         if retry_at is not None:
             self.retry_at[job_id] = retry_at
 
@@ -348,6 +407,12 @@ class MemoryWriteService:
             await self._process(job)
 
     async def _process(self, job: MemoryWriteJob) -> None:
+        if job.provider_task_id is not None:
+            await self._poll_provider(job)
+            return
+        await self._submit_to_provider(job)
+
+    async def _submit_to_provider(self, job: MemoryWriteJob) -> None:
         try:
             receipt = await self._provider.add_completed_turn(
                 ProfileScope(job.device_id, job.identity_id),
@@ -360,33 +425,100 @@ class MemoryWriteService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            retry_at = None
-            if job.attempts < self._max_attempts:
-                retry_at = datetime.now(timezone.utc) + timedelta(
-                    seconds=min(2 ** job.attempts, 60)
-                )
-            await self._store.fail(
+            await self._fail_submission(job, exc)
+            return
+        if receipt.status == "failed":
+            await self._fail_submission(job, RuntimeError("MemOS task failed"))
+            return
+        if receipt.status == "completed":
+            await self._complete(job, receipt.provider_task_id)
+            return
+        if receipt.provider_task_id is None:
+            await self._fail_submission(
+                job,
+                RuntimeError("Memory provider returned running without a task ID"),
+            )
+            return
+        await self._store.submit(
+            job.job_id,
+            receipt.provider_task_id,
+            check_at=self._next_poll_at(),
+        )
+        logger.info(
+            "memory_job_submitted job_id=%s turn_id=%s attempts=%s provider_task_id=%s",
+            job.job_id,
+            job.turn_id,
+            job.attempts,
+            receipt.provider_task_id,
+        )
+
+    async def _poll_provider(self, job: MemoryWriteJob) -> None:
+        provider_task_id = job.provider_task_id
+        assert provider_task_id is not None
+        try:
+            receipt = await self._provider.get_write_status(provider_task_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._store.submit(
                 job.job_id,
+                provider_task_id,
+                check_at=self._next_poll_at(),
                 error=f"{type(exc).__name__}: {exc}",
-                retry_at=retry_at,
             )
             logger.warning(
-                "memory_job_failed job_id=%s turn_id=%s attempts=%s retry=%s error_type=%s",
+                "memory_job_status_check_failed job_id=%s turn_id=%s "
+                "provider_task_id=%s error_type=%s",
                 job.job_id,
                 job.turn_id,
-                job.attempts,
-                retry_at is not None,
+                provider_task_id,
                 type(exc).__name__,
             )
             return
-        await self._store.complete(job.job_id, receipt.provider_task_id)
+        if receipt.status == "running":
+            await self._store.submit(
+                job.job_id,
+                provider_task_id,
+                check_at=self._next_poll_at(),
+            )
+            return
+        if receipt.status == "failed":
+            await self._fail_submission(job, RuntimeError("MemOS task failed"))
+            return
+        await self._complete(job, provider_task_id)
+
+    async def _complete(self, job: MemoryWriteJob, provider_task_id: str | None) -> None:
+        await self._store.complete(job.job_id, provider_task_id)
         logger.info(
             "memory_job_completed job_id=%s turn_id=%s attempts=%s provider_task_id=%s",
             job.job_id,
             job.turn_id,
             job.attempts,
-            receipt.provider_task_id or "none",
+            provider_task_id or "none",
         )
+
+    async def _fail_submission(self, job: MemoryWriteJob, exc: Exception) -> None:
+        retry_at = None
+        if job.attempts < self._max_attempts:
+            retry_at = datetime.now(timezone.utc) + timedelta(
+                seconds=min(2 ** job.attempts, 60)
+            )
+        await self._store.fail(
+            job.job_id,
+            error=f"{type(exc).__name__}: {exc}",
+            retry_at=retry_at,
+        )
+        logger.warning(
+            "memory_job_failed job_id=%s turn_id=%s attempts=%s retry=%s error_type=%s",
+            job.job_id,
+            job.turn_id,
+            job.attempts,
+            retry_at is not None,
+            type(exc).__name__,
+        )
+
+    def _next_poll_at(self) -> datetime:
+        return datetime.now(timezone.utc) + timedelta(seconds=self._poll_seconds)
 
 
 class DisabledMemoryWriteService:
