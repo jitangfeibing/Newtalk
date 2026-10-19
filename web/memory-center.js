@@ -1,4 +1,3 @@
-const center = document.querySelector('#memoryCenter');
 const memberSelect = document.querySelector('#memoryMemberSelect');
 const profileList = document.querySelector('#profileList');
 const profileAddForm = document.querySelector('#profileAddForm');
@@ -17,6 +16,11 @@ const previousButton = document.querySelector('#memoryPreviousButton');
 const nextButton = document.querySelector('#memoryNextButton');
 const pageLabel = document.querySelector('#memoryPageLabel');
 const feedback = document.querySelector('#memoryFeedback');
+const serviceState = document.querySelector('#memoryServiceState');
+const serviceTitle = document.querySelector('#memoryServiceTitle');
+const serviceMessage = document.querySelector('#memoryServiceMessage');
+const retryButton = document.querySelector('#memoryRetryButton');
+const memorySearchButton = memorySearchForm.querySelector('button[type="submit"]');
 
 let members = [];
 let page = 1;
@@ -51,6 +55,47 @@ function setFeedback(message, state = 'neutral') {
     feedback.dataset.state = state;
 }
 
+function setServiceState(state, title, message) {
+    serviceState.dataset.state = state;
+    serviceTitle.textContent = title;
+    serviceMessage.textContent = message;
+    retryButton.hidden = !['disabled', 'unavailable', 'error'].includes(state);
+}
+
+function setManagementEnabled(enabled) {
+    addProfileFieldButton.disabled = !enabled;
+    memoryKindSelect.disabled = !enabled;
+    memorySearchInput.disabled = !enabled;
+    memorySearchButton.disabled = !enabled;
+    if (!enabled) profileAddForm.hidden = true;
+}
+
+function describeMemoryError(error) {
+    const detail = String(error.message || '未知错误');
+    if (error.status === 503 && detail.toLowerCase().includes('disabled')) {
+        return {
+            state: 'disabled',
+            title: '长期记忆尚未启用',
+            message: '请先在 Newtalk 服务端配置 MemOS，再使用画像与长期记忆。',
+        };
+    }
+    if (error.status === 503) {
+        return {
+            state: 'unavailable',
+            title: '记忆服务暂时不可用',
+            message: 'Newtalk 已连接，但 MemOS 当前不可达。普通对话仍可继续。',
+        };
+    }
+    if (error.status === 502) {
+        return {
+            state: 'error',
+            title: '记忆服务返回异常',
+            message: `${detail}。请检查 MemOS 配置或服务日志。`,
+        };
+    }
+    return {state: 'error', title: '记忆内容读取失败', message: detail};
+}
+
 function emptyState(target, message) {
     const empty = document.createElement('p');
     empty.className = 'memory-empty';
@@ -69,6 +114,7 @@ function profileRow(field) {
     const remove = document.createElement('button');
 
     row.className = 'profile-row';
+    row.dataset.locked = field.locked ? 'true' : 'false';
     path.textContent = field.path;
     value.value = field.value;
     value.maxLength = 2000;
@@ -130,9 +176,11 @@ function memoryCard(memory) {
     const remove = document.createElement('button');
 
     card.className = 'memory-card';
+    card.dataset.kind = memory.kind;
     meta.className = 'memory-card-meta';
     kind.textContent = {fact: '事实', preference: '偏好', event: '经历'}[memory.kind] || memory.kind;
-    date.textContent = memory.updated_at || memory.created_at || '时间未知';
+    const timestamp = memory.updated_at || memory.created_at;
+    date.textContent = timestamp ? new Date(timestamp).toLocaleString('zh-CN') : '时间未知';
     meta.append(kind, date);
     title.value = memory.title;
     title.maxLength = 500;
@@ -214,19 +262,26 @@ async function loadMemories() {
 
 async function loadSelectedMember() {
     if (!selectedIdentityId()) return;
-    setFeedback('正在读取画像和长期记忆...');
+    const member = members.find((item) => item.identity_id === selectedIdentityId());
+    setServiceState('loading', '正在同步记忆', `正在读取 ${member?.display_name || '当前成员'} 的画像和长期记忆。`);
+    setManagementEnabled(false);
+    setFeedback('');
     profileList.setAttribute('aria-busy', 'true');
     memoryList.setAttribute('aria-busy', 'true');
     try {
         await Promise.all([loadProfile(), loadMemories()]);
-        setFeedback('内容已同步。', 'success');
+        setServiceState('ready', '记忆服务已连接', `${member?.display_name || '当前成员'} 的内容已经同步。`);
+        setManagementEnabled(true);
+        setFeedback('');
     } catch (error) {
-        const message = error.status === 503
-            ? '长期记忆未启用。请在服务端配置 MemOS 后使用 Memory Center。'
-            : error.message;
-        emptyState(profileList, message);
-        emptyState(memoryList, message);
-        setFeedback(message, 'error');
+        const state = describeMemoryError(error);
+        setServiceState(state.state, state.title, state.message);
+        setManagementEnabled(false);
+        emptyState(profileList, '当前无法读取稳定画像。');
+        emptyState(memoryList, '当前无法读取历史记忆。');
+        memoryCount.textContent = '0 条';
+        pagination.hidden = true;
+        setFeedback('');
     } finally {
         profileList.removeAttribute('aria-busy');
         memoryList.removeAttribute('aria-busy');
@@ -243,8 +298,17 @@ function updateMembers(nextMembers) {
         option.textContent = member.nickname ? `${member.display_name}（${member.nickname}）` : member.display_name;
         memberSelect.append(option);
     }
-    center.hidden = members.length === 0;
-    if (!members.length) return;
+    const hasMembers = members.length > 0;
+    memberSelect.disabled = !hasMembers;
+    setManagementEnabled(false);
+    if (!hasMembers) {
+        setServiceState('empty', '还没有家庭成员', '请先在“家庭成员”中添加成员，再为其管理画像与长期记忆。');
+        emptyState(profileList, '添加家庭成员后，这里会显示稳定画像。');
+        emptyState(memoryList, '添加家庭成员后，这里会显示长期记忆。');
+        memoryCount.textContent = '0 条';
+        pagination.hidden = true;
+        return;
+    }
     memberSelect.value = members.some((member) => member.identity_id === selected)
         ? selected
         : members[0].identity_id;
@@ -255,6 +319,10 @@ function updateMembers(nextMembers) {
 export function initializeMemoryCenter() {
     window.addEventListener('newtalk:members-changed', (event) => updateMembers(event.detail.members));
     memberSelect.addEventListener('change', () => {
+        page = 1;
+        loadSelectedMember();
+    });
+    retryButton.addEventListener('click', () => {
         page = 1;
         loadSelectedMember();
     });

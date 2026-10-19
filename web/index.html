@@ -3,54 +3,149 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Newtalk Voice Console</title>
-    <link rel="stylesheet" href="/styles.css">
+    <title>Newtalk · 家庭陪伴助手</title>
+    <link rel="stylesheet" href="/styles.css?v=20261019.1">
 </head>
 <body>
-    <main class="shell">
-        <header class="masthead">
-            <div>
-                <p class="eyebrow">NEWTALK / PART 07.7</p>
-                <h1>Voice Console</h1>
+    <div class="app-frame">
+        <aside class="sidebar" aria-label="主要导航">
+            <a class="brand" href="#home" aria-label="Newtalk 首页">
+                <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span>Newtalk</span>
+            </a>
+            <nav class="primary-nav">
+                <a class="nav-item active" href="#home" data-view-target="home"><span aria-hidden="true">⌂</span>首页</a>
+                <a class="nav-item" href="#conversation" data-view-target="conversation"><span aria-hidden="true">◌</span>对话</a>
+                <a class="nav-item" href="#family" data-view-target="family"><span aria-hidden="true">♙</span>家庭成员</a>
+                <a class="nav-item" href="#memoryCenter" data-view-target="memory"><span aria-hidden="true">◇</span>记忆中心</a>
+            </nav>
+            <div class="sidebar-note">
+                <span class="label">PRIVATE BY DESIGN</span>
+                <p>一个设备，一个家庭空间。对话、身份与记忆彼此隔离。</p>
             </div>
-            <div class="status" data-state="offline" id="connectionStatus">
-                <span class="status-dot"></span>
-                <span id="statusLabel">离线</span>
+            <div class="sidebar-footer">
+                <div class="status" data-state="offline" id="connectionStatus">
+                    <span class="status-dot"></span>
+                    <span id="statusLabel">离线</span>
+                </div>
+                <span class="version">P7.7</span>
             </div>
-        </header>
+        </aside>
 
-        <section class="hero">
-            <p class="hero-index">01</p>
-            <div>
-                <h2>文字流动，<br>声音随行。</h2>
-                <p class="hero-copy">
-                    当前页面验证家庭设备隔离、成员管理、麦克风 PCM、流式 ASR/LLM/TTS 与打断。
-                </p>
-            </div>
-        </section>
+        <main class="shell">
+            <section class="view-section home-view is-active" id="home" data-view="home">
+                <header class="masthead">
+                    <div>
+                        <p class="eyebrow">YOUR FAMILY COMPANION</p>
+                        <h1 id="greetingTitle">欢迎回来</h1>
+                        <p class="masthead-copy">想说什么都可以，Newtalk 正在这里听你说。</p>
+                        <button type="button" class="button home-chat-button" data-view-target="conversation">开始对话</button>
+                    </div>
+                    <div class="companion-orbit" aria-hidden="true">
+                        <span class="orbit-dot orbit-dot-one"></span>
+                        <span class="orbit-dot orbit-dot-two"></span>
+                        <span class="orbit-face">N</span>
+                    </div>
+                </header>
 
-        <section class="identity-panel" aria-labelledby="familyTitle">
-            <header class="panel-header">
+                <section class="home-overview" aria-label="Newtalk 功能概览">
+                    <article>
+                        <span class="overview-number">01</span>
+                        <div><strong>自然交谈</strong><p>文字和实时语音使用同一条对话链路。</p></div>
+                    </article>
+                    <article>
+                        <span class="overview-number">02</span>
+                        <div><strong>认识家人</strong><p>声纹区分成员，访客保持独立上下文。</p></div>
+                    </article>
+                    <article>
+                        <span class="overview-number">03</span>
+                        <div><strong>记住重要的事</strong><p>画像常驻，长期经历按需检索。</p></div>
+                    </article>
+                </section>
+            </section>
+
+            <section class="conversation-section view-section" id="conversation" data-view="conversation" aria-labelledby="chatTitle" hidden>
+                <div class="conversation-heading">
+                    <div>
+                        <span class="label">LIVE CONVERSATION</span>
+                        <h2>现在，聊一会儿。</h2>
+                    </div>
+                    <div class="runtime-badges">
+                        <span class="model-badge">LLM STREAM</span>
+                        <span class="mic-badge" data-state="idle" id="micStatus">麦克风待命</span>
+                        <span class="audio-badge" data-state="idle" id="audioStatus">音频待命</span>
+                    </div>
+                </div>
+
+                <section class="chat-panel" aria-labelledby="chatTitle">
+                    <header class="chat-header">
+                        <div class="assistant-identity">
+                            <span class="assistant-avatar">N</span>
+                            <div><h3 id="chatTitle">Newtalk</h3><p>家庭陪伴助手 · 流式在线</p></div>
+                        </div>
+                        <div class="connection-actions">
+                            <button type="button" class="icon-button" id="pingButton" disabled title="测试连接">↗</button>
+                            <button type="button" class="button secondary compact" id="clearDialogueButton" disabled title="清除本轮全部短期对话，不影响画像和长期记忆">新对话</button>
+                            <button type="button" class="button compact" id="connectionButton">连接</button>
+                        </div>
+                    </header>
+
+                    <ol class="message-list" id="messageList" aria-live="polite"></ol>
+
+                    <form class="composer" id="chatForm">
+                        <label class="sr-only" for="messageInput">输入聊天内容</label>
+                        <textarea
+                            id="messageInput"
+                            maxlength="4000"
+                            placeholder="和 Newtalk 说点什么..."
+                            rows="2"
+                        ></textarea>
+                        <div class="composer-footer">
+                            <label class="speaker-selector" for="textSpeakerSelect">
+                                <span>当前说话人</span>
+                                <select id="textSpeakerSelect">
+                                    <option value="">Guest（访客）</option>
+                                </select>
+                            </label>
+                            <div class="composer-actions">
+                                <button type="button" class="button secondary" id="micButton" disabled>开始说话</button>
+                                <button type="button" class="button secondary" id="stopAudioButton" disabled>停止播放</button>
+                                <button type="submit" class="button send-button" id="sendButton" disabled>发送</button>
+                            </div>
+                        </div>
+                    </form>
+                </section>
+
+                <details class="developer-console">
+                    <summary>连接与协议详情 <code id="endpoint">等待页面初始化</code></summary>
+                    <ol class="event-log" id="eventLog" aria-live="polite"></ol>
+                </details>
+            </section>
+
+        <section class="identity-panel management-panel view-section" id="family" data-view="family" aria-labelledby="familyTitle" hidden>
+            <header class="panel-header section-heading">
                 <div>
                     <span class="label">FAMILY IDENTITY</span>
                     <h3 id="familyTitle">家庭与成员</h3>
+                    <p>管理这个设备所属的家庭成员，并为每位成员录入独立声纹。</p>
                 </div>
-                <code id="deviceIdLabel">尚未绑定设备</code>
+                <div class="device-chip"><span>设备 ID</span><code id="deviceIdLabel">尚未绑定设备</code></div>
             </header>
 
             <div class="identity-loading" id="identityLoading">正在读取设备身份...</div>
 
             <div class="device-onboarding" id="deviceOnboarding" hidden>
-                <div>
+                <div class="onboarding-card primary-card">
                     <span class="label">NEW FAMILY</span>
                     <h4>创建新的家庭空间</h4>
-                    <p>服务器会签发设备凭据，并只展示一次家庭恢复码。</p>
+                    <p>第一次使用 Newtalk 时选择这里。服务器会签发设备凭据，并只展示一次家庭恢复码。</p>
                     <button type="button" class="button" id="createDeviceButton">创建家庭空间</button>
                 </div>
-                <form id="recoveryForm">
+                <form class="onboarding-card" id="recoveryForm">
                     <span class="label">RECOVER</span>
                     <h4>恢复已有家庭</h4>
-                    <label for="recoveryCodeInput">家庭恢复码</label>
+                    <p>更换浏览器或清除数据后，使用之前保存的恢复码重新绑定。</p>
+                    <label for="recoveryCodeInput">输入家庭恢复码</label>
                     <input id="recoveryCodeInput" autocomplete="off" placeholder="NT-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" required>
                     <button type="submit" class="button secondary">恢复绑定</button>
                 </form>
@@ -67,43 +162,46 @@
                 </div>
 
                 <div class="member-layout">
+                    <div class="member-directory">
+                        <div class="directory-heading">
+                            <div>
+                                <span class="label">DIRECTORY</span>
+                                <h4>当前家庭成员</h4>
+                                <p>声纹用于语音对话时自动确认说话人。</p>
+                            </div>
+                            <button type="button" class="text-button" id="rotateRecoveryButton">更换恢复码</button>
+                        </div>
+                        <ol class="member-list" id="memberList"></ol>
+                    </div>
+
                     <form class="member-form" id="memberForm">
                         <span class="label">MEMBER PROFILE</span>
                         <h4 id="memberFormTitle">添加家庭成员</h4>
+                        <p class="form-helper">成员资料只在当前家庭空间内使用。</p>
                         <label for="displayNameInput">姓名 *</label>
                         <input id="displayNameInput" maxlength="80" required>
-                        <label for="nicknameInput">称呼</label>
+                        <label for="nicknameInput">Newtalk 如何称呼</label>
                         <input id="nicknameInput" maxlength="80">
-                        <label for="relationshipInput">关系</label>
+                        <label for="relationshipInput">家庭关系</label>
                         <input id="relationshipInput" maxlength="80" placeholder="例如：爸爸、女儿、朋友">
-                        <label for="avatarInput">头像地址</label>
+                        <label for="avatarInput">头像地址（可选）</label>
                         <input id="avatarInput" maxlength="500" inputmode="url">
                         <div class="member-form-actions">
                             <button type="submit" class="button" id="saveMemberButton">添加成员</button>
                             <button type="button" class="button secondary" id="cancelMemberButton" hidden>取消编辑</button>
                         </div>
                     </form>
-
-                    <div class="member-directory">
-                        <div class="directory-heading">
-                            <div>
-                                <span class="label">DIRECTORY</span>
-                                <h4>当前家庭成员</h4>
-                            </div>
-                            <button type="button" class="text-button" id="rotateRecoveryButton">更换恢复码</button>
-                        </div>
-                        <ol class="member-list" id="memberList"></ol>
-                    </div>
                 </div>
             </div>
             <p class="identity-feedback" id="identityFeedback" role="status"></p>
         </section>
 
-        <section class="memory-panel" id="memoryCenter" aria-labelledby="memoryTitle" hidden>
-            <header class="panel-header memory-header">
+        <section class="memory-panel view-section" id="memoryCenter" data-view="memory" aria-labelledby="memoryTitle" hidden>
+            <header class="panel-header memory-header section-heading">
                 <div>
                     <span class="label">MEMORY CENTER</span>
                     <h3 id="memoryTitle">画像与长期记忆</h3>
+                    <p>查看 Newtalk 认识的成员信息，并纠正或删除长期记忆。</p>
                 </div>
                 <label class="memory-member-select" for="memoryMemberSelect">
                     <span>当前成员</span>
@@ -111,16 +209,24 @@
                 </label>
             </header>
 
+            <div class="memory-service-state" id="memoryServiceState" data-state="loading" role="status">
+                <span class="service-state-dot"></span>
+                <div><strong id="memoryServiceTitle">正在连接记忆服务</strong><p id="memoryServiceMessage">正在读取当前成员的画像和长期记忆。</p></div>
+                <button type="button" class="text-button memory-retry-button" id="memoryRetryButton" hidden>重新连接</button>
+            </div>
+
             <div class="memory-layout">
                 <section class="profile-column" aria-labelledby="profileTitle">
                     <div class="memory-section-heading">
                         <div>
                             <span class="label">PROFILE / ALWAYS AVAILABLE</span>
                             <h4 id="profileTitle">稳定画像</h4>
+                            <p>每轮对话都可使用的稳定信息。</p>
                         </div>
-                        <button type="button" class="text-button" id="addProfileFieldButton">添加字段</button>
+                        <button type="button" class="button secondary compact" id="addProfileFieldButton">添加字段</button>
                     </div>
                     <form class="profile-add-form" id="profileAddForm" hidden>
+                        <strong>添加画像字段</strong>
                         <input id="profilePathInput" maxlength="240" placeholder="字段路径，例如：偏好.饮料" required>
                         <input id="profileValueInput" maxlength="2000" placeholder="字段内容" required>
                         <label><input type="checkbox" id="profileLockedInput"> 锁定，禁止后台自动更新</label>
@@ -137,6 +243,7 @@
                         <div>
                             <span class="label">MEMOS / ON DEMAND</span>
                             <h4 id="memoriesTitle">历史记忆</h4>
+                            <p>只有需要回忆过去时才会检索。</p>
                         </div>
                         <span class="memory-count" id="memoryCount">0 条</span>
                     </div>
@@ -161,62 +268,9 @@
             <p class="memory-feedback" id="memoryFeedback" role="status"></p>
         </section>
 
-        <div class="workspace">
-            <section class="chat-panel" aria-labelledby="chatTitle">
-                <header class="panel-header">
-                    <div>
-                        <span class="label">STREAMING CHAT</span>
-                        <h3 id="chatTitle">文本对话</h3>
-                    </div>
-                    <div class="runtime-badges">
-                        <span class="model-badge">LLM STREAM</span>
-                        <span class="mic-badge" data-state="idle" id="micStatus">麦克风待命</span>
-                        <span class="audio-badge" data-state="idle" id="audioStatus">音频待命</span>
-                    </div>
-                </header>
+        </main>
+    </div>
 
-                <ol class="message-list" id="messageList" aria-live="polite"></ol>
-
-                <form class="composer" id="chatForm">
-                    <label class="sr-only" for="messageInput">输入聊天内容</label>
-                    <textarea
-                        id="messageInput"
-                        maxlength="4000"
-                        placeholder="输入消息，Enter 发送，Shift + Enter 换行"
-                        rows="2"
-                    ></textarea>
-                    <div class="composer-footer">
-                        <label class="speaker-selector" for="textSpeakerSelect">
-                            <span>文字说话人</span>
-                            <select id="textSpeakerSelect">
-                                <option value="">Guest（访客）</option>
-                            </select>
-                        </label>
-                        <div class="composer-actions">
-                            <button type="button" class="button secondary" id="micButton" disabled>开启麦克风</button>
-                            <button type="button" class="button secondary" id="stopAudioButton" disabled>停止播放</button>
-                            <button type="submit" class="button send-button" id="sendButton" disabled>发送消息</button>
-                        </div>
-                    </div>
-                </form>
-            </section>
-
-            <section class="console-panel">
-                <div class="console-toolbar">
-                    <div>
-                        <span class="label">ENDPOINT</span>
-                        <code id="endpoint">等待页面初始化</code>
-                    </div>
-                    <div class="actions">
-                        <button type="button" class="button secondary" id="pingButton" disabled>Ping</button>
-                        <button type="button" class="button" id="connectionButton">连接</button>
-                    </div>
-                </div>
-                <ol class="event-log" id="eventLog" aria-live="polite"></ol>
-            </section>
-        </div>
-    </main>
-
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=20261019.2"></script>
 </body>
 </html>

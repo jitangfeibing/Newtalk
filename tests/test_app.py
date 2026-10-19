@@ -29,10 +29,16 @@ def test_web_page_is_served() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Newtalk Voice Console" in response.text
+    assert "Newtalk · 家庭陪伴助手" in response.text
+    assert 'class="primary-nav"' in response.text
+    assert 'id="conversation" data-view="conversation" aria-labelledby="chatTitle" hidden' in response.text
     assert 'id="chatForm"' in response.text
     assert 'id="messageInput"' in response.text
     assert 'id="stopAudioButton"' in response.text
+    assert 'id="clearDialogueButton"' in response.text
+    assert 'id="deviceWorkspace"' in response.text
+    assert 'id="memoryServiceState"' in response.text
+    assert 'id="memoryRetryButton"' in response.text
     assert 'id="micButton"' in response.text
     assert 'id="deviceOnboarding"' in response.text
     assert 'id="memberForm"' in response.text

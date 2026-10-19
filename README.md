@@ -80,6 +80,7 @@ P7.7 增加同一家庭的短期 Dialogue 恢复：
 - 不同 `device_id` 的 Session 和历史强制隔离；成员完整删除同时清理该成员的持久化交换和活动 Family 缓存。
 - Member Turn 完成提交前重新校验 Active Identity，删除期间尚未结束的旧 Turn 不会重新写回 Dialogue 或长期 Memory。
 - Dialogue 仍受 `NEWTALK_DIALOGUE_MAX_TURNS` 与 `NEWTALK_DIALOGUE_MAX_CHARS` 限制，不替代 MemOS 长期记忆。
+- 对话页“新对话”清除当前 Session 的全部 Guest/Family 短期窗口和可见消息；Profile、MemOS、成员和声纹保持不变。
 
 继承能力包括：
 
@@ -127,6 +128,23 @@ newtalk
 
 如需覆盖默认运行参数，先复制 `.env.example` 为 `.env`。默认
 `NEWTALK_LLM_BACKEND=fake`，不需要 API Key。
+
+### 对话时延日志
+
+每个 Turn 在 `INFO` 级别输出一条 `turn_latency_summary`，可按 `turn_id` 与 ASR、声纹、LLM、TTS 和浏览器首播日志关联。汇总字段包括输入来源、说话人类型、上下文消息数、Prompt 字符数、输入/回复长度、首字、首音频、音频完成和总耗时。日志默认不保存聊天正文。
+
+```text
+turn_latency_summary ... source=voice speaker=member status=completed context_messages=4 prompt_chars=286 input_chars=12 response_chars=48 text_chunks=9 audio_frames=14 audio_bytes=224000 first_text_ms=920.4 first_audio_ms=1280.7 audio_complete_ms=2411.6 total_ms=2411.7
+```
+
+需要保存并持续查看日志时：
+
+```powershell
+New-Item -ItemType Directory -Force logs
+newtalk *>&1 | Tee-Object -FilePath logs\newtalk.log
+```
+
+`speaker_resolved total_elapsed_ms` 表示语音从 VAD 开始到 ASR/声纹汇合完成；`turn_latency_summary` 表示 Turn 创建后到服务端完成；`browser_playback_started elapsed_ms` 表示浏览器收到 Turn 后到真正开始播放。三者使用同一 `utterance_id`/`turn_id` 链路定位。
 
 P7.7 数据库、设备、声纹和可选 Memory 配置：
 

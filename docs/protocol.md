@@ -1,6 +1,6 @@
 # Newtalk HTTP、VoicePrint、Memory 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.9`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.10`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
 WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID，并分别恢复 Family 和 Guest 的最近窗口。
 
@@ -42,7 +42,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.9",
+  "protocol_version": "0.10",
   "session_id": "stable dialogue session UUID",
   "device_id": "02:11:22:33:44:55",
   "dialogue": {
@@ -178,6 +178,28 @@ Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名�
 
 服务端收到匹配当前播放流的回执后清除播放状态。迟到或不匹配的回执会被忽略，避免旧流影响新流。`turn_cancelled` 只表示生成中的 Turn 被取消；若 Turn 已完成但浏览器仍有缓冲音频，打断只发送 `audio_stop`。
 
+## 开始新对话
+
+客户端开始新对话时清除当前设备 Session 的全部短期 Dialogue，包括 Family 与 Guest 两个窗口：
+
+```json
+{"type":"dialogue_clear","event_id":"client ID"}
+```
+
+服务端先取消当前连接正在生成或播放的 Turn，再删除 PostgreSQL 中对应 lane，并同步清除本进程内同一设备的活动 Dialogue 缓存。成功响应为：
+
+```json
+{
+  "type": "dialogue_cleared",
+  "event_id": "client ID",
+  "session_id": "stable dialogue session UUID",
+  "scope": "all",
+  "deleted_turns": 3
+}
+```
+
+该操作只清除短期 Dialogue 和浏览器当前消息列表，不删除 Profile、MemOS 长期记忆、成员或声纹。声纹仍会在下一次语音输入时重新识别成员。
+
 ## 错误和生命周期
 
 - 二进制音频未先开始采集：`audio_input_not_started`。
@@ -187,6 +209,7 @@ Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名�
 - 同一连接重复开始采集：`audio_input_active`。
 - 文本 `identity_id` 类型错误：`invalid_identity_id`。
 - 文本选择了当前家庭不存在的成员：`identity_not_found`。
+- 清除短期对话持久化失败：`dialogue_clear_failed`。
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
 - `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
 - `playback_drained` 表示浏览器已经播放完指定流，不产生响应事件。
@@ -281,7 +304,7 @@ Guest / Memory disabled
 
 ## P7.7 Dialogue 恢复链
 
-P7.7 当时没有新增客户端上行事件，协议版本升级为 `0.8`，变化集中在 `hello.dialogue`。后续语音打断补充 `playback_drained`，当前协议版本为 `0.9`。
+P7.7 当时没有新增客户端上行事件，协议版本升级为 `0.8`，变化集中在 `hello.dialogue`。后续语音打断补充 `playback_drained` 升级为 `0.9`；当前新增 `dialogue_clear/dialogue_cleared`，协议版本为 `0.10`。
 
 ```text
 WebSocket 握手携带 HttpOnly Device Cookie

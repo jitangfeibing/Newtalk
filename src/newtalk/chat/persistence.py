@@ -58,6 +58,10 @@ class DialogueStore(Protocol):
         max_turns: int,
     ) -> bool: ...
 
+    async def clear(
+        self, *, session_id: str, lane: DialogueLane | None = None
+    ) -> int: ...
+
     async def delete_identity(self, *, device_id: str, identity_id: str) -> None: ...
 
     async def close(self) -> None: ...
@@ -237,6 +241,31 @@ class SqlAlchemyDialogueStore:
     async def close(self) -> None:
         await self._engine.dispose()
 
+    async def clear(
+        self, *, session_id: str, lane: DialogueLane | None = None
+    ) -> int:
+        parsed_session_id = UUID(session_id)
+        async with self._sessions.begin() as session:
+            dialogue = await session.scalar(
+                select(DialogueSessionRow)
+                .where(DialogueSessionRow.session_id == parsed_session_id)
+                .with_for_update()
+            )
+            if dialogue is None:
+                raise RuntimeError("Dialogue Session does not exist")
+            statement = delete(DialogueExchangeRow).where(
+                DialogueExchangeRow.session_id == parsed_session_id
+            )
+            if lane is not None:
+                statement = statement.where(DialogueExchangeRow.lane == lane)
+            result = await session.execute(statement)
+            await session.execute(
+                update(DialogueSessionRow)
+                .where(DialogueSessionRow.session_id == parsed_session_id)
+                .values(updated_at=func.now())
+            )
+            return result.rowcount or 0
+
     async def delete_identity(self, *, device_id: str, identity_id: str) -> None:
         session_id = select(DialogueSessionRow.session_id).where(
             DialogueSessionRow.device_id == device_id
@@ -297,6 +326,17 @@ class InMemoryDialogueStore:
 
     async def close(self) -> None:
         return None
+
+    async def clear(
+        self, *, session_id: str, lane: DialogueLane | None = None
+    ) -> int:
+        history = self._history.get(session_id, [])
+        retained = (
+            [] if lane is None else [item for item in history if item.lane != lane]
+        )
+        deleted = len(history) - len(retained)
+        self._history[session_id] = retained
+        return deleted
 
     async def delete_identity(self, *, device_id: str, identity_id: str) -> None:
         session_id = self._session_by_device.get(device_id)

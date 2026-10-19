@@ -1,11 +1,12 @@
-import {initializeIdentity, selectedTextSpeaker} from './identity.js';
-import {initializeMemoryCenter} from './memory-center.js';
+import {initializeIdentity, selectedTextSpeaker} from './identity.js?v=20261019.1';
+import {initializeMemoryCenter} from './memory-center.js?v=20261019.1';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
 const endpointElement = document.querySelector('#endpoint');
 const connectionButton = document.querySelector('#connectionButton');
 const pingButton = document.querySelector('#pingButton');
+const clearDialogueButton = document.querySelector('#clearDialogueButton');
 const eventLog = document.querySelector('#eventLog');
 const chatForm = document.querySelector('#chatForm');
 const messageInput = document.querySelector('#messageInput');
@@ -15,12 +16,78 @@ const audioStatus = document.querySelector('#audioStatus');
 const stopAudioButton = document.querySelector('#stopAudioButton');
 const micStatus = document.querySelector('#micStatus');
 const micButton = document.querySelector('#micButton');
+const greetingTitle = document.querySelector('#greetingTitle');
+const navigationItems = document.querySelectorAll('.nav-item');
+const viewTriggers = document.querySelectorAll('[data-view-target]');
+const viewSections = document.querySelectorAll('.view-section');
+
+function showView(viewName, {updateHash = true, moveFocus = true} = {}) {
+    const target = document.querySelector(`[data-view="${viewName}"]`);
+    if (!target) return;
+
+    for (const section of viewSections) {
+        const isActive = section === target;
+        section.hidden = !isActive;
+        section.classList.toggle('is-active', isActive);
+    }
+    for (const item of navigationItems) {
+        const isCurrent = item.dataset.viewTarget === viewName;
+        item.classList.toggle('active', isCurrent);
+        if (isCurrent) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+    }
+
+    if (updateHash) {
+        const hash = viewName === 'memory' ? '#memoryCenter' : `#${viewName}`;
+        history.replaceState(null, '', hash);
+    }
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    if (!moveFocus) return;
+    if (viewName === 'conversation') {
+        requestAnimationFrame(() => messageInput.focus());
+        return;
+    }
+    const heading = target.querySelector('h1, h2, h3');
+    if (heading) {
+        heading.tabIndex = -1;
+        requestAnimationFrame(() => heading.focus());
+    }
+}
+
+function initializeHomeShell() {
+    const hour = new Date().getHours();
+    const greeting = hour < 6
+        ? '夜深了，慢慢说。'
+        : hour < 12
+            ? '早上好，今天想聊什么？'
+            : hour < 18
+                ? '下午好，欢迎回来。'
+                : '晚上好，今天过得怎么样？';
+
+    greetingTitle.textContent = greeting;
+    for (const trigger of viewTriggers) {
+        trigger.addEventListener('click', (event) => {
+            event.preventDefault();
+            showView(trigger.dataset.viewTarget);
+        });
+    }
+
+    const initialView = location.hash === '#conversation'
+        ? 'conversation'
+        : location.hash === '#family'
+            ? 'family'
+            : location.hash === '#memoryCenter'
+                ? 'memory'
+                : 'home';
+    showView(initialView, {updateHash: false, moveFocus: false});
+}
 
 let socket = null;
 let eventSequence = 0;
 let advertisedAudioFormat = null;
 let advertisedInputFormat = null;
 const pendingEvents = new Set();
+let pendingDialogueClear = null;
 const messagesByTurn = new Map();
 const turnStartedAt = new Map();
 const voiceMessagesByUtterance = new Map();
@@ -283,6 +350,7 @@ function updateComposer() {
     const connected = socket?.readyState === WebSocket.OPEN;
     sendButton.disabled = !connected || !messageInput.value.trim();
     micButton.disabled = !connected;
+    clearDialogueButton.disabled = !connected || pendingDialogueClear !== null;
 }
 
 function setStatus(state, label) {
@@ -307,7 +375,7 @@ function appendProtocolEvent(direction, payload) {
     eventLog.prepend(item);
 }
 
-function appendMessage(role, text, meta) {
+function appendMessage(role, text, meta, lane = null) {
     const item = document.createElement('li');
     const heading = document.createElement('div');
     const roleLabel = document.createElement('span');
@@ -315,6 +383,7 @@ function appendMessage(role, text, meta) {
     const content = document.createElement('p');
 
     item.className = `message ${role}`;
+    if (lane) item.dataset.lane = lane;
     heading.className = 'message-heading';
     roleLabel.textContent = role === 'user' ? 'YOU' : 'NEWTALK';
     roleLabel.className = 'message-role';
@@ -372,7 +441,7 @@ function handleIncoming(payload) {
 
     if (payload.type === 'asr_final') {
         if (payload.text) {
-            const message = appendMessage('user', payload.text, payload.utterance_id.slice(0, 8));
+            const message = appendMessage('user', payload.text, payload.utterance_id.slice(0, 8), 'guest');
             voiceMessagesByUtterance.set(payload.utterance_id, message);
         }
         microphone.setStatus('listening', '正在确认说话人');
@@ -385,6 +454,7 @@ function handleIncoming(payload) {
             message.querySelector('.message-role').textContent = payload.matched
                 ? payload.display_name
                 : 'GUEST';
+            message.dataset.lane = payload.matched ? 'family' : 'guest';
             voiceMessagesByUtterance.delete(payload.utterance_id);
         }
         microphone.setStatus(
@@ -413,7 +483,8 @@ function handleIncoming(payload) {
     if (payload.type === 'turn_started') {
         pendingEvents.delete(payload.event_id);
         turnStartedAt.set(payload.turn_id, performance.now());
-        const message = appendMessage('assistant', '', payload.turn_id.slice(0, 8));
+        const lane = payload.speaker?.guest === false ? 'family' : 'guest';
+        const message = appendMessage('assistant', '', payload.turn_id.slice(0, 8), lane);
         message.dataset.state = 'streaming';
         messagesByTurn.set(payload.turn_id, message);
         return;
@@ -463,8 +534,23 @@ function handleIncoming(payload) {
         return;
     }
 
+    if (payload.type === 'dialogue_cleared') {
+        if (payload.event_id === pendingDialogueClear) pendingDialogueClear = null;
+        messageList.replaceChildren();
+        messagesByTurn.clear();
+        turnStartedAt.clear();
+        voiceMessagesByUtterance.clear();
+        updateComposer();
+        appendProtocolEvent('system', '本轮短期对话已清除，画像和长期记忆未受影响');
+        return;
+    }
+
     if (payload.type === 'error') {
         if (payload.event_id) pendingEvents.delete(payload.event_id);
+        if (payload.event_id === pendingDialogueClear) {
+            pendingDialogueClear = null;
+            updateComposer();
+        }
         appendMessage('assistant', `消息未处理：${payload.message}`, payload.code);
     }
 }
@@ -474,9 +560,9 @@ function renderDialogueSnapshot(items) {
     messagesByTurn.clear();
     if (!items.length) return;
     for (const item of items) {
-        const user = appendMessage('user', item.user_text, item.turn_id.slice(0, 8));
+        const user = appendMessage('user', item.user_text, item.turn_id.slice(0, 8), item.lane);
         user.querySelector('.message-role').textContent = item.speaker.display_name;
-        const assistant = appendMessage('assistant', item.assistant_text, item.turn_id.slice(0, 8));
+        const assistant = appendMessage('assistant', item.assistant_text, item.turn_id.slice(0, 8), item.lane);
         assistant.dataset.state = 'completed';
         messagesByTurn.set(item.turn_id, assistant);
     }
@@ -530,6 +616,7 @@ function connect() {
         appendProtocolEvent('system', `WebSocket closed (${event.code})`);
         markStreamingMessagesInterrupted();
         pendingEvents.clear();
+        pendingDialogueClear = null;
         audioPlayer.reset();
         await microphone.stop(false);
         socket = null;
@@ -562,7 +649,8 @@ chatForm.addEventListener('submit', async (event) => {
     };
     pendingEvents.add(payload.event_id);
     const speaker = selectedTextSpeaker();
-    const userMessage = appendMessage('user', text, payload.event_id.split('-').slice(-2).join('-'));
+    const lane = speaker ? 'family' : 'guest';
+    const userMessage = appendMessage('user', text, payload.event_id.split('-').slice(-2).join('-'), lane);
     userMessage.querySelector('.message-role').textContent = speaker?.display_name ?? 'GUEST';
     socket.send(JSON.stringify(payload));
     appendProtocolEvent('outgoing', payload);
@@ -582,6 +670,21 @@ connectionButton.addEventListener('click', connect);
 pingButton.addEventListener('click', () => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     const event = {type: 'ping', event_id: nextEventId('ping')};
+    socket.send(JSON.stringify(event));
+    appendProtocolEvent('outgoing', event);
+});
+clearDialogueButton.addEventListener('click', () => {
+    if (!socket || socket.readyState !== WebSocket.OPEN || pendingDialogueClear) return;
+    const confirmed = window.confirm(
+        '确定开始新对话吗？\n\n将清除本轮全部短期对话，但不会删除成员、声纹、画像或长期记忆。',
+    );
+    if (!confirmed) return;
+    const event = {
+        type: 'dialogue_clear',
+        event_id: nextEventId('dialogue-clear'),
+    };
+    pendingDialogueClear = event.event_id;
+    updateComposer();
     socket.send(JSON.stringify(event));
     appendProtocolEvent('outgoing', event);
 });
@@ -606,5 +709,6 @@ micButton.addEventListener('click', async () => {
 });
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
+initializeHomeShell();
 initializeMemoryCenter();
 initializeIdentity(() => connect());

@@ -73,6 +73,25 @@ def test_postgres_dialogue_restores_and_prunes_each_lane() -> None:
             assert [item.turn_id for item in restored.guest] == guest_turn_ids[1:]
             assert [item.turn_id for item in restored.family] == [family_turn_id]
 
+            assert await dialogues.clear(
+                session_id=opened.session_id,
+                lane="guest",
+            ) == 2
+            guest_cleared = await dialogues.open(
+                device_id=family.device.device_id,
+                max_turns=2,
+            )
+            assert guest_cleared.guest == ()
+            assert [item.turn_id for item in guest_cleared.family] == [family_turn_id]
+
+            assert await dialogues.clear(session_id=opened.session_id) == 1
+            all_cleared = await dialogues.open(
+                device_id=family.device.device_id,
+                max_turns=2,
+            )
+            assert all_cleared.family == ()
+            assert all_cleared.guest == ()
+
             await dialogues.delete_identity(
                 device_id=family.device.device_id,
                 identity_id=member.identity_id,
@@ -82,7 +101,7 @@ def test_postgres_dialogue_restores_and_prunes_each_lane() -> None:
                 max_turns=2,
             )
             assert cleaned.family == ()
-            assert [item.turn_id for item in cleaned.guest] == guest_turn_ids[1:]
+            assert cleaned.guest == ()
         finally:
             await dialogues.close()
             await identities.close()

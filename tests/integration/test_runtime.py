@@ -97,7 +97,7 @@ async def assert_websocket_lifecycle(port: int, cookie: str) -> None:
     ) as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.9"
+        assert hello["protocol_version"] == "0.10"
         assert hello["session_id"]
         assert hello["device_id"]
         assert hello["audio"]["input"]["codec"] == "pcm_s16le"
@@ -170,7 +170,11 @@ def test_real_server_serves_web_and_websocket_hello() -> None:
         with urlopen(f"http://127.0.0.1:{port}/", timeout=2) as response:
             page = response.read().decode("utf-8")
             assert response.status == 200
-            assert "Newtalk Voice Console" in page
+            assert "Newtalk · 家庭陪伴助手" in page
+            assert 'id="conversation" data-view="conversation" aria-labelledby="chatTitle" hidden' in page
             assert 'id="chatForm"' in page
+            assert 'id="deviceWorkspace"' in page
+            assert 'id="memoryServiceState"' in page
+            assert 'id="memoryRetryButton"' in page
 
         asyncio.run(assert_websocket_lifecycle(port, cookie))
