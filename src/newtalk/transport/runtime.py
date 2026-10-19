@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 _SEND_END = object()
 
 
+def _format_optional_ms(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "none"
+
+
 @dataclass(slots=True)
 class _OutboundFrame:
     payload: dict[str, Any] | bytes | object
@@ -117,7 +121,12 @@ class ConnectionRuntime:
         self._guest_dialogue.restore(dialogue_snapshot.guest)
         self._dialogue_store = dialogue_store
         self._dialogue_coordinator = dialogue_coordinator
-        self._dialogue_coordinator.register(device_id, self._family_dialogue)
+        self._dialogue_coordinator.register(
+            device_id, "family", self._family_dialogue
+        )
+        self._dialogue_coordinator.register(
+            device_id, "guest", self._guest_dialogue
+        )
         self._voiceprint_join_timeout_seconds = voiceprint_join_timeout_seconds
         self._profile_cache = profile_cache
         self._profile_max_chars = profile_max_chars
@@ -199,6 +208,45 @@ class ConnectionRuntime:
                 )
                 return
         await self.start_turn(text=text, event_id=event_id, identity=identity)
+
+    async def clear_dialogue(
+        self,
+        *,
+        event_id: str,
+    ) -> None:
+        await self.cancel_turn(reason="dialogue_cleared")
+        try:
+            deleted = await self._dialogue_store.clear(
+                session_id=self.session_id,
+            )
+        except Exception:
+            logger.exception(
+                "dialogue_clear_failed session_id=%s scope=all",
+                self.session_id,
+            )
+            await self.send_error(
+                code="dialogue_clear_failed",
+                message="Unable to clear the current dialogue",
+                event_id=event_id,
+            )
+            return
+
+        self._dialogue_coordinator.clear(self.device_id)
+        logger.info(
+            "dialogue_cleared session_id=%s device_id=%s scope=all deleted=%s",
+            self.session_id,
+            self.device_id,
+            deleted,
+        )
+        await self.send_json(
+            {
+                "type": "dialogue_cleared",
+                "event_id": event_id,
+                "session_id": self.session_id,
+                "scope": "all",
+                "deleted_turns": deleted,
+            }
+        )
 
     async def start_turn(
         self,
@@ -448,6 +496,7 @@ class ConnectionRuntime:
             return
         self._closing = True
         self._dialogue_coordinator.unregister(self._family_dialogue)
+        self._dialogue_coordinator.unregister(self._guest_dialogue)
         await self._profile_cache.close()
         if self._audio_session is not None:
             session = self._audio_session
@@ -479,10 +528,51 @@ class ConnectionRuntime:
         event_id: str,
         dialogue: DialogueSession,
     ) -> None:
+        started_at = perf_counter()
+        first_text_ms: float | None = None
+        first_audio_ms: float | None = None
+        audio_complete_ms: float | None = None
+        text_chunks = 0
+        audio_frames = 0
+        audio_bytes = 0
+        summary_logged = False
+
+        def log_summary(status: str, *, response_chars: int = 0) -> None:
+            nonlocal summary_logged
+            if summary_logged:
+                return
+            summary_logged = True
+            logger.info(
+                "turn_latency_summary session_id=%s turn_id=%s source=%s "
+                "speaker=%s status=%s context_messages=%s prompt_chars=%s "
+                "input_chars=%s response_chars=%s text_chunks=%s "
+                "audio_frames=%s audio_bytes=%s first_text_ms=%s "
+                "first_audio_ms=%s audio_complete_ms=%s total_ms=%.1f",
+                self.session_id,
+                turn.turn_id,
+                "voice" if event_id.startswith("voice-") else "text",
+                "member" if turn.speaker_identity_id is not None else "guest",
+                status,
+                max(0, len(turn.messages) - 1),
+                sum(len(message.content) for message in turn.messages),
+                len(turn.user_text),
+                response_chars,
+                text_chunks,
+                audio_frames,
+                audio_bytes,
+                _format_optional_ms(first_text_ms),
+                _format_optional_ms(first_audio_ms),
+                _format_optional_ms(audio_complete_ms),
+                (perf_counter() - started_at) * 1000,
+            )
+
         try:
             async with aclosing(self._chat_service.stream_turn(turn)) as outputs:
                 async for output in outputs:
                     if isinstance(output, TextDelta):
+                        text_chunks += 1
+                        if first_text_ms is None:
+                            first_text_ms = (perf_counter() - started_at) * 1000
                         await self.send_json(
                             {
                                 "type": "text_delta",
@@ -494,6 +584,8 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
                     elif isinstance(output, AudioStarted):
+                        if first_audio_ms is None:
+                            first_audio_ms = (perf_counter() - started_at) * 1000
                         if self._active_turn_id == turn.turn_id:
                             self._active_stream_id = output.stream_id
                             self._playback_turn_id = turn.turn_id
@@ -512,6 +604,9 @@ class ConnectionRuntime:
                     elif isinstance(output, AudioFrame):
                         await self.send_bytes(output.data, turn_id=turn.turn_id)
                     elif isinstance(output, AudioCompleted):
+                        audio_frames = output.frame_count
+                        audio_bytes = output.byte_count
+                        audio_complete_ms = (perf_counter() - started_at) * 1000
                         await self.send_json(
                             {
                                 "type": "audio_end",
@@ -539,6 +634,7 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
                     elif isinstance(output, TurnCompleted):
+                        log_summary("completed", response_chars=len(output.text))
                         committed = False
                         if (
                             self._active_turn_id == turn.turn_id
@@ -591,8 +687,10 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
         except asyncio.CancelledError:
+            log_summary("cancelled")
             raise
         except Exception:
+            log_summary("failed")
             logger.exception(
                 "turn_failed session_id=%s turn_id=%s event_id=%s",
                 self.session_id,

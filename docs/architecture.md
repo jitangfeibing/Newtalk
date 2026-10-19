@@ -66,7 +66,7 @@ completed current Guest Turn
 - `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
 - `newtalk.identity.store.IdentityStore` 是持久化契约；正式进程使用异步 SQLAlchemy/PostgreSQL，内存实现只用于自动测试。
 - `newtalk.chat.persistence.DialogueStore` 负责按 `device_id` 打开稳定 Session、分别读取/裁剪 Family 与 Guest 窗口，并以 `turn_id` 幂等追加成功交换；正式进程使用 PostgreSQL，内存实现用于单元测试。
-- `newtalk.chat.session.DialogueCacheCoordinator` 只跟踪活动 Family 窗口，在成员进入删除流程时立即移除该成员交换。
+- `newtalk.chat.session.DialogueCacheCoordinator` 跟踪活动 Family/Guest 窗口；成员进入删除流程时从 Family 窗口移除其交换，用户开始新对话时同步清除同设备的全部活动窗口。
 - Alembic migration 是 schema 唯一建立方式，应用启动不会隐式创建数据表。
 - `newtalk.voiceprint.client` 是主服务需要的最小内部 HTTP 契约；除录入和删除外，也负责提交当前 utterance WAV 并返回匹配身份、分数和耗时。
 - `services/voiceprint` 独立加载 CAM++、校验 16k PCM WAV、串行保护模型推理并保存模板，不进入主服务 Python 环境。
@@ -97,6 +97,8 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 内存提交后，Runtime 把同一 `DialogueExchange` 写入 PostgreSQL。`turn_id` 唯一约束防止重试造成重复交换；追加前锁定所属 `dialogue_sessions` 行，使同一家庭的多页面提交和滑动裁剪串行。不同 `device_id` 锁定不同 Session 行，彼此不阻塞。持久化失败会记录日志，但不会撤销已经生成的回复或关闭 WebSocket。
 
 刷新或重连时，服务端分别加载最近的 Family 和 Guest 交换并恢复两个内存窗口。`hello.dialogue.items` 只返回当前窗口内的交换供页面重建，不允许浏览器提交或选择 `session_id`。第一版没有跨页面实时广播，已打开的另一个页面要到下一次重连才看到新交换。
+
+浏览器的“新对话”通过 WebSocket `dialogue_clear` 清除当前设备 Session 的全部短期 Dialogue。服务端先取消当前连接的 Turn，再锁定 Dialogue Session 行删除 Family 与 Guest 交换，并清理本进程活动缓存。Profile、MemOS、Identity 和 VoicePrint 不受影响。
 
 同一个提交点还会把 Member Turn 写入 `memory_jobs`。Runtime 只等待一次本地数据库入队，不等待 MemOS；Guest 不进入队列。多个 Worker 通过 PostgreSQL `FOR UPDATE SKIP LOCKED` 竞争任务，租约过期后可由其他 Worker 恢复。Add Message 返回后先持久化 `provider_task_id` 和 `submitted`，后续 Worker 只调用 Get Task Status；查询失败同样保留任务 ID，因此不会因轮询故障重复提交。远端已接收但 HTTP 响应尚未持久化时进程崩溃的极小窗口仍无法由当前 MemOS 文档中的接口完全消除。
 

@@ -1,4 +1,4 @@
-import {recordVoiceprintSample} from './voiceprint-recorder.js';
+import {recordVoiceprintSample} from './voiceprint-recorder.js?v=20261016.3';
 
 const loading = document.querySelector('#identityLoading');
 const onboarding = document.querySelector('#deviceOnboarding');
@@ -107,6 +107,7 @@ function showVoiceprintEnrollment(member, item) {
     const title = document.createElement('strong');
     const guidance = document.createElement('p');
     const progress = document.createElement('div');
+    const status = document.createElement('p');
     const recordButton = document.createElement('button');
     const uploadButton = document.createElement('button');
     const cancelButton = document.createElement('button');
@@ -114,10 +115,15 @@ function showVoiceprintEnrollment(member, item) {
     panel.className = 'voiceprint-enrollment';
     title.textContent = `录入 ${member.display_name} 的声纹`;
     guidance.textContent = '请在安静环境自然朗读。每段 4 秒，共录制三段不同内容。';
+    guidance.className = 'voiceprint-guidance';
+    status.className = 'voiceprint-enrollment-status';
+    status.textContent = '尚未开始录音。建议三段使用不同句子。';
+    status.setAttribute('role', 'status');
     progress.className = 'voiceprint-progress';
     const steps = [0, 1, 2].map((index) => {
         const step = document.createElement('span');
         step.textContent = `第 ${index + 1} 段`;
+        step.style.setProperty('--record-progress', '0%');
         progress.append(step);
         return step;
     });
@@ -137,19 +143,30 @@ function showVoiceprintEnrollment(member, item) {
         if (!enrollment || index >= 3) return;
         recordButton.disabled = true;
         steps[index].dataset.state = 'recording';
+        status.dataset.state = 'recording';
+        status.textContent = `正在录制第 ${index + 1} 段，请保持自然语速。`;
         recordButton.textContent = `正在录制第 ${index + 1} 段 0%`;
         try {
             const sample = await recordVoiceprintSample((value) => {
                 recordButton.textContent = `正在录制第 ${index + 1} 段 ${Math.round(value * 100)}%`;
+                steps[index].style.setProperty('--record-progress', `${Math.round(value * 100)}%`);
             });
             enrollment.samples.push(sample);
-            steps[index].dataset.state = 'complete';
+            steps[index].dataset.state = sample.quality.state;
+            steps[index].textContent = `第 ${index + 1} 段 · ${sample.quality.label}`;
+            steps[index].title = `时长 ${sample.durationSeconds.toFixed(1)} 秒`;
+            status.dataset.state = sample.quality.state;
+            status.textContent = sample.quality.state === 'good'
+                ? `第 ${index + 1} 段录音质量良好。`
+                : `第 ${index + 1} 段${sample.quality.label}，可以继续，也可以取消后重新录入。`;
             const next = enrollment.samples.length + 1;
             recordButton.textContent = next <= 3 ? `录制第 ${next} 段` : '三段录音已完成';
             recordButton.disabled = enrollment.samples.length >= 3;
             uploadButton.disabled = enrollment.samples.length !== 3;
         } catch (error) {
             steps[index].dataset.state = 'error';
+            status.dataset.state = 'error';
+            status.textContent = error.message;
             recordButton.textContent = `重新录制第 ${index + 1} 段`;
             recordButton.disabled = false;
             setFeedback(error.message, 'error');
@@ -161,18 +178,24 @@ function showVoiceprintEnrollment(member, item) {
         uploadButton.disabled = true;
         const form = new FormData();
         enrollment.samples.forEach((sample, index) => {
-            form.append('samples', sample, `voiceprint-${index + 1}.wav`);
+            form.append('samples', sample.blob, `voiceprint-${index + 1}.wav`);
         });
         try {
-            await api(`/api/members/${member.identity_id}/voiceprint`, {
+            status.dataset.state = 'recording';
+            status.textContent = '正在生成并保存声纹模板...';
+            const result = await api(`/api/members/${member.identity_id}/voiceprint`, {
                 method: 'POST',
                 body: form,
             });
             closeEnrollment();
             await loadMembers();
-            setFeedback(`${member.display_name} 的声纹已录入。`, 'success');
+            setFeedback(`${member.display_name} 的声纹已录入，模型：${result.model}。`, 'success');
         } catch (error) {
             uploadButton.disabled = false;
+            status.dataset.state = 'error';
+            status.textContent = error.status === 503
+                ? '声纹服务暂时不可用，请确认独立 VoicePrint 服务已经启动。'
+                : error.message;
             setFeedback(error.message, 'error');
         }
     });
@@ -180,7 +203,7 @@ function showVoiceprintEnrollment(member, item) {
     const actions = document.createElement('div');
     actions.className = 'voiceprint-actions';
     actions.append(recordButton, uploadButton, cancelButton);
-    panel.append(title, guidance, progress, actions);
+    panel.append(title, guidance, progress, status, actions);
     item.append(panel);
 }
 
@@ -200,18 +223,27 @@ function renderMembers(members) {
         const details = document.createElement('div');
         const title = document.createElement('strong');
         const metadata = document.createElement('p');
+        const voiceprintStatus = document.createElement('span');
         const actions = document.createElement('div');
         const editButton = document.createElement('button');
         const deleteButton = document.createElement('button');
         const voiceprintButton = document.createElement('button');
 
         item.className = 'member-card';
+        item.dataset.voiceprint = member.voiceprint_enrolled ? 'ready' : 'missing';
         avatar.className = 'member-avatar';
         avatar.textContent = member.display_name.slice(0, 1).toUpperCase();
+        details.className = 'member-details';
         title.textContent = member.display_name;
         const memberMetadata = [member.nickname, member.relationship].filter(Boolean).join(' · ') || '正式家庭成员';
-        metadata.textContent = `${memberMetadata} · ${member.voiceprint_enrolled ? '声纹已录入' : '未录入声纹'}`;
-        details.append(title, metadata);
+        metadata.textContent = memberMetadata;
+        voiceprintStatus.className = 'voiceprint-status';
+        voiceprintStatus.dataset.state = member.voiceprint_enrolled ? 'ready' : 'missing';
+        voiceprintStatus.textContent = member.voiceprint_enrolled ? '声纹已录入' : '等待录入声纹';
+        if (member.voiceprint_enrolled_at) {
+            voiceprintStatus.title = `录入时间：${new Date(member.voiceprint_enrolled_at).toLocaleString('zh-CN')}`;
+        }
+        details.append(title, metadata, voiceprintStatus);
         actions.className = 'member-actions';
         editButton.type = 'button';
         editButton.className = 'text-button';

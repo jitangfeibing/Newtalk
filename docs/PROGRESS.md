@@ -17,17 +17,45 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 当前阶段 | P7 稳定性收尾 |
-| 阶段状态 | P7.1-P7.7、真实语音打断、短语音声纹与 MemOS 异步任务状态已完成；真实 MemOS 核心链路已验收 |
+| 当前阶段 | P7 稳定性收尾 + Web 产品界面完善 |
+| 阶段状态 | P7.1-P7.7 已完成；P7.8 Web F1-F4 第一轮已完成并通过浏览器验收 |
 | 开发分支 | 合并后以 `main` 为准 |
 | 项目版本 | `0.13.0` |
 | Python | 3.11.5 |
 | 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
 | 后端 | FastAPI + Uvicorn |
 | 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 主项目 `146 passed / 7 skipped`；VoicePrint `7 passed / 1 skipped`；Memory Job 真实 PostgreSQL 集成测试通过 |
+| 自动测试 | 主项目 `151 passed / 7 skipped`；VoicePrint `7 passed / 1 skipped`；Memory Job 与 Dialogue 真实 PostgreSQL 集成测试通过 |
 | CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
-| 最后更新 | 2026-10-15 |
+| 最后更新 | 2026-10-19 |
+
+## Web 产品界面：F1-F4 第一轮
+
+### 已完成
+
+- 建立桌面侧栏、家庭陪伴首页标题、能力概览和稳定的内容主区域。
+- 将真实流式对话提升为首页核心区域，保留文字、麦克风、TTS、停止播放和说话人选择。
+- 将协议事件从主界面移入可折叠的开发详情，保留 Ping/Pong 和 WebSocket 调试能力。
+- 家庭成员和 Memory Center 继续使用原有接口与 DOM 标识，现有业务脚本无需重写。
+- 增加本地时间问候语、导航状态和窄屏响应式布局。
+- 家庭页重排为成员目录和成员资料区，补充家庭 Device 标识、首次创建/恢复引导和成员声纹状态。
+- 三段声纹录入增加逐段进度、录音时长、音量质量提示和服务不可用错误说明。
+- Memory Center 明确区分 Profile 常驻信息与按需历史记忆，保留搜索、筛选、编辑、删除和字段锁定。
+- Memory Center 分别呈现未配置、服务不可达、上游异常、没有成员和没有记忆，不再统一显示成空白或未启用。
+- 静态资源增加版本标识，避免浏览器继续执行旧 ES Module 缓存。
+- 四个主视图使用真实 `hidden` 状态互斥显示，并同步 URL hash 和导航 `aria-current`；切换后焦点进入目标内容。
+- Memory 服务异常时收敛为一个详细状态横幅，内容区使用简短占位，禁用不可执行操作并提供重新连接。
+
+### 验证结果
+
+- JavaScript 语法检查通过，页面不存在重复 DOM `id`。
+- 浏览器验证自动连接、Dialogue 恢复、独立视图切换、成员/声纹入口和 Memory 服务状态正常。
+- 完整主项目测试为 `151 passed / 7 skipped`；用户已完成浏览器功能验收。
+
+### 当前边界
+
+- 本轮按桌面端优先完成可用版本；移动端精调暂不纳入当前交付。
+- VoicePrint 和 MemOS 的实际能力仍取决于各自服务是否启动及配置正确；前端负责准确展示状态，不绕过后端降级规则。
 
 ## P1：基础运行骨架
 
@@ -518,6 +546,10 @@ MemOS 异步任务状态机已补齐：迁移 `20261015_06` 增加 `submitted`�
 本轮完成后的自动验证为主项目 `146 passed / 7 skipped`、VoicePrint `7 passed / 1 skipped`；Memory Job 使用本机 PostgreSQL 的独立集成测试通过，数据库 revision 为 `20261015_06 (head)`，Python 编译、前端语法、依赖和差异检查通过。
 
 下一阶段为 P7.8 Web 产品界面完善，再进入 P8 Vision。P7.8 保持当前原生 HTML/CSS/JavaScript 技术栈，重点整理聊天、成员、声纹、Profile、Memory Center、服务状态和开发日志的信息层级，不在本阶段迁移前端框架。
+
+P7.8 已补充“新对话”操作：页面清除当前 Session 的全部短期 Dialogue 和可见消息，服务端同步删除 PostgreSQL 中的 Family/Guest 交换及活动缓存，刷新后不会恢复已清记录；Profile、MemOS 长期记忆、成员和声纹均保留。WebSocket 协议升级为 `0.10`。主测试集 `151 passed / 7 skipped`，Dialogue 真实 PostgreSQL 测试 `2 passed`。
+
+可观测性补充每 Turn 单行 `turn_latency_summary`：统一记录来源、说话人类型、上下文与 Prompt 大小、输入/回复长度、文本分片、音频帧、首字、首音频、音频完成和服务端总耗时；完成、失败和取消使用同一日志结构，默认不记录聊天正文。
 
 P7.8 完成后进入 P8：以统一聊天输入实现摄像头/图片理解，不复用旧小智“图片转描述后伪装文本”的链路。
 

@@ -57,6 +57,9 @@ class DialogueSession:
             maxlen=self.max_turns,
         )
 
+    def clear(self) -> None:
+        self._exchanges.clear()
+
     def messages_for(
         self,
         user_text: str,
@@ -124,18 +127,27 @@ class DialogueSession:
 
 
 class DialogueCacheCoordinator:
-    """Removes deleted member exchanges from active Family Dialogue windows."""
+    """Keeps active Dialogue windows consistent with persistent mutations."""
 
     def __init__(self) -> None:
-        self._sessions: WeakKeyDictionary[DialogueSession, str] = WeakKeyDictionary()
+        self._sessions: WeakKeyDictionary[
+            DialogueSession, tuple[str, str]
+        ] = WeakKeyDictionary()
 
-    def register(self, device_id: str, dialogue: DialogueSession) -> None:
-        self._sessions[dialogue] = device_id
+    def register(self, device_id: str, lane: str, dialogue: DialogueSession) -> None:
+        self._sessions[dialogue] = (device_id, lane)
 
     def unregister(self, dialogue: DialogueSession) -> None:
         self._sessions.pop(dialogue, None)
 
     def remove_identity(self, device_id: str, identity_id: str) -> None:
-        for dialogue, owner_device_id in tuple(self._sessions.items()):
-            if owner_device_id == device_id:
+        for dialogue, (owner_device_id, lane) in tuple(self._sessions.items()):
+            if owner_device_id == device_id and lane == "family":
                 dialogue.remove_identity(identity_id)
+
+    def clear(self, device_id: str, lane: str | None = None) -> None:
+        for dialogue, (owner_device_id, owner_lane) in tuple(self._sessions.items()):
+            if owner_device_id == device_id and (
+                lane is None or owner_lane == lane
+            ):
+                dialogue.clear()

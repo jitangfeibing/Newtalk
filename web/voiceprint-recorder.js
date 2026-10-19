@@ -34,6 +34,29 @@ function pcmToWav(frames) {
     return new Blob([buffer], {type: 'audio/wav'});
 }
 
+function analyzeVoiceSample(frames) {
+    let squaredTotal = 0;
+    let clippingSamples = 0;
+    let sampleCount = 0;
+    for (const frame of frames) {
+        for (const sample of frame) {
+            const normalized = sample / 32768;
+            squaredTotal += normalized * normalized;
+            if (Math.abs(normalized) >= 0.98) clippingSamples += 1;
+            sampleCount += 1;
+        }
+    }
+    const rms = sampleCount ? Math.sqrt(squaredTotal / sampleCount) : 0;
+    const clippingRatio = sampleCount ? clippingSamples / sampleCount : 0;
+    if (rms < 0.012) {
+        return {label: '声音偏轻', state: 'warning', rms, clippingRatio};
+    }
+    if (clippingRatio > 0.03) {
+        return {label: '音量偏大', state: 'warning', rms, clippingRatio};
+    }
+    return {label: '录音良好', state: 'good', rms, clippingRatio};
+}
+
 
 export async function recordVoiceprintSample(onProgress) {
     window.dispatchEvent(new CustomEvent('newtalk:voiceprint-recording'));
@@ -79,5 +102,9 @@ export async function recordVoiceprintSample(onProgress) {
     if (captured < expectedFrames) {
         throw new Error('有效录音不足 3 秒，请靠近麦克风重新录制。');
     }
-    return pcmToWav(frames);
+    return {
+        blob: pcmToWav(frames),
+        durationSeconds: captured / SAMPLE_RATE,
+        quality: analyzeVoiceSample(frames),
+    };
 }

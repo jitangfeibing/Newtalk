@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import threading
 
 from fastapi.testclient import TestClient
@@ -91,7 +92,7 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with isolated_client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.9"
+        assert hello["protocol_version"] == "0.10"
         assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]
@@ -206,6 +207,33 @@ def test_text_input_streams_one_turn() -> None:
         assert audio_events[0]["stream_id"] == audio_events[1]["stream_id"]
         assert audio_events[0]["turn_id"] == started["turn_id"]
         assert audio_frames and all(frame for frame in audio_frames)
+
+
+def test_completed_turn_logs_comparable_latency_summary(caplog) -> None:
+    isolated_client = make_client()
+
+    with caplog.at_level(logging.INFO, logger="newtalk.transport.runtime"):
+        with isolated_client.websocket_connect("/ws") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                {"type": "text_input", "event_id": "latency-log", "text": "测试时延"}
+            )
+            started, _, completed, _, _ = receive_turn(websocket)
+
+    assert completed["type"] == "turn_completed"
+    summary = next(
+        record.message
+        for record in caplog.records
+        if record.message.startswith("turn_latency_summary")
+        and f"turn_id={started['turn_id']}" in record.message
+    )
+    assert "source=text" in summary
+    assert "speaker=guest" in summary
+    assert "status=completed" in summary
+    assert "first_text_ms=" in summary
+    assert "first_audio_ms=" in summary
+    assert "audio_complete_ms=" in summary
+    assert "total_ms=" in summary
 
 
 def test_same_text_with_different_events_creates_two_turns() -> None:
@@ -605,6 +633,79 @@ def test_websocket_reconnect_restores_dialogue_context_for_same_device() -> None
         ChatMessage("assistant", f"回复：{guest('甲的问题')}"),
         ChatMessage("user", guest("乙的问题")),
     )
+
+
+def test_dialogue_clear_removes_all_short_term_context_and_survives_reconnect() -> None:
+    model = RecordingModel()
+    isolated_client = make_client(chat_service=ChatService(model))
+    member = isolated_client.post(
+        "/api/members",
+        json={"display_name": "小明", "relationship": "家人"},
+    ).json()
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {"type": "text_input", "event_id": "guest-before-clear", "text": "访客旧内容"}
+        )
+        receive_turn(websocket)
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "family-before-clear",
+                "text": "家庭旧内容",
+                "identity_id": member["identity_id"],
+            }
+        )
+        receive_turn(websocket)
+        websocket.send_json(
+            {
+                "type": "dialogue_clear",
+                "event_id": "clear-guest",
+            }
+        )
+        cleared = websocket.receive_json()
+
+        assert cleared == {
+            "type": "dialogue_cleared",
+            "event_id": "clear-guest",
+            "session_id": cleared["session_id"],
+            "scope": "all",
+            "deleted_turns": 2,
+        }
+
+        websocket.send_json(
+            {"type": "text_input", "event_id": "guest-after-clear", "text": "访客新内容"}
+        )
+        receive_turn(websocket)
+
+    assert model.requests[-1] == (ChatMessage("user", guest("访客新内容")),)
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        restored = websocket.receive_json()
+
+    assert restored["dialogue"]["family_turns"] == 0
+    assert restored["dialogue"]["guest_turns"] == 1
+    assert [item["user_text"] for item in restored["dialogue"]["items"]] == [
+        "访客新内容"
+    ]
+
+
+def test_dialogue_clear_requires_event_id() -> None:
+    isolated_client = make_client()
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "dialogue_clear",
+            }
+        )
+        error = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["code"] == "invalid_event_id"
+    assert "event_id" not in error
 
 
 def test_member_deleted_during_turn_is_not_restored() -> None:

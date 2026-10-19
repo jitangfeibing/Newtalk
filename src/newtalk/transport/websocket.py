@@ -179,6 +179,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 )
                 continue
 
+            if event["type"] == "dialogue_clear":
+                if not event_id:
+                    await runtime.send_error(
+                        code="invalid_event_id",
+                        message="dialogue_clear requires a non-empty string event_id",
+                    )
+                    continue
+                if not runtime.remember_event(event_id):
+                    await runtime.send_error(
+                        code="duplicate_event",
+                        message="event_id has already been processed on this connection",
+                        event_id=event_id,
+                    )
+                    continue
+                await runtime.clear_dialogue(event_id=event_id)
+                continue
+
             if event["type"] == "audio_input_start":
                 await runtime.start_audio_input(event)
                 continue

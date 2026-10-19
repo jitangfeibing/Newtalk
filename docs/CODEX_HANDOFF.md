@@ -1,6 +1,6 @@
 # Newtalk Codex 交接说明
 
-更新时间：2026-10-04
+更新时间：2026-10-19
 
 本文面向接手 Newtalk 后续开发的 Codex。开始工作前必须先阅读本文，并结合当前工作区执行 `git status`，不得只根据 README 或规划文档判断功能是否完成。
 
@@ -91,7 +91,7 @@ git log --oneline --decorate -10
 gh pr list --state all --limit 20
 ```
 
-当前正常状态是 P7.2-P7.7 已通过 PR/CI 合并，P7 稳定性收尾已覆盖真实语音打断、短语音声纹识别和 MemOS 异步任务状态。下一阶段先做 P7.8 Web 产品界面完善，再做 P8 统一 Vision 输入。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
+当前正常状态是 P7.2-P7.7 已通过 PR/CI 合并，P7 稳定性收尾已覆盖真实语音打断、短语音声纹识别和 MemOS 异步任务状态。P7.8 Web F1-F4 第一轮已完成：首页、对话、家庭成员、声纹、Profile、Memory Center、开始新对话和逐 Turn 时延日志均已通过浏览器验收。下一阶段需求尚待规划，Vision 与工程级 AEC 均未自动进入开发范围。若实际状态不同，以 Git 和 GitHub 输出为准，不得执行 `git reset --hard`、`git checkout -- .` 或 `git clean` 来“修正”状态。
 
 若 GitHub CLI 未登录或授权过期，应先检查 `gh auth status`，不要反复创建重复 PR。
 
@@ -458,7 +458,7 @@ P7.4/P7.5 的验收边界：
 1. `docs/CODEX_HANDOFF.md`：当前交接状态和执行顺序。
 2. `docs/PROGRESS.md`：已经实现并验证过的历史。
 3. `docs/architecture.md`：当前运行时结构。
-4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.9` 协议。
+4. `docs/protocol.md`：HTTP、VoicePrint、Memory 和 WebSocket `0.10` 协议。
 5. `docs/P7_DESIGN.md`：P7 已确认产品和 Memory 设计基线。
 6. `PROJECT_PLAN.md`：总体路线，不代表所有内容已经实现。
 7. `docs/DEVELOPMENT_WORKFLOW.md`：Git、PR 和 CI 协作流程。

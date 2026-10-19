@@ -55,12 +55,26 @@ def test_in_memory_dialogue_store_restores_scoped_sliding_windows() -> None:
         assert other.session_id != first.session_id
         assert other.history == ()
 
+        assert await store.clear(session_id=first.session_id, lane="guest") == 2
+        guest_cleared = await store.open(
+            device_id="02:00:00:00:00:01", max_turns=2
+        )
+        assert guest_cleared.guest == ()
+        assert [item.turn_id for item in guest_cleared.family] == ["family-1"]
+
+        assert await store.clear(session_id=first.session_id) == 1
+        all_cleared = await store.open(
+            device_id="02:00:00:00:00:01", max_turns=2
+        )
+        assert all_cleared.family == ()
+        assert all_cleared.guest == ()
+
         await store.delete_identity(
             device_id="02:00:00:00:00:01",
             identity_id="member-1",
         )
         cleaned = await store.open(device_id="02:00:00:00:00:01", max_turns=2)
         assert cleaned.family == ()
-        assert [item.turn_id for item in cleaned.guest] == ["guest-2", "guest-3"]
+        assert cleaned.guest == ()
 
     asyncio.run(exercise())
