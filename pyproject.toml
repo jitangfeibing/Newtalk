@@ -27,6 +27,8 @@ dependencies = [
 dev = [
     "httpx2>=2,<3",
     "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.14,<1",
 ]
 
 [project.scripts]

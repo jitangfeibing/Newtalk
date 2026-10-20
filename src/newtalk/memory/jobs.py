@@ -400,11 +400,21 @@ class MemoryWriteService:
 
     async def _run(self) -> None:
         while True:
-            job = await self._store.claim()
-            if job is None:
+            try:
+                job = await self._store.claim()
+                if job is not None:
+                    await self._process(job)
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Worker 与单个 Job 的生命周期不同：一次数据库抖动不能让整个
+                # 后台记忆管道永久停止。Job 的 lease 负责后续重新领取。
+                logger.exception("memory_worker_iteration_failed")
+
+            # 空队列和异常都需要退避，避免数据库不可用时形成忙循环。
+            if self._poll_seconds:
                 await asyncio.sleep(self._poll_seconds)
-                continue
-            await self._process(job)
 
     async def _process(self, job: MemoryWriteJob) -> None:
         if job.provider_task_id is not None:

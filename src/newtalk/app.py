@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from functools import lru_cache
 import logging
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +30,12 @@ from newtalk.identity.deletion import (
     InMemoryIdentityDeletionStore,
     SqlAlchemyIdentityDeletionStore,
 )
-from newtalk.identity.api import RecoveryRateLimiter, router as identity_router
+from newtalk.identity.api import router as identity_router
+from newtalk.identity.recovery_limit import (
+    InMemoryRecoveryRateLimiter,
+    RecoveryRateLimiter,
+    SqlAlchemyRecoveryRateLimiter,
+)
 from newtalk.memory import (
     DisabledMemoryProvider,
     DisabledMemoryWriteService,
@@ -39,7 +46,7 @@ from newtalk.memory import (
 )
 from newtalk.memory.api import router as memory_router
 from newtalk.profile import (
-    MemosProfileProvider,
+    MemosMemoryProvider,
     ProfileCacheCoordinator,
 )
 from newtalk.transport import websocket_router
@@ -49,6 +56,28 @@ from newtalk.voiceprint.api import router as voiceprint_router
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _close_lifecycle_components(
+    *components: tuple[str, Callable[[], Awaitable[None]]],
+) -> None:
+    """Close every component even when an earlier cleanup operation fails."""
+    first_error: Exception | None = None
+    for name, close in components:
+        try:
+            await close()
+        except Exception as exc:
+            # 关闭链不能在第一个异常处中断，否则后续数据库连接和 HTTP Client
+            # 会泄漏；全部尝试完成后仍抛出首个异常，让部署平台感知退出失败。
+            logger.exception(
+                "service_component_close_failed component=%s error_type=%s",
+                name,
+                type(exc).__name__,
+            )
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
 
 
 @lru_cache(maxsize=8)
@@ -164,12 +193,12 @@ def create_voiceprint_client(config: AppConfig) -> VoicePrintClient:
     )
 
 
-def create_profile_provider(config: AppConfig) -> MemoryProvider:
+def create_memory_provider(config: AppConfig) -> MemoryProvider:
     if config.memory_backend == "disabled":
         return DisabledMemoryProvider()
     if not config.memos_api_key or not config.memos_profile_template_id:
         raise RuntimeError("MemOS Profile configuration is incomplete")
-    return MemosProfileProvider(
+    return MemosMemoryProvider(
         base_url=config.memos_base_url,
         api_key=config.memos_api_key,
         profile_template_id=config.memos_profile_template_id,
@@ -200,45 +229,61 @@ def create_app(
     recognizer: SpeechRecognizer | None = None,
     identity_service: IdentityService | None = None,
     voiceprint_client: VoicePrintClient | None = None,
-    profile_provider: MemoryProvider | None = None,
+    memory_provider: MemoryProvider | None = None,
     memory_writer: MemoryWriter | None = None,
     identity_deletion_service: IdentityDeletionScheduler | None = None,
     dialogue_store: DialogueStore | None = None,
+    recovery_rate_limiter: RecoveryRateLimiter | None = None,
+    persistence_backend: Literal["postgresql", "memory"] = "postgresql",
 ) -> FastAPI:
     config = config or load_config()
+    if persistence_backend not in {"postgresql", "memory"}:
+        raise ValueError("Persistence backend must be postgresql or memory")
     if web_root is not None:
         config = replace(config, web_root=web_root)
     if not config.web_root.is_dir():
         raise RuntimeError(f"Web root does not exist: {config.web_root}")
-    resolved_profile_provider = profile_provider or create_profile_provider(config)
+    resolved_memory_provider = memory_provider or create_memory_provider(config)
     resolved_chat_service = chat_service or create_chat_service(
-        config, resolved_profile_provider
+        config, resolved_memory_provider
     )
     resolved_vad = vad or create_vad(config)
     resolved_recognizer = recognizer or create_recognizer(config)
     resolved_identity_service = identity_service or create_identity_service(config)
     resolved_dialogue_store = dialogue_store or (
         InMemoryDialogueStore()
-        if identity_service is not None
+        if persistence_backend == "memory"
         else SqlAlchemyDialogueStore(config.database_url)
     )
     resolved_voiceprint_client = voiceprint_client or create_voiceprint_client(config)
+    resolved_recovery_rate_limiter = recovery_rate_limiter or (
+        InMemoryRecoveryRateLimiter(
+            max_attempts=config.recovery_max_attempts,
+            window_seconds=config.recovery_window_seconds,
+        )
+        if persistence_backend == "memory"
+        else SqlAlchemyRecoveryRateLimiter(
+            config.database_url,
+            max_attempts=config.recovery_max_attempts,
+            window_seconds=config.recovery_window_seconds,
+        )
+    )
     profile_cache_coordinator = ProfileCacheCoordinator()
     dialogue_cache_coordinator = DialogueCacheCoordinator()
     resolved_memory_writer = memory_writer or create_memory_writer(
-        config, resolved_profile_provider
+        config, resolved_memory_provider
     )
     resolved_identity_deletion_service = identity_deletion_service
     if resolved_identity_deletion_service is None:
         deletion_store = (
             InMemoryIdentityDeletionStore(resolved_identity_service)
-            if identity_service is not None
+            if persistence_backend == "memory"
             else SqlAlchemyIdentityDeletionStore(config.database_url)
         )
         resolved_identity_deletion_service = IdentityDeletionService(
             deletion_store,
             resolved_voiceprint_client,
-            resolved_profile_provider,
+            resolved_memory_provider,
             profile_cache_coordinator,
             dialogue_store=resolved_dialogue_store,
             dialogue_coordinator=dialogue_cache_coordinator,
@@ -251,6 +296,7 @@ def create_app(
         try:
             await resolved_identity_service.start()
             await resolved_dialogue_store.start()
+            await resolved_recovery_rate_limiter.start()
             await resolved_memory_writer.start()
             await resolved_identity_deletion_service.start()
             logger.info(
@@ -267,15 +313,20 @@ def create_app(
             )
             yield
         finally:
-            await resolved_identity_deletion_service.close()
-            await resolved_memory_writer.close()
-            await resolved_dialogue_store.close()
-            await resolved_chat_service.aclose()
-            await resolved_recognizer.aclose()
-            await resolved_identity_service.close()
-            await resolved_voiceprint_client.aclose()
-            await resolved_profile_provider.aclose()
-            logger.info("service_stopped")
+            try:
+                await _close_lifecycle_components(
+                    ("identity_deletion", resolved_identity_deletion_service.close),
+                    ("memory_writer", resolved_memory_writer.close),
+                    ("recovery_rate_limiter", resolved_recovery_rate_limiter.close),
+                    ("dialogue_store", resolved_dialogue_store.close),
+                    ("chat_service", resolved_chat_service.aclose),
+                    ("recognizer", resolved_recognizer.aclose),
+                    ("identity_service", resolved_identity_service.close),
+                    ("voiceprint_client", resolved_voiceprint_client.aclose),
+                    ("memory_provider", resolved_memory_provider.aclose),
+                )
+            finally:
+                logger.info("service_stopped")
 
     app = FastAPI(title="Newtalk", version=__version__, lifespan=lifespan)
     app.state.config = config
@@ -285,15 +336,12 @@ def create_app(
     app.state.identity_service = resolved_identity_service
     app.state.dialogue_store = resolved_dialogue_store
     app.state.voiceprint_client = resolved_voiceprint_client
-    app.state.profile_provider = resolved_profile_provider
+    app.state.memory_provider = resolved_memory_provider
     app.state.memory_writer = resolved_memory_writer
     app.state.profile_cache_coordinator = profile_cache_coordinator
     app.state.dialogue_cache_coordinator = dialogue_cache_coordinator
     app.state.identity_deletion_service = resolved_identity_deletion_service
-    app.state.recovery_rate_limiter = RecoveryRateLimiter(
-        max_attempts=config.recovery_max_attempts,
-        window_seconds=config.recovery_window_seconds,
-    )
+    app.state.recovery_rate_limiter = resolved_recovery_rate_limiter
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Newtalk · 家庭陪伴助手</title>
-    <link rel="stylesheet" href="/styles.css?v=20261019.1">
+    <link rel="stylesheet" href="/styles.css?v=20261019.7">
 </head>
 <body>
     <div class="app-frame">
@@ -19,10 +19,6 @@
                 <a class="nav-item" href="#family" data-view-target="family"><span aria-hidden="true">♙</span>家庭成员</a>
                 <a class="nav-item" href="#memoryCenter" data-view-target="memory"><span aria-hidden="true">◇</span>记忆中心</a>
             </nav>
-            <div class="sidebar-note">
-                <span class="label">PRIVATE BY DESIGN</span>
-                <p>一个设备，一个家庭空间。对话、身份与记忆彼此隔离。</p>
-            </div>
             <div class="sidebar-footer">
                 <div class="status" data-state="offline" id="connectionStatus">
                     <span class="status-dot"></span>
@@ -36,30 +32,27 @@
             <section class="view-section home-view is-active" id="home" data-view="home">
                 <header class="masthead">
                     <div>
-                        <p class="eyebrow">YOUR FAMILY COMPANION</p>
                         <h1 id="greetingTitle">欢迎回来</h1>
-                        <p class="masthead-copy">想说什么都可以，Newtalk 正在这里听你说。</p>
+                        <p class="masthead-copy">文字或语音，随时开始。</p>
                         <button type="button" class="button home-chat-button" data-view-target="conversation">开始对话</button>
                     </div>
-                    <div class="companion-orbit" aria-hidden="true">
-                        <span class="orbit-dot orbit-dot-one"></span>
-                        <span class="orbit-dot orbit-dot-two"></span>
-                        <span class="orbit-face">N</span>
+                    <div class="home-mascot" aria-hidden="true">
+                        <img src="/assets/newtalk-pixel-mascot.png" alt="" width="1230" height="1278" decoding="async">
                     </div>
                 </header>
 
                 <section class="home-overview" aria-label="Newtalk 功能概览">
                     <article>
                         <span class="overview-number">01</span>
-                        <div><strong>自然交谈</strong><p>文字和实时语音使用同一条对话链路。</p></div>
+                        <div><strong>自然交谈</strong><p>文字与语音</p></div>
                     </article>
                     <article>
                         <span class="overview-number">02</span>
-                        <div><strong>认识家人</strong><p>声纹区分成员，访客保持独立上下文。</p></div>
+                        <div><strong>认识家人</strong><p>成员与声纹</p></div>
                     </article>
                     <article>
                         <span class="overview-number">03</span>
-                        <div><strong>记住重要的事</strong><p>画像常驻，长期经历按需检索。</p></div>
+                        <div><strong>记住重要的事</strong><p>个人资料与长期记忆</p></div>
                     </article>
                 </section>
             </section>
@@ -67,8 +60,7 @@
             <section class="conversation-section view-section" id="conversation" data-view="conversation" aria-labelledby="chatTitle" hidden>
                 <div class="conversation-heading">
                     <div>
-                        <span class="label">LIVE CONVERSATION</span>
-                        <h2>现在，聊一会儿。</h2>
+                        <h2>对话</h2>
                     </div>
                     <div class="runtime-badges">
                         <span class="model-badge">LLM STREAM</span>
@@ -81,7 +73,7 @@
                     <header class="chat-header">
                         <div class="assistant-identity">
                             <span class="assistant-avatar">N</span>
-                            <div><h3 id="chatTitle">Newtalk</h3><p>家庭陪伴助手 · 流式在线</p></div>
+                            <div><h3 id="chatTitle">Newtalk</h3><p>在线状态以右侧提示为准</p></div>
                         </div>
                         <div class="connection-actions">
                             <button type="button" class="icon-button" id="pingButton" disabled title="测试连接">↗</button>
@@ -101,12 +93,12 @@
                             rows="2"
                         ></textarea>
                         <div class="composer-footer">
-                            <label class="speaker-selector" for="textSpeakerSelect">
-                                <span>当前说话人</span>
-                                <select id="textSpeakerSelect">
+                            <div class="speaker-selector">
+                                <span id="textSpeakerLabel">当前说话人</span>
+                                <select id="textSpeakerSelect" data-custom-select aria-labelledby="textSpeakerLabel">
                                     <option value="">Guest（访客）</option>
                                 </select>
-                            </label>
+                            </div>
                             <div class="composer-actions">
                                 <button type="button" class="button secondary" id="micButton" disabled>开始说话</button>
                                 <button type="button" class="button secondary" id="stopAudioButton" disabled>停止播放</button>
@@ -125,9 +117,7 @@
         <section class="identity-panel management-panel view-section" id="family" data-view="family" aria-labelledby="familyTitle" hidden>
             <header class="panel-header section-heading">
                 <div>
-                    <span class="label">FAMILY IDENTITY</span>
-                    <h3 id="familyTitle">家庭与成员</h3>
-                    <p>管理这个设备所属的家庭成员，并为每位成员录入独立声纹。</p>
+                    <h3 id="familyTitle">家庭成员</h3>
                 </div>
                 <div class="device-chip"><span>设备 ID</span><code id="deviceIdLabel">尚未绑定设备</code></div>
             </header>
@@ -136,15 +126,15 @@
 
             <div class="device-onboarding" id="deviceOnboarding" hidden>
                 <div class="onboarding-card primary-card">
-                    <span class="label">NEW FAMILY</span>
+                    <span class="label">新建</span>
                     <h4>创建新的家庭空间</h4>
-                    <p>第一次使用 Newtalk 时选择这里。服务器会签发设备凭据，并只展示一次家庭恢复码。</p>
+                    <p>首次使用时创建，并保存好恢复码。</p>
                     <button type="button" class="button" id="createDeviceButton">创建家庭空间</button>
                 </div>
                 <form class="onboarding-card" id="recoveryForm">
-                    <span class="label">RECOVER</span>
+                    <span class="label">恢复</span>
                     <h4>恢复已有家庭</h4>
-                    <p>更换浏览器或清除数据后，使用之前保存的恢复码重新绑定。</p>
+                    <p>使用已保存的恢复码重新绑定。</p>
                     <label for="recoveryCodeInput">输入家庭恢复码</label>
                     <input id="recoveryCodeInput" autocomplete="off" placeholder="NT-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" required>
                     <button type="submit" class="button secondary">恢复绑定</button>
@@ -154,7 +144,7 @@
             <div class="device-workspace" id="deviceWorkspace" hidden>
                 <div class="recovery-notice" id="recoveryNotice" hidden>
                     <div>
-                        <span class="label">RECOVERY CODE / ONLY SHOWN NOW</span>
+                        <span class="label">恢复码 · 仅显示一次</span>
                         <strong id="recoveryCodeLabel"></strong>
                         <p>请离线保存。清除浏览器数据或更换浏览器后，需要它恢复这个家庭。</p>
                     </div>
@@ -165,9 +155,8 @@
                     <div class="member-directory">
                         <div class="directory-heading">
                             <div>
-                                <span class="label">DIRECTORY</span>
                                 <h4>当前家庭成员</h4>
-                                <p>声纹用于语音对话时自动确认说话人。</p>
+                                <p>声纹用于语音对话时确认说话人。</p>
                             </div>
                             <button type="button" class="text-button" id="rotateRecoveryButton">更换恢复码</button>
                         </div>
@@ -175,9 +164,7 @@
                     </div>
 
                     <form class="member-form" id="memberForm">
-                        <span class="label">MEMBER PROFILE</span>
                         <h4 id="memberFormTitle">添加家庭成员</h4>
-                        <p class="form-helper">成员资料只在当前家庭空间内使用。</p>
                         <label for="displayNameInput">姓名 *</label>
                         <input id="displayNameInput" maxlength="80" required>
                         <label for="nicknameInput">Newtalk 如何称呼</label>
@@ -199,14 +186,12 @@
         <section class="memory-panel view-section" id="memoryCenter" data-view="memory" aria-labelledby="memoryTitle" hidden>
             <header class="panel-header memory-header section-heading">
                 <div>
-                    <span class="label">MEMORY CENTER</span>
-                    <h3 id="memoryTitle">画像与长期记忆</h3>
-                    <p>查看 Newtalk 认识的成员信息，并纠正或删除长期记忆。</p>
+                    <h3 id="memoryTitle">记忆</h3>
                 </div>
-                <label class="memory-member-select" for="memoryMemberSelect">
-                    <span>当前成员</span>
-                    <select id="memoryMemberSelect"></select>
-                </label>
+                <div class="memory-member-select">
+                    <span id="memoryMemberLabel">当前成员</span>
+                    <select id="memoryMemberSelect" data-custom-select aria-labelledby="memoryMemberLabel"></select>
+                </div>
             </header>
 
             <div class="memory-service-state" id="memoryServiceState" data-state="loading" role="status">
@@ -219,9 +204,7 @@
                 <section class="profile-column" aria-labelledby="profileTitle">
                     <div class="memory-section-heading">
                         <div>
-                            <span class="label">PROFILE / ALWAYS AVAILABLE</span>
-                            <h4 id="profileTitle">稳定画像</h4>
-                            <p>每轮对话都可使用的稳定信息。</p>
+                            <h4 id="profileTitle">个人资料</h4>
                         </div>
                         <button type="button" class="button secondary compact" id="addProfileFieldButton">添加字段</button>
                     </div>
@@ -241,14 +224,19 @@
                 <section class="memories-column" aria-labelledby="memoriesTitle">
                     <div class="memory-section-heading">
                         <div>
-                            <span class="label">MEMOS / ON DEMAND</span>
                             <h4 id="memoriesTitle">历史记忆</h4>
-                            <p>只有需要回忆过去时才会检索。</p>
                         </div>
-                        <span class="memory-count" id="memoryCount">0 条</span>
+                        <div class="memory-section-meta">
+                            <span class="memory-count" id="memoryCount">0 条</span>
+                            <div class="memory-pagination" id="memoryPagination">
+                                <button type="button" class="text-button" id="memoryPreviousButton" disabled>上一页</button>
+                                <span id="memoryPageLabel">第 1 / 1 页</span>
+                                <button type="button" class="text-button" id="memoryNextButton" disabled>下一页</button>
+                            </div>
+                        </div>
                     </div>
                     <form class="memory-search" id="memorySearchForm">
-                        <select id="memoryKindSelect" aria-label="记忆类型">
+                        <select id="memoryKindSelect" data-custom-select aria-label="记忆类型">
                             <option value="all">全部类型</option>
                             <option value="fact">事实</option>
                             <option value="preference">偏好</option>
@@ -258,11 +246,6 @@
                         <button type="submit" class="button secondary">查询</button>
                     </form>
                     <div class="memory-list" id="memoryList"></div>
-                    <div class="memory-pagination" id="memoryPagination" hidden>
-                        <button type="button" class="text-button" id="memoryPreviousButton">上一页</button>
-                        <span id="memoryPageLabel"></span>
-                        <button type="button" class="text-button" id="memoryNextButton">下一页</button>
-                    </div>
                 </section>
             </div>
             <p class="memory-feedback" id="memoryFeedback" role="status"></p>
@@ -271,6 +254,6 @@
         </main>
     </div>
 
-    <script type="module" src="/app.js?v=20261019.2"></script>
+    <script type="module" src="/app.js?v=20261019.6"></script>
 </body>
 </html>

@@ -1,0 +1,161 @@
+{
+  "type": "architecture",
+  "title": "Newtalk 当前系统架构",
+  "subtitle": "Web 家庭陪伴助手 · P7.8 运行时全景",
+  "eyebrow": "SYSTEM MAP",
+  "caption": "主对话链实时流式执行；Dialogue、身份与任务写入 PostgreSQL，长期记忆通过 MemOS 按需读取并异步沉淀。",
+  "lang": "zh-CN",
+  "skin": "light",
+  "size": "wide",
+  "motion": "trace",
+  "budget": "balanced",
+  "dir": "LR",
+  "out": "newtalk-current-architecture.html",
+  "nodes": [
+    {
+      "id": "browser",
+      "label": "浏览器 Web",
+      "sub": "原生 JS · AudioWorklet",
+      "tag": "CLIENT",
+      "kind": "input",
+      "icon": "code",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "api",
+      "label": "服务入口",
+      "sub": "FastAPI · HTTP · WebSocket",
+      "tag": "API",
+      "kind": "backend",
+      "icon": "server",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "audio",
+      "label": "语音输入",
+      "sub": "Silero VAD · 豆包 ASR",
+      "tag": "VOICE",
+      "kind": "backend",
+      "icon": "gear",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "runtime",
+      "label": "对话运行时",
+      "sub": "Turn · Dialogue · 取消",
+      "tag": "CORE",
+      "kind": "backend",
+      "focal": true,
+      "icon": "chat",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "identity",
+      "label": "身份与画像",
+      "sub": "Device · Member · Profile",
+      "tag": "IDENTITY",
+      "kind": "security",
+      "icon": "people",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "ai",
+      "label": "模型服务",
+      "sub": "DeepSeek/OpenAI · 豆包 TTS",
+      "tag": "AI",
+      "kind": "external",
+      "icon": "cloud",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "id": "postgres",
+      "label": "PostgreSQL",
+      "sub": "Identity · Dialogue · Outbox",
+      "tag": "DATA",
+      "kind": "store",
+      "icon": "database",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "voiceprint",
+      "label": "声纹服务",
+      "sub": "独立 FastAPI · CAM++",
+      "tag": "VOICEPRINT",
+      "kind": "backend",
+      "icon": "person",
+      "row": 2,
+      "col": 3
+    },
+    {
+      "id": "memos",
+      "label": "MemOS",
+      "sub": "Profile · Search · Add",
+      "tag": "MEMORY",
+      "kind": "external",
+      "icon": "cloud",
+      "row": 1,
+      "col": 4
+    }
+  ],
+  "edges": [
+    {
+      "from": "browser",
+      "to": "api",
+      "label": "HTTP / WS / PCM",
+      "kind": "primary",
+      "both": true
+    },
+    ["api", "runtime", "输入事件", "primary"],
+    ["runtime", "audio", "语音帧"],
+    ["audio", "runtime", "VAD / ASR", "return"],
+    ["runtime", "identity", "身份汇合"],
+    ["identity", "voiceprint", "声纹请求", "link"],
+    ["voiceprint", "identity", "匹配结果", "return"],
+    ["runtime", "ai", "Prompt / TTS", "primary"],
+    ["identity", "postgres", "身份数据"],
+    ["runtime", "postgres", "Dialogue / Jobs"],
+    ["runtime", "memos", "Profile / Search", "link"],
+    ["postgres", "memos", "Outbox Worker", "async"]
+  ],
+  "order": [
+    "browser",
+    "api",
+    "runtime",
+    "audio",
+    "identity",
+    "voiceprint",
+    "ai",
+    "postgres",
+    "memos"
+  ],
+  "legend": {
+    "title": "图例",
+    "entries": {
+      "input": {"label": "客户端"},
+      "backend": {"label": "Newtalk 服务"},
+      "security": {"label": "身份边界"},
+      "store": {"label": "持久化"},
+      "external": {"label": "外部 Provider"},
+      "primary": {"label": "主对话链"},
+      "async": {"label": "异步写入"}
+    }
+  },
+  "evidence": [
+    {"id": "browser", "file": "web/app.js", "line": 96, "note": "PCM 播放、麦克风采集和 WebSocket 客户端"},
+    {"id": "api", "file": "src/newtalk/app.py", "line": 194, "note": "FastAPI 应用组合入口"},
+    {"id": "runtime", "file": "src/newtalk/transport/runtime.py", "line": 76, "note": "连接内 Turn、Dialogue、取消和输出编排"},
+    {"id": "audio", "file": "src/newtalk/audio/session.py", "line": 20, "note": "VAD 和流式 ASR 音频会话"},
+    {"id": "identity", "file": "src/newtalk/identity/sqlalchemy_store.py", "line": 102, "note": "设备和家庭成员持久化"},
+    {"id": "voiceprint", "file": "services/voiceprint/src/newtalk_voiceprint/app.py", "line": 53, "note": "独立 VoicePrint FastAPI 服务"},
+    {"id": "ai", "file": "src/newtalk/chat/service.py", "line": 58, "note": "LLM、Tool Calling 与 TTS 流式编排"},
+    {"id": "postgres", "file": "src/newtalk/chat/persistence.py", "line": 127, "note": "Dialogue PostgreSQL Store"},
+    {"id": "memos", "file": "src/newtalk/profile/memos.py", "line": 20, "note": "Profile、Search 与 Add Message Provider"}
+  ]
+}

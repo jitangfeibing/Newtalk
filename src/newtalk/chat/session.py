@@ -140,6 +140,11 @@ class DialogueCacheCoordinator:
     def unregister(self, dialogue: DialogueSession) -> None:
         self._sessions.pop(dialogue, None)
 
+    def commit(self, device_id: str, turn: Turn, assistant_text: str) -> None:
+        for dialogue, (owner_device_id, _) in tuple(self._sessions.items()):
+            if owner_device_id == device_id:
+                dialogue.commit(turn, assistant_text)
+
     def remove_identity(self, device_id: str, identity_id: str) -> None:
         for dialogue, (owner_device_id, lane) in tuple(self._sessions.items()):
             if owner_device_id == device_id and lane == "family":

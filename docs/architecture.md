@@ -1,6 +1,6 @@
-# P7.7 Architecture
+# Newtalk 当前架构（P7.8）
 
-当前架构在 Identity、Memory Center 和成员完整删除基础上使用 PostgreSQL Dialogue Session。聊天主链仍由连接内 Runtime 执行，但短期上下文不再等同于 WebSocket 生命周期；同一 `device_id` 刷新或短暂重连后恢复最近窗口。
+当前架构在 Identity、Memory Center 和成员完整删除基础上使用 PostgreSQL Dialogue Session。聊天主链仍由连接内 Runtime 执行，但短期上下文不再等同于 WebSocket 生命周期；同一 `device_id` 刷新或短暂重连后恢复最近窗口。P7.8 进一步加入新对话清理、真实语音打断、逐 Turn 时延日志和第一版产品界面。
 
 ```text
 Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
@@ -15,9 +15,9 @@ Browser 3 x WAV -> authenticated member VoicePrint API
 Browser cookie -> authenticated WebSocket
        -> DialogueStore.open(device_id)
               |-> stable session_id
-              |-> Family sliding window
-              `-> Guest sliding window
-       -> SessionProfileCache -> background MemosProfileProvider
+              |-> Family/Guest persisted lanes (compatibility metadata)
+              `-> merged device history ordered by completion time
+       -> SessionProfileCache -> background MemosMemoryProvider
               |                    |-> get Profile
               |                    `-> bind missing Profile Template
               `-> identity_id scoped immutable Snapshot
@@ -27,7 +27,7 @@ Browser microphone -> recorder AudioWorklet       |
                                                    v
 WebSocket receive loop -> ConnectionRuntime
                               |-> current Member Profile Snapshot
-                              |-> Family Dialogue / Guest Dialogue -> immutable Turn
+                              |-> one device Dialogue -> immutable Turn
                               |                                         `-> ChatService
                               |                                              |-> LLM direct text -> TTS
                               |                                              `-> memory_search Tool
@@ -58,23 +58,23 @@ completed current Guest Turn
 
 - `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
 - `newtalk.memory.provider.MemoryProvider` 是当前实际需要的最小 Memory 契约，包含 Profile、检索、写入和人工管理；默认实现关闭。
-- `newtalk.profile.memos.MemosProfileProvider` 当前同时实现上述契约，负责 Profile Template 懒绑定、Search Memory 和 Add Message 的 HTTP 协议细节。
+- `newtalk.profile.memos.MemosMemoryProvider` 当前同时实现上述契约，负责 Profile Template 懒绑定、Search Memory 和 Add Message 的 HTTP 协议细节。
 - `newtalk.chat.service.ChatService` 只给 Member 注册 `memory_search`，每个 Turn 最多执行一次，并使用 Turn 内不可变身份建立服务端 Scope。
 - `newtalk.memory.jobs.MemoryWriteService` 消费 PostgreSQL Outbox；本地入队按 `turn_id` 去重，任务领取使用租约，并持久化 MemOS `task_id` 直到远端最终完成，远端失败有限重试。
 - `newtalk.profile.session.SessionProfileCache` 在连接开始后异步预取成员 Profile，按 `identity_id` 保存 Snapshot；Turn 读取只访问内存，不等待 MemOS。
-- `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要。
+- `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要；正式进程使用 PostgreSQL 共享恢复限流，本机测试使用内存实现。
 - `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
 - `newtalk.identity.store.IdentityStore` 是持久化契约；正式进程使用异步 SQLAlchemy/PostgreSQL，内存实现只用于自动测试。
-- `newtalk.chat.persistence.DialogueStore` 负责按 `device_id` 打开稳定 Session、分别读取/裁剪 Family 与 Guest 窗口，并以 `turn_id` 幂等追加成功交换；正式进程使用 PostgreSQL，内存实现用于单元测试。
-- `newtalk.chat.session.DialogueCacheCoordinator` 跟踪活动 Family/Guest 窗口；成员进入删除流程时从 Family 窗口移除其交换，用户开始新对话时同步清除同设备的全部活动窗口。
+- `newtalk.chat.persistence.DialogueStore` 负责按 `device_id` 打开稳定 Session、按兼容 lane 读取/裁剪并合并历史，并以 `turn_id` 幂等追加成功交换；正式进程使用 PostgreSQL，内存实现用于单元测试。
+- `newtalk.chat.session.DialogueCacheCoordinator` 跟踪同设备的活动 Dialogue；任一连接完成 Turn 后会同步提交到其他活动连接的上下文。成员删除会移除其交换，新对话会清空同设备的全部活动窗口。
 - Alembic migration 是 schema 唯一建立方式，应用启动不会隐式创建数据表。
 - `newtalk.voiceprint.client` 是主服务需要的最小内部 HTTP 契约；除录入和删除外，也负责提交当前 utterance WAV 并返回匹配身份、分数和耗时。
 - `services/voiceprint` 独立加载 CAM++、校验 16k PCM WAV、串行保护模型推理并保存模板，不进入主服务 Python 环境。
 - VoicePrint 只查询请求 `device_id` 下 Active Identity 的模板；同名成员和其他家庭不会进入候选集。
 - `web/voiceprint-recorder.js` 复用 AudioWorklet 重采样链，录音前停止聊天麦克风和 TTS 播放。
 - `newtalk.transport.websocket` 在设备鉴权后打开 Dialogue Session，把恢复快照放入 `hello`，随后接受连接、解析帧类型和分派协议事件。
-- `newtalk.transport.runtime.ConnectionRuntime` 从快照恢复连接内 Family/Guest 窗口，并编排活动 Turn、utterance 汇合、采集会话、任务和发送队列。
-- `newtalk.chat.session.DialogueSession` 保存成功完成的用户/助手交换；Member 共用 Family Dialogue，Guest 使用独立 Dialogue，历史用户消息携带说话人标签。
+- `newtalk.transport.runtime.ConnectionRuntime` 从合并快照恢复连接内设备 Dialogue，并编排活动 Turn、utterance 汇合、采集会话、任务和发送队列。
+- `newtalk.chat.session.DialogueSession` 保存同一设备成功完成的用户/助手交换；Member 和 Guest 共用短期窗口，历史用户消息携带说话人标签。
 - `newtalk.chat.models.Turn` 固定保存 `device_id`、`speaker_identity_id` 和显示信息；`messages` 是创建 Turn 时的不可变上下文快照。
 - `newtalk.audio.session.AudioInputSession` 把连续 PCM 切成 utterance，维护 pre-roll，并把语音段交给 ASR。
 - `newtalk.audio.vad.SileroVadStream` 保存每条采集流独立的 ONNX recurrent state、双阈值、滑窗和静音结束状态。
@@ -96,13 +96,17 @@ WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 tas
 
 内存提交后，Runtime 把同一 `DialogueExchange` 写入 PostgreSQL。`turn_id` 唯一约束防止重试造成重复交换；追加前锁定所属 `dialogue_sessions` 行，使同一家庭的多页面提交和滑动裁剪串行。不同 `device_id` 锁定不同 Session 行，彼此不阻塞。持久化失败会记录日志，但不会撤销已经生成的回复或关闭 WebSocket。
 
-刷新或重连时，服务端分别加载最近的 Family 和 Guest 交换并恢复两个内存窗口。`hello.dialogue.items` 只返回当前窗口内的交换供页面重建，不允许浏览器提交或选择 `session_id`。第一版没有跨页面实时广播，已打开的另一个页面要到下一次重连才看到新交换。
+刷新或重连时，服务端分别读取 Family 和 Guest 兼容 lane，再按时间合并并恢复一个设备级内存窗口。`hello.dialogue.items` 返回合并快照供页面重建，不允许浏览器提交或选择 `session_id`。同进程内其他已打开页面会立即获得新完成 Turn 的上下文，但不会收到界面消息广播；其可见列表仍要到重连后刷新。
 
 浏览器的“新对话”通过 WebSocket `dialogue_clear` 清除当前设备 Session 的全部短期 Dialogue。服务端先取消当前连接的 Turn，再锁定 Dialogue Session 行删除 Family 与 Guest 交换，并清理本进程活动缓存。Profile、MemOS、Identity 和 VoicePrint 不受影响。
 
 同一个提交点还会把 Member Turn 写入 `memory_jobs`。Runtime 只等待一次本地数据库入队，不等待 MemOS；Guest 不进入队列。多个 Worker 通过 PostgreSQL `FOR UPDATE SKIP LOCKED` 竞争任务，租约过期后可由其他 Worker 恢复。Add Message 返回后先持久化 `provider_task_id` 和 `submitted`，后续 Worker 只调用 Get Task Status；查询失败同样保留任务 ID，因此不会因轮询故障重复提交。远端已接收但 HTTP 响应尚未持久化时进程崩溃的极小窗口仍无法由当前 MemOS 文档中的接口完全消除。
 
 主 LLM 调用 `memory_search` 时会增加一次 MemOS 查询和第二次 LLM 调用。查询超时或失败被转换为 Tool Result，第二轮模型仍可根据 Dialogue/Profile 回答；Tool Call 及 Tool Result 不进入 TTS，只有最终文本播放。
+
+## 已确认但尚未实现的调整
+
+被打断 Turn 当前完全不提交 Dialogue。是否保存用户问题及已经实际播放的助手片段仍需单独确定，不能把目标方案描述成当前行为。后续验收标准见 [../PROJECT_PLAN.md](../PROJECT_PLAN.md)。
 
 ## 当前边界
 
@@ -129,7 +133,7 @@ Browser Memory Center
 
 成员删除不是跨服务事务。HTTP 请求只负责把 Identity 原子改为 `deletion_pending` 并写入 `identity_deletion_jobs`；该成员随即从列表、活动 Family Dialogue 和 Memory API 消失。Member Turn 完成提交前会重新校验 Identity 仍为 Active，避免删除期间的旧 Turn 把 Dialogue 或 Memory 写回来。后台 Worker 删除 VoicePrint、MemOS 全部 Memory/Profile 与该成员的持久化 Dialogue，全部成功后才物理删除本地 Identity。Provider 关闭时会跳过对应远端清理，因此曾经启用 Provider 后再关闭所遗留的数据仍需人工确认。
 - 一个 `device_id` 第一版只有一个当前 Dialogue Session，不提供历史 Session 列表，也不支持浏览器指定任意 Session。
-- Family 与 Guest 都会恢复，但仍是两条相互隔离的有限窗口；Guest 不读取 Profile 或 MemOS。
+- Family 与 Guest 兼容 lane 都会恢复并合并为设备短期窗口；Guest 不读取 Profile 或 MemOS。
 - 当前消息角色为 `system`、`user`、`assistant` 和内部 `tool`；WebSocket 不暴露中间 Tool 消息。
-- Profile 预取失败在当前 Session 内不会持续重试；该轮及后续轮次按无 Profile 聊天，重新连接后可再次预取。
+- Profile 预取失败不会阻塞聊天；后续 Member Turn 会重新触发加载，成功后更新当前 Session Snapshot。
 - 真实 MemOS Profile、Search/Add 和 Memory Center 核心链路已由用户完成浏览器验收；异步任务的 `submitted -> /get/status -> completed/failed` 恢复逻辑由自动测试和真实 PostgreSQL 集成测试覆盖，部署后仍需通过日志观察外部任务状态与配额。

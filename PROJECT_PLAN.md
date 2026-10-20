@@ -1,514 +1,86 @@
-# Newtalk 项目规划
+# Newtalk 后续规划
 
-## 1. 项目定位
+本文只记录当前交付基线之后仍有效的规划。已完成阶段的详细过程由 Git、Pull Request 和 [docs/PROGRESS.md](docs/PROGRESS.md) 保留，不再在仓库中维护重复设计稿。
 
-Newtalk 是一个以 Web 为主要客户端的多模态家庭陪伴机器人。
+## 产品目标
 
-核心能力包括：
+Newtalk 面向“一台设备对应一个家庭空间”的家庭陪伴场景：
 
-- 文字聊天。
-- 浏览器麦克风实时语音输入。
-- VAD 语音活动检测，以及流式 ASR、LLM 和 TTS。
-- 浏览器音频播放和用户打断。
-- 摄像头、图片理解和多模态输入。
-- 基于声纹的家庭成员身份识别。
-- 每个家庭成员独立的长期 Memory 和 User Profile。
-- 少量适合陪伴场景的工具，例如时间、天气和提醒。
+- 同一设备中的对话上下文保持连续。
+- 成员通过声纹映射身份，使用自己的 Profile 和长期 Memory。
+- Guest 或身份不确定者可以参与当前家庭对话，但不能读取成员私有长期数据。
+- 语音主链路优先保证实时性、可打断、可降级和可观测。
+- Web 是当前主要演示与验收载体，后端协议保留未来接入 ESP32 或其他设备的空间。
 
-Newtalk 参考小智项目中已经验证过的协议、音频处理方式和 Provider 实现，但不继承其过度集中的 `ConnectionHandler` 架构。
+## 当前基线
 
-## 2. 仓库与 Legacy 边界
+P1-P7.8 已交付：
 
-### 2.1 独立仓库
+- 独立仓库、测试、CI、HTTP/WebSocket 与 Web 页面。
+- 文本流式 LLM、PCM 流式 TTS、VAD 和豆包双向流式 ASR。
+- PostgreSQL Device/Family/Member/Session/Dialogue 数据模型。
+- 独立 CAM++ VoicePrint 服务与成员声纹映射。
+- Profile、MemOS 长期记忆、Memory Center 和异步 Memory Job。
+- Session 刷新恢复、新对话清理、真实语音打断和逐 Turn 时延日志。
+- 首页、对话、家庭成员与记忆中心的第一版产品界面。
 
-`D:\Desktop\Newtalk` 应从第一天开始作为独立 Git 仓库：
+当前实现细节以 [docs/architecture.md](docs/architecture.md) 和 [docs/protocol.md](docs/protocol.md) 为准。
 
-```text
-D:\Desktop\Newtalk\
-├── .git\
-├── README.md
-├── PROJECT_PLAN.md
-├── pyproject.toml
-├── src\
-├── web\
-├── tests\
-├── docs\
-├── config\
-├── docker\
-└── services\
-    └── voiceprint\
-```
+在代码审查整改中已经补充：设备共享短期 Dialogue、同设备多连接上下文同步、恢复码数据库限流、真实 VoicePrint 默认后端和 CI 静态检查/覆盖率报告。数据库仍保留 `family/guest` lane 作为兼容元数据，不再用它分隔模型看到的短期上下文。
 
-GitHub Remote 必须绑定用户自己的仓库，不使用临时或代建仓库：
+## 下一阶段候选
 
-```bash
-git init -b main
-git remote add origin <用户提供的 GitHub 仓库 URL>
-git remote -v
-```
+以下项目必须经过需求确认后再进入开发，不代表已经实现。
 
-在用户提供真实 URL 前，不创建虚假的 Remote。
+### B2：被打断 Turn 的上下文语义
 
-### 2.2 Legacy 完全只读
+问题：当前只有完整完成的 Turn 才写入 Dialogue。被打断的用户问题和已生成回复全部丢弃，下一轮可能失去指代对象。
 
-当前目录中的 `xiaozhi-esp32-server-main` 只作为 Legacy Reference：
+候选方案：
 
-- 不修复。
-- 不重构。
-- 不继续增加功能。
-- 不作为 Newtalk 的运行时依赖。
-- 不提交到 Newtalk Git 仓库。
-- 只用于核对 WebSocket 协议、音频格式、Provider 参数和历史行为。
+- 保存用户问题。
+- 保存已实际播放的助手文本片段，而不是全部已生成文本。
+- 为 Turn 增加 `interrupted` 状态和播放截止位置。
+- Prompt 中明确该回复被打断，避免模型误以为已经完整表达。
 
-如果 Legacy 能通过环境和配置运行，则记录基线；如果因为源码问题无法运行，只记录阻塞点，不修改 Legacy。
+在实现前需要先确定“已生成”“已发送”“已播放”三种边界采用哪一种。
 
-## 3. 已确定的产品边界
+### B3：音频稳定性与诊断
 
-### 3.1 必须实现
+- 记录输入音量、有效语音时长、VAD 判定和 ASR/VoicePrint 音频质量。
+- 评估动态 VAD 阈值、短语音补帧和重录提示。
+- 评估浏览器 AEC、耳机/扬声器模式和服务端回声处理。
+- 建立真实环境回归样本，不只依赖单元测试。
 
-- Web 是主要客户端。
-- 文本、语音和图片最终进入同一套聊天核心。
-- 一个用户行为只创建一个对话 Turn。
-- 麦克风音频必须经过明确的语音起止检测；静音和环境噪声不能直接创建 Turn。
-- 声纹识别结果必须映射到家庭成员 Identity。
-- Memory 和 User Profile 按家庭成员隔离。
-- Memory 查询不能无限增加首字延迟。
-- Vision 不再通过 `abort -> 拼接文本 -> 再次聊天` 实现。
-- Tool 只保留少量明确有用的能力。
-- 自动测试、集成测试、日志、指标、Health Check、Docker 和文档属于正式交付内容。
+### B4：VoicePrint 容量与准确率
 
-### 3.2 暂不实现
+- 测试单进程 CAM++ 的吞吐与队列等待时间。
+- 将模型推理进程与 API 层解耦，评估多 Worker 或多实例。
+- 增加模板质量、阈值分布和误识别/漏识别统计。
+- 云端部署时根据压测结果决定 CPU/GPU 规格和副本数。
 
-- 复杂文本、语音、视觉情绪融合。
-- 完整迁移 IoT、Device MCP 和大量 Server Plugin。
-- 一次性重写所有 Provider。
-- 一次性拆分出大量 Manager。
-- 为了架构完整而提前设计尚未使用的接口。
+### 可选：P8 Vision
 
-## 4. 核心设计原则
+Vision 暂不在当前交付范围。若启用，应复用统一 Turn、身份、日志和 Memory 边界，而不是把图片描述伪装成普通用户文本。
 
-### 4.1 一个 Part 一个 Part 写
+### 可选：部署与 CD
 
-每个 Part 都必须形成可以运行、可以测试、可以演示的纵向闭环。
+当前只有 CI。确认云服务器、域名、HTTPS、密钥管理、数据库备份和回滚策略后，再增加容器化生产部署与 CD。
 
-不采用以下方式：
+## 固定边界
 
-```text
-先设计所有接口
--> 再创建所有 Manager
--> 再搬迁所有 Provider
--> 最后统一联调
-```
+- 不为 Intent 单独增加一个前置 LLM；优先使用主 LLM Tool Calling。
+- Memory 是可关闭 Provider，不得成为聊天主链路的硬依赖。
+- 普通聊天不强制前置查询 MemOS。
+- Guest 不读写 Member 的 Profile 与长期 Memory。
+- 浏览器当前继续使用 24 kHz 单声道 PCM；是否引入 Opus 由设备与带宽需求决定。
+- 不在未确认需求前自动增加 Vision、知识图谱或复杂 Memory Router。
 
-采用以下方式：
+## 文档分工
 
-```text
-选择当前最小目标
--> 写最少代码跑通
--> 增加测试和耗时指标
--> 发现真实重复后再抽象
--> 提交一个可回退的 Git 版本
-```
-
-### 4.2 Provider 延迟抽象
-
-Provider 思想提前确定，但不在 P2 预先设计完整 Provider 世界。
-
-具体规则：
-
-1. 接入第一个能力时，先围绕真实调用写最小实现。
-2. 接入第一个真实 Provider 时，只定义当前链路实际需要的方法和数据。
-3. 第二个同类 Provider 出现后，再比较差异并提取最小公共契约。
-4. 只有确实需要通过配置切换时，才增加 Registry、Factory 或动态加载。
-5. 不把 Legacy Provider 的全部方法直接定义成 Newtalk 标准。
-6. Provider 内部协议细节不得泄漏到 Turn 和 Conversation 核心。
-
-示例：
-
-```text
-P2 Fake LLM：直接满足文本闭环，不建立通用 Provider 框架。
-P3 第一个真实 LLM：根据真实流式输出定义最小 ChatModel 契约。
-以后接入第二个 LLM：确认公共行为后再增加配置切换。
-P4 接入 TTS：此时才定义 TTS 所需的最小音频流契约。
-P5 接入 VAD 和 ASR：此时才根据真实麦克风、音频格式和 ASR 行为定义最小契约。
-```
-
-接口不是越早越好，而是在有真实调用者和至少一个真实实现时才有意义。
-
-### 4.3 实时路径与后台路径分离
-
-实时路径只保留生成当前回答必须完成的工作：
-
-```text
-用户输入
--> 创建 Turn
--> 有时限的 Context 准备
--> LLM 流式输出
--> TTS 流式播放
-```
-
-后台路径处理不应阻塞当前回答的工作：
-
-```text
-保存长期记忆
-更新用户画像
-生成摘要
-整理视觉观察
-非关键日志和统计
-```
-
-## 5. 目标调用链
-
-```text
-Web 文本 ---------------------------------------+
-浏览器麦克风 -> 音频帧 -> VAD -> ASR 最终文本 --+--> ChatInput
-Web 图片/摄像头帧 ------------------------------+       |
-                                            v
-                                      TurnContext
-                                            |
-                    +-----------------------+-----------------------+
-                    |                       |                       |
-               Identity                 Dialogue              Vision 理解
-                    |                       |                  按需或使用缓存
-                    +-----------------------+-----------------------+
-                                            |
-                                  Member Profile Snapshot
-                                            |
-                                         主 LLM
-                              +-------------+-------------+
-                              |                           |
-                         直接流式回答                memory_search Tool
-                              |                           |
-                              |                    MemOS 限时查询
-                              |                           |
-                              +-------------+-------------+
-                                            |
-                                      最终流式文本
-                                            |
-                              +-------------+-------------+
-                              |                           |
-                         Web 流式文本                 TTS 流式音频
-                                                          |
-                                                    浏览器实时播放
-
-回答完成 -> 后台保存 Memory -> 后台更新 User Profile
-```
-
-## 6. 关键数据边界
-
-### 6.1 ChatInput
-
-一次用户行为对应一个 `ChatInput`：
-
-```text
-turn_id
-source: text | voice | image | multimodal
-user_text
-speaker_id / user_id
-images
-vision_observation
-created_at
-```
-
-图片和视觉描述是输入字段，不伪装成第二条用户消息。
-
-### 6.2 TurnContext
-
-一次对话轮次独立保存：
-
-```text
-turn_id
-session_id
-user_id
-cancelled
-input
-retrieved_memory
-profile_snapshot
-provider_tasks
-timing
-```
-
-所有 VAD、ASR、Vision、LLM、Tool、TTS 返回都必须能归属到当前输入或 `turn_id`。旧 Turn 的迟到结果不得写入新 Turn。
-
-### 6.3 四类上下文
-
-| 类型 | 示例 | 生命周期 |
-|---|---|---|
-| Dialogue | 用户和助手当前会话消息 | 当前 Session |
-| Vision Observation | 桌面上有水杯 | 短期缓存，默认不进入长期记忆 |
-| Long-term Memory | 用户每周一加班 | 跨 Session |
-| User Profile | 姓名、家庭关系、稳定偏好 | 长期结构化数据 |
-
-## 7. 分阶段实施计划
-
-### P0：Legacy 调研和可运行性验证
-
-目标：获得参考基线，不修改 Legacy。
-
-工作内容：
-
-- 记录启动环境、依赖和配置。
-- 尝试运行原服务端和 `test_page.html`。
-- 记录 WebSocket 消息、音频格式和 Provider 配置。
-- 记录 ASR、LLM、TTS 的关键耗时。
-- 无法运行时记录准确阻塞点。
-
-完成标准：形成 Legacy 基线文档，不要求修复 Legacy。
-
-### P1：Newtalk 仓库和最小骨架
-
-目标：建立完全独立、可测试的新项目。
-
-工作内容：
-
-- 初始化独立 Git 仓库并绑定用户 GitHub。
-- 建立 Python 项目、配置加载、日志和测试框架。
-- 提供 `/health`。
-- 建立 WebSocket 服务和最小 Web 页面。
-- 完成 `hello` 和连接关闭。
-
-完成标准：自动测试启动服务，Web 能连接并收到 `hello`。
-
-### P2：文本聊天闭环
-
-目标：完成第一个可演示的纵向 Part。
-
-工作内容：
-
-- Web 输入文本。
-- 创建唯一 `turn_id`。
-- 使用 Fake LLM 流式返回确定性内容。
-- 浏览器显示流式文本。
-- 测试重复输入、断开连接和异常。
-
-本阶段不设计完整 Provider Registry。
-
-完成标准：一次文本输入只产生一个 Turn，测试可稳定复现。
-
-### P3：第一个真实 LLM
-
-目标：根据真实需求形成第一个最小 Provider 契约。
-
-工作内容：
-
-- 接入一个真实 LLM。
-- 定义当前需要的最小流式输出类型。
-- 增加首 Token 耗时和错误日志。
-- Fake LLM 继续用于测试。
-
-完成标准：Fake 和真实 LLM 使用同一聊天核心，业务代码不知道厂商协议。
-
-### P4：TTS 播放闭环
-
-目标：完成文本输入到浏览器语音播放。
-
-工作内容：
-
-- 根据第一个真实 TTS 定义最小 TTS 契约。
-- LLM 文本分段进入 TTS。
-- 音频帧发送到 Web。
-- 浏览器解码和播放。
-- 支持播放停止。
-
-完成标准：记录 LLM 首 Token、TTS 首帧和浏览器开始播放时间。
-
-### P5：麦克风、VAD、ASR 和打断
-
-目标：完成包含语音起止检测的实时语音聊天闭环。
-
-工作内容：
-
-- 浏览器采集麦克风。
-- 明确浏览器到服务端的音频格式。
-- 定义音频帧的顺序、时间和连接归属，避免不同输入的音频串流。
-- 接入一个真实 VAD，检测 `speech_start` 和 `speech_end`。
-- 使用 VAD 的 `speech_start` 触发低延迟打断候选，使用 `speech_end` 推进 ASR 最终结果。
-- 接入一个 ASR，按实际实现定义最小契约。
-- ASR 最终文本转换为 `ChatInput`。
-- 新 Turn 能取消旧 Turn。
-- 旧 LLM/TTS 的迟到结果被丢弃。
-- 区分“浏览器本地停止播放”和“服务端取消当前 Turn”。
-
-VAD 放在浏览器、服务端或两端配合，在 P5 根据真实音频格式、ASR Provider 的 endpointing 能力和实测延迟决定；本阶段之前不预设完整 VAD Provider Registry。
-
-完成标准：连续麦克风音频能稳定识别语音起止，静音不创建 Turn，一段有效语音只创建一个 Turn；语音输入、回答、播放和 barge-in 有自动化集成测试。
-
-### P6：Session 和 Context
-
-目标：建立稳定的多轮聊天能力。
-
-工作内容：
-
-- 明确 Connection、Session、Turn 的生命周期。
-- 建立有限 Dialogue Window。
-- 区分用户消息、助手消息和 Tool 消息。
-- 禁止连接级共享标记控制多个并发 Turn。
-
-完成标准：连续对话和快速打断不会出现消息串轮。
-
-### P7：Identity、Memory 和 User Profile
-
-目标：建立家庭陪伴核心能力。
-
-P7 的 Session、Device、Identity、Dialogue、Guest、Memory 和 Profile 设计均记录在 [`docs/P7_DESIGN.md`](docs/P7_DESIGN.md)。该文档描述设计状态，不表示功能已经实现。
-
-工作内容：
-
-- 声纹结果映射到稳定 `identity_id`，不使用成员显示名作为数据主键。
-- 未识别成员使用 Guest 身份。
-- Web 使用服务端签发的随机 MAC 样式 `device_id` 和设备凭据，并通过家庭恢复码重新绑定原家庭。
-- 使用 PostgreSQL、SQLAlchemy 和 Alembic 保存 Device、Identity、声纹映射和持久化状态。
-- 在同一仓库的独立 `services/voiceprint` 进程中实现 3D-Speaker/CAM++ 声纹注册、识别和删除。
-- Session 建连后在后台预取当前家庭成员的 Profile Snapshot，并按 `identity_id` 分别缓存；每个 Turn 只向主 LLM 提供当前说话人的已就绪 Profile，预取未完成或失败时不阻塞聊天。
-- 主 LLM 按需调用 `memory_search` 查询 MemOS，不增加独立 Memory Router。
-- Memory 查询使用真正异步 I/O，并设置超时、结果上限、字符预算和 Tool Call 上限。
-- 当前回答结束后通过后台 Memory Pipeline 将已完成的 Member Turn 写入 MemOS。
-- 第一版使用 MemOS Profile Template 从写入内容中自动更新稳定画像，不增加额外画像提取 LLM，也不把所有聊天直接当画像。
-- Profile 保存字段来源、更新时间和锁定状态，MemOS 自动更新不能覆盖锁定字段。
-- 提供 Memory Center，让成员查看、搜索、编辑、删除、纠正记忆和锁定 Profile 字段。
-- Memory 可通过配置关闭；关闭后不加载 Profile、不注册 Memory Tool、不执行长期写入。
-- 持久化 Session/Dialogue，使同一家庭页面刷新或短暂重连后能够恢复最近对话；恢复范围仍受窗口限制，不把全部长期 Memory 当作短期 Dialogue。
-
-完成标准：不同家庭成员的 Context、Memory 和 Profile 不串数据；普通聊天不承担 MemOS 查询延迟；MemOS 失败和关闭 Memory 均不影响聊天主链；用户可以看见并纠正系统保存的内容。
-
-### P7.8：Web 产品界面完善
-
-目标：把当前功能完整但偏开发测试用途的单页界面，整理成可演示、可日常使用的 Web 产品界面。
-
-工作内容：
-
-- 保持原生 HTML、CSS 和 JavaScript，不为视觉改版引入新的前端框架。
-- 重新整理聊天、家庭成员、声纹录入、Profile 和 Memory Center 的信息层级。
-- 将协议事件和调试日志收纳到可展开的开发面板，不占据默认聊天空间。
-- 明确展示连接、麦克风、VAD、ASR、说话人、LLM、TTS、VoicePrint 和 Memory 状态。
-- 为首次创建设备、恢复家庭、添加成员和录入声纹提供连续引导。
-- 完善加载中、空数据、成功、失败、服务不可用和重试状态。
-- 优化桌面和移动端布局、键盘操作、可读性和基本无障碍属性。
-- 保留性能耗时的观察入口，但不让工程指标干扰普通用户聊天。
-
-完成标准：新用户能够在没有阅读开发文档的情况下完成家庭初始化、成员录入和第一次文字/语音聊天；桌面与移动端核心流程无横向溢出，错误信息可理解，浏览器控制台没有未处理异常。
-
-### P8：统一 Vision 输入
-
-目标：实现一次输入、一个 Turn 的多模态聊天。
-
-工作内容：
-
-- Web 图片直接进入当前 `ChatInput.images`。
-- 删除 `abort -> 拼接 listen/detect -> 再次聊天` 行为。
-- 普通聊天可读取带时间戳的最近视觉缓存。
-- 明确视觉问题才等待 VLLM。
-- 视觉结果默认不写入长期 Memory。
-
-完成标准：一句话和一张图片只产生一个 Turn，MemOS 中不再自动出现临时画面描述。
-
-### P9：少量 Tool
-
-目标：增加真正有陪伴价值的能力。
-
-首批范围：
-
-- 当前时间和日期。
-- 天气。
-- 提醒。
-
-要求：
-
-- Tool 白名单。
-- 每个 Tool 有超时。
-- Tool 失败不破坏当前 Turn。
-- Tool 结果是否进入 Memory 必须显式决定。
-
-### P10：工程化和发布
-
-目标：形成可重复部署的项目。
-
-工作内容：
-
-- Unit Test 和 Integration Test。
-- Provider Contract Test。
-- 配置和 Secret 分离。
-- Health Check 和 Readiness Check。
-- 结构化日志和性能指标。
-- Docker 和启动文档。
-- GitHub CI。
-- 架构决策记录。
-
-## 8. 测试策略
-
-测试顺序固定为：
-
-```text
-Fake Provider 单元测试
--> 单 Part 集成测试
--> WebSocket 协议测试
--> 一个真实 Provider 冒烟测试
--> 浏览器端到端测试
-```
-
-必须覆盖：
-
-- 一次输入只创建一个 Turn。
-- 静音和短暂环境噪声不会创建 Turn。
-- 一段有效语音只产生一次 `speech_start`、`speech_end` 和 ASR 最终输入。
-- 打断后旧结果不能继续输出。
-- Memory 超时不会阻止 LLM。
-- Vision 失败能降级为纯文本聊天。
-- Provider 失败不会导致连接资源泄漏。
-- 不同用户的 Memory/Profile 不串数据。
-
-## 9. 性能指标
-
-每轮至少记录：
-
-```text
-input_received
-audio_first_frame
-vad_speech_start
-vad_speech_end
-asr_final
-context_ready
-memory_tool_started          # 仅实际调用 memory_search 时产生
-memory_tool_completed
-memory_tool_failed_or_timeout
-llm_first_token
-tts_first_frame
-browser_play_start
-turn_complete
-memory_write_enqueued        # 回答完成后的后台路径
-memory_write_completed
-```
-
-文本输入不产生音频、VAD 和 ASR 指标；语音输入必须记录这些阶段，便于区分采集、端点检测、识别、模型和合成各自的延迟。
-
-总延迟必须能拆解到具体阶段，不能只记录“这一轮用了 3 秒”。
-
-普通对话中，Vision、Memory 保存、摘要和画像更新不得串行叠加在首包路径上。
-
-## 10. Git 交付规则
-
-- `main` 始终保持可运行。
-- 每个 Part 使用独立分支。
-- 一个 Part 对应一个可验证的 Pull Request。
-- 每个 PR 必须写明行为变化、测试结果和性能变化。
-- 不把真实 API Key、Token、声纹数据和用户画像提交到 Git。
-- Legacy 目录必须加入 `.gitignore`。
-- 未完成的抽象不提前合并到 `main`。
-
-建议分支示例：
-
-```text
-codex/p1-bootstrap
-codex/p2-text-turn
-codex/p3-real-llm
-codex/p4-tts-stream
-codex/p5-asr-barge-in
-codex/p6-dialogue-context
-codex/p7-1-device-members
-codex/p7-2-voiceprint
-codex/p7-3-runtime-identity
-codex/p7-4-profile
-codex/p7-5-memory-pipeline
-codex/p7-6-memory-center
-codex/p8-vision-input
-```
+- [README.md](README.md)：启动、能力和日常使用入口。
+- [docs/architecture.md](docs/architecture.md)：当前真实运行架构。
+- [docs/protocol.md](docs/protocol.md)：WebSocket 消息契约。
+- [docs/PROGRESS.md](docs/PROGRESS.md)：交付状态与已知边界。
+- [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md)：分支、测试、PR 和 CI 流程。
+- 本文：尚未实现的后续规划。

@@ -151,7 +151,12 @@ class SqlAlchemyDialogueStore:
                 raise RuntimeError("Unable to open Dialogue Session")
             family = await self._load_lane(session, dialogue.session_id, "family", max_turns)
             guest = await self._load_lane(session, dialogue.session_id, "guest", max_turns)
-            history = tuple(sorted((*family, *guest), key=lambda item: item.created_at))
+            history = tuple(
+                sorted(
+                    (*family, *guest),
+                    key=lambda item: (item.created_at, item.exchange.turn_id),
+                )
+            )
             return DialogueSnapshot(
                 session_id=str(dialogue.session_id),
                 resumed=bool(history),
@@ -174,7 +179,10 @@ class SqlAlchemyDialogueStore:
                     DialogueExchangeRow.session_id == session_id,
                     DialogueExchangeRow.lane == lane,
                 )
-                .order_by(DialogueExchangeRow.created_at.desc())
+                .order_by(
+                    DialogueExchangeRow.created_at.desc(),
+                    DialogueExchangeRow.turn_id.desc(),
+                )
                 .limit(max_turns)
             )
         ).all()
@@ -223,7 +231,10 @@ class SqlAlchemyDialogueStore:
                         DialogueExchangeRow.session_id == parsed_session_id,
                         DialogueExchangeRow.lane == lane,
                     )
-                    .order_by(DialogueExchangeRow.created_at.desc())
+                    .order_by(
+                        DialogueExchangeRow.created_at.desc(),
+                        DialogueExchangeRow.turn_id.desc(),
+                    )
                     .offset(max_turns)
                 )
                 await session.execute(

@@ -1,7 +1,6 @@
-from newtalk.profile.memos import MemosProfileProvider
+from newtalk.profile.memos import MemosMemoryProvider
 from newtalk.profile.models import ProfileField, ProfileScope, ProfileSnapshot
 from newtalk.profile.provider import (
-    DisabledProfileProvider,
     ProfileProvider,
     ProfileProviderError,
     ProfileProviderUnavailableError,
@@ -9,8 +8,7 @@ from newtalk.profile.provider import (
 from newtalk.profile.session import ProfileCacheCoordinator, SessionProfileCache
 
 __all__ = [
-    "DisabledProfileProvider",
-    "MemosProfileProvider",
+    "MemosMemoryProvider",
     "ProfileField",
     "ProfileProvider",
     "ProfileProviderError",

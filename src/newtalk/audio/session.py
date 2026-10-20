@@ -85,12 +85,34 @@ class AudioInputSession:
                 await self._on_utterance_audio(utterance_id, b"".join(audio_chunks))
 
     async def close(self) -> None:
+        """Gracefully finish the active utterance and wait for its ASR result."""
         if self._closed:
             return
         await self.finish()
         self._closed = True
         if self._recognition_tasks:
             await asyncio.gather(*self._recognition_tasks, return_exceptions=True)
+        self._vad_stream.reset()
+
+    async def abort(self) -> None:
+        """Cancel recognition immediately when the owning connection is gone."""
+        if self._closed:
+            return
+        self._closed = True
+        self._active_queue = None
+        self._active_utterance_id = None
+        self._active_audio_chunks = None
+        self._pre_roll.clear()
+        self._pre_roll_bytes = 0
+
+        # 连接已经断开，继续等待 ASR Final 不会产生可交付的结果，反而可能
+        # 让 WebSocket 清理被外部服务超时拖住。
+        tasks = tuple(self._recognition_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._recognition_tasks.clear()
         self._vad_stream.reset()
 
     async def _start_utterance(self, probability: float, audio_ms: float) -> None:

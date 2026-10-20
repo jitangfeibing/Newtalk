@@ -1,10 +1,13 @@
 import asyncio
+from datetime import datetime, timezone
 import os
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import update
 
 from newtalk.chat import DialogueExchange, SqlAlchemyDialogueStore
+from newtalk.chat.persistence import DialogueExchangeRow
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
 
 
@@ -145,6 +148,55 @@ def test_postgres_dialogue_serializes_concurrent_appends() -> None:
             )
             assert len(restored.guest) == 2
             assert {item.turn_id for item in restored.guest}.issubset(turn_ids)
+        finally:
+            await dialogues.close()
+            await identities.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration URL is not configured")
+def test_postgres_dialogue_has_stable_order_when_timestamps_match() -> None:
+    async def scenario() -> None:
+        identities = IdentityService(SqlAlchemyIdentityStore(DATABASE_URL))
+        dialogues = SqlAlchemyDialogueStore(DATABASE_URL)
+        await identities.start()
+        await dialogues.start()
+        try:
+            family = await identities.register_device()
+            opened = await dialogues.open(
+                device_id=family.device.device_id,
+                max_turns=3,
+            )
+            run_id = uuid4().hex[:12]
+            turn_ids = [f"{run_id}-stable-{suffix}" for suffix in ("c", "a", "b")]
+            for turn_id in turn_ids:
+                assert await dialogues.append(
+                    session_id=opened.session_id,
+                    lane="guest",
+                    exchange=_exchange(turn_id),
+                    max_turns=3,
+                )
+
+            async with dialogues._sessions.begin() as session:
+                await session.execute(
+                    update(DialogueExchangeRow)
+                    .where(DialogueExchangeRow.turn_id.in_(turn_ids))
+                    .values(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+                )
+
+            first = await dialogues.open(
+                device_id=family.device.device_id,
+                max_turns=3,
+            )
+            second = await dialogues.open(
+                device_id=family.device.device_id,
+                max_turns=3,
+            )
+            expected = sorted(turn_ids)
+            assert [item.turn_id for item in first.guest] == expected
+            assert [item.turn_id for item in second.guest] == expected
         finally:
             await dialogues.close()
             await identities.close()

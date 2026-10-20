@@ -20,12 +20,17 @@ class SessionProfileCache:
         device_id: str,
         identity_service: IdentityService,
         provider: ProfileProvider,
+        retry_delay_seconds: float = 5.0,
     ) -> None:
+        if retry_delay_seconds < 0:
+            raise ValueError("Profile retry delay must not be negative")
         self.device_id = device_id
         self._identity_service = identity_service
         self._provider = provider
+        self._retry_delay_seconds = retry_delay_seconds
         self._snapshots: dict[str, ProfileSnapshot] = {}
-        self._attempted: set[str] = set()
+        self._loading: set[str] = set()
+        self._retry_after: dict[str, float] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._prefetch_task: asyncio.Task[None] | None = None
         self._closed = False
@@ -48,19 +53,22 @@ class SessionProfileCache:
     def set_snapshot(self, snapshot: ProfileSnapshot) -> None:
         if not self._closed:
             self._snapshots[snapshot.identity_id] = snapshot
+            self._retry_after.pop(snapshot.identity_id, None)
 
     def remove_snapshot(self, identity_id: str) -> None:
         self._snapshots.pop(identity_id, None)
 
     def schedule(self, identity_id: str) -> None:
+        retry_after = self._retry_after.get(identity_id, 0.0)
         if (
             not self.enabled
             or self._closed
-            or identity_id in self._attempted
+            or identity_id in self._loading
             or identity_id in self._snapshots
+            or perf_counter() < retry_after
         ):
             return
-        self._attempted.add(identity_id)
+        self._loading.add(identity_id)
         task = asyncio.create_task(self._load(identity_id))
         self._tasks.add(task)
         task.add_done_callback(self._task_finished)
@@ -100,6 +108,10 @@ class SessionProfileCache:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if not self._closed:
+                self._retry_after[identity_id] = (
+                    perf_counter() + self._retry_delay_seconds
+                )
             logger.warning(
                 "profile_prefetch_failed device_id=%s identity_id=%s error_type=%s error=%s elapsed_ms=%.1f",
                 self.device_id,
@@ -109,8 +121,10 @@ class SessionProfileCache:
                 (perf_counter() - started_at) * 1000,
             )
             return
+        finally:
+            self._loading.discard(identity_id)
         if not self._closed:
-            self._snapshots[identity_id] = snapshot
+            self.set_snapshot(snapshot)
         logger.info(
             "profile_prefetch_completed device_id=%s identity_id=%s fields=%s elapsed_ms=%.1f",
             self.device_id,

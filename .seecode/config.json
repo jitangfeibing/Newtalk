@@ -1,0 +1,16 @@
+{
+  "skin": "light",
+  "motion": "auto",
+  "exportFormats": [
+    "html",
+    "png"
+  ],
+  "size": "auto",
+  "scale": "auto",
+  "fps": 30,
+  "duration": "auto",
+  "outputDir": "diagrams",
+  "profile": "newtalk",
+  "watermark": true,
+  "fonts": "google"
+}

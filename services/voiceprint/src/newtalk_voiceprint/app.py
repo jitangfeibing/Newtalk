@@ -78,7 +78,12 @@ def create_app(
             await resolved_service.ping()
         except Exception as exc:
             raise HTTPException(status_code=503, detail="database unavailable") from exc
-        return {"status": "ok", "service": "newtalk-voiceprint", "model": resolved_service.model_name}
+        return {
+            "status": "ok",
+            "service": "newtalk-voiceprint",
+            "backend": config.backend,
+            "model": resolved_service.model_name,
+        }
 
     @app.post("/v1/templates", response_model=RegistrationResponse, dependencies=[Depends(authorize)])
     async def register_template(

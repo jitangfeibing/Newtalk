@@ -20,11 +20,11 @@ services:
       context: .
       dockerfile: services/voiceprint/Dockerfile
       args:
-        VOICEPRINT_EXTRAS: ${VOICEPRINT_EXTRAS:-}
+        VOICEPRINT_EXTRAS: ${VOICEPRINT_EXTRAS:-campplus}
     environment:
       VOICEPRINT_DATABASE_URL: postgresql+asyncpg://newtalk:newtalk@postgres:5432/newtalk
-      VOICEPRINT_API_TOKEN: local-voiceprint-token
-      VOICEPRINT_BACKEND: ${VOICEPRINT_BACKEND:-deterministic}
+      VOICEPRINT_API_TOKEN: ${VOICEPRINT_API_TOKEN:-${NEWTALK_VOICEPRINT_API_TOKEN:-local-voiceprint-token}}
+      VOICEPRINT_BACKEND: ${VOICEPRINT_BACKEND:-campplus}
       VOICEPRINT_SIMILARITY_THRESHOLD: "0.5"
       VOICEPRINT_IDENTIFY_MIN_SAMPLE_SECONDS: "0.8"
     ports:

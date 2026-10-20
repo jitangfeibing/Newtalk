@@ -1,593 +1,122 @@
-# Newtalk 开发进度
+# Newtalk 项目进度
 
-本文档记录 Newtalk 实际已经落地并验证过的能力。规划中的功能只有在代码完成并通过验证后，才会进入“已完成”清单。
-
-## 更新规则
-
-每完成一个 Part，至少记录以下内容：
-
-- 本阶段目标与完成状态。
-- 新增的用户可见能力。
-- 主要代码入口和调用链。
-- 自动测试与手工验证结果。
-- 明确尚未实现的边界。
-- 下一阶段准备处理的内容。
+本文记录当前可运行、可验收的真实状态。历史实现细节由 Git 提交和 Pull Request 保存，避免在仓库中维护多份过期交接材料。
 
 ## 当前状态
 
-| 项目 | 当前值 |
+| 项目 | 状态 |
 | --- | --- |
-| 当前阶段 | P7 稳定性收尾 + Web 产品界面完善 |
-| 阶段状态 | P7.1-P7.7 已完成；P7.8 Web F1-F4 第一轮已完成并通过浏览器验收 |
-| 开发分支 | 合并后以 `main` 为准 |
-| 项目版本 | `0.13.0` |
-| Python | 3.11.5 |
-| 环境 | 项目内标准 `.venv`，由 Anaconda Base Python 创建 |
-| 后端 | FastAPI + Uvicorn |
-| 前端 | 原生 HTML + CSS + JavaScript |
-| 自动测试 | 主项目 `151 passed / 7 skipped`；VoicePrint `7 passed / 1 skipped`；Memory Job 与 Dialogue 真实 PostgreSQL 集成测试通过 |
-| CI | GitHub Actions 执行 pytest；Part 通过 PR 和 CI 后合并 |
-| 最后更新 | 2026-10-19 |
+| 当前阶段 | P7.8 已交付 |
+| 项目版本 | 0.13.0 |
+| 更新时间 | 2026-10-20 |
+| 主服务 | FastAPI / Uvicorn，默认 8006 |
+| VoicePrint | 独立 FastAPI 服务，默认 8010 |
+| 数据库 | PostgreSQL + SQLAlchemy + Alembic |
+| Web | 原生 HTML / CSS / JavaScript |
+| CI | GitHub Actions |
+| 最近交付 | PR #21，合并提交 `2d61f68` |
+| 自动测试基线 | 主项目 165 passed / 9 skipped；VoicePrint 9 passed / 1 skipped |
 
-## Web 产品界面：F1-F4 第一轮
+## 里程碑
 
-### 已完成
+| 阶段 | 已交付内容 |
+| --- | --- |
+| P1 | 独立仓库、配置、日志、`/health`、WebSocket hello 和最小 Web |
+| P2 | 文本 Turn、Fake LLM、流式事件、取消与基础 Dialogue |
+| P3 | OpenAI-compatible 真实流式 LLM |
+| P4 | 豆包流式 TTS、浏览器 PCM 边收边播、首字/首包时延日志 |
+| P5 | 浏览器 PCM 上行、VAD、语音段管理和双向流式 ASR |
+| P6 | Dialogue 上下文与会话内多轮对话 |
+| P7.1 | PostgreSQL、Device、Family、Member 和数据隔离 |
+| P7.2 | 独立 3D-Speaker CAM++ VoicePrint 服务 |
+| P7.3 | ASR 与声纹并行汇合、成员映射与 Guest 降级 |
+| P7.4 | Profile 与 MemOS Provider 边界 |
+| P7.5 | `memory_search`、长期记忆读取和异步写入 |
+| P7.6 | Memory Center，查看、搜索、编辑、删除和锁定 |
+| P7.7 | Session/Dialogue 持久化与页面刷新恢复 |
+| P7.8 | 产品界面整理、新对话清理、真实语音打断和逐 Turn 时延日志 |
 
-- 建立桌面侧栏、家庭陪伴首页标题、能力概览和稳定的内容主区域。
-- 将真实流式对话提升为首页核心区域，保留文字、麦克风、TTS、停止播放和说话人选择。
-- 将协议事件从主界面移入可折叠的开发详情，保留 Ping/Pong 和 WebSocket 调试能力。
-- 家庭成员和 Memory Center 继续使用原有接口与 DOM 标识，现有业务脚本无需重写。
-- 增加本地时间问候语、导航状态和窄屏响应式布局。
-- 家庭页重排为成员目录和成员资料区，补充家庭 Device 标识、首次创建/恢复引导和成员声纹状态。
-- 三段声纹录入增加逐段进度、录音时长、音量质量提示和服务不可用错误说明。
-- Memory Center 明确区分 Profile 常驻信息与按需历史记忆，保留搜索、筛选、编辑、删除和字段锁定。
-- Memory Center 分别呈现未配置、服务不可达、上游异常、没有成员和没有记忆，不再统一显示成空白或未启用。
-- 静态资源增加版本标识，避免浏览器继续执行旧 ES Module 缓存。
-- 四个主视图使用真实 `hidden` 状态互斥显示，并同步 URL hash 和导航 `aria-current`；切换后焦点进入目标内容。
-- Memory 服务异常时收敛为一个详细状态横幅，内容区使用简短占位，禁用不可执行操作并提供重新连接。
+## 当前运行链路
 
-### 验证结果
-
-- JavaScript 语法检查通过，页面不存在重复 DOM `id`。
-- 浏览器验证自动连接、Dialogue 恢复、独立视图切换、成员/声纹入口和 Memory 服务状态正常。
-- 完整主项目测试为 `151 passed / 7 skipped`；用户已完成浏览器功能验收。
-
-### 当前边界
-
-- 本轮按桌面端优先完成可用版本；移动端精调暂不纳入当前交付。
-- VoicePrint 和 MemOS 的实际能力仍取决于各自服务是否启动及配置正确；前端负责准确展示状态，不绕过后端降级规则。
-
-## P1：基础运行骨架
-
-### 目标
-
-建立一个不依赖旧小智运行时的独立 Newtalk 服务，验证浏览器、HTTP 和 WebSocket 可以形成最小闭环。
-
-### 已完成
-
-- 建立 `src/` Python 包结构和 `newtalk` 命令行入口。
-- 建立 FastAPI 应用工厂 `create_app()`。
-- 实现 `GET /health` 健康检查。
-- 实现 `GET /` 以及 Web 静态资源托管。
-- 实现 `WS /ws` WebSocket 端点。
-- 服务端连接后发送 `hello`，包含协议版本和唯一 `session_id`。
-- 浏览器可以发送 `ping`，服务端返回关联相同 `event_id` 的 `pong`。
-- 浏览器通过 `close` 请求正常关闭，服务端返回 `closing` 后使用代码 `1000` 关闭连接。
-- 非法 JSON、非法事件、二进制帧和未知事件返回结构化错误。
-- 从 `.env` 或进程环境加载并验证主机、端口、日志级别和 Web 根目录。
-- 建立 Newtalk 命名空间日志，记录服务和 WebSocket 生命周期。
-- 建立 HTTP、WebSocket 单元测试和真实 Uvicorn 子进程集成测试。
-- 建立 P1 架构边界和消息协议文档。
-
-### 当前调用链
+语音输入主链路：
 
 ```text
-浏览器访问 /
--> newtalk.app:create_app
--> FastAPI StaticFiles
--> web/index.html + web/styles.css + web/app.js
-
-浏览器连接 /ws
--> newtalk.transport.websocket:websocket_endpoint
--> accept
--> hello(session_id)
--> 接收 JSON 事件
--> ping 事件处理
--> pong(session_id, event_id)
-
-浏览器主动断开
--> close(event_id)
--> closing(session_id, event_id)
--> WebSocket close(code=1000)
+Browser PCM
+  -> WebSocket
+  -> VAD
+  -> Doubao streaming ASR
+  -> VoicePrint identity resolution
+  -> Dialogue + Profile
+  -> OpenAI-compatible LLM
+  -> Doubao streaming TTS
+  -> Browser playback
 ```
 
-### 主要文件
-
-- `src/newtalk/app.py`：应用创建、健康检查和静态页面挂载。
-- `src/newtalk/config.py`：P1 环境变量加载和校验。
-- `src/newtalk/logging_config.py`：Newtalk 应用日志配置。
-- `src/newtalk/transport/websocket.py`：WebSocket 生命周期和 P1 消息协议。
-- `web/index.html`：连接测试页面。
-- `web/app.js`：浏览器 WebSocket 客户端。
-- `web/styles.css`：页面样式。
-- `tests/test_app.py`：HTTP 与静态页面测试。
-- `tests/test_websocket.py`：WebSocket 协议测试。
-- `tests/test_config.py`：配置和日志初始化测试。
-- `tests/integration/test_runtime.py`：真实服务进程、HTTP 和 WebSocket 集成测试。
-- `docs/protocol.md`：当前协议说明。
-- `docs/architecture.md`：当前架构边界。
-
-### 验证结果
-
-- `GET /health` 返回 `status=ok`、`service=newtalk`、`version=0.1.0`。
-- `GET /` 返回 `200` 和 `text/html`。
-- 真实网络 WebSocket 握手成功。
-- `hello -> ping -> pong` 消息往返成功。
-- `close -> closing -> code 1000` 正常关闭成功。
-- 集成测试自动启动和清理真实 Uvicorn 服务。
-- `pytest` 执行结果为 `15 passed`，无警告。
-
-### P1 结束时尚未实现
-
-- 文本聊天和对话 Turn。
-- LLM 及其 Provider 接口。
-- 麦克风采集、VAD 和 ASR。
-- TTS、音频流发送和浏览器播放。
-- 用户打断。
-- 摄像头、图片上传和 Vision/VLLM。
-- Identity、声纹、Memory 和 User Profile。
-- Tool Calling。
-- 持久化 Session、性能指标、Docker 和 Provider 配置系统。
-
-这些能力不是 P1 的缺陷，而是尚未开始对应 Part。当前不会提前定义完整 Provider 或 Manager 体系。
-
-## P2：文本聊天闭环
-
-### 目标
-
-在不接入真实模型的前提下，完成浏览器文本输入到流式回复显示的第一个纵向聊天闭环，并验证一次用户事件只创建一个 Turn。
-
-### 已完成
-
-- Web 提供文本输入、发送和流式消息显示。
-- `text_input` 使用必填 `event_id` 关联一个用户行为。
-- 每个有效事件创建包含唯一 `turn_id` 的 `Turn`。
-- Fake LLM 通过异步生成器稳定返回两个文本增量。
-- 服务端依次发送 `turn_started`、`text_delta` 和 `turn_completed`。
-- 相同 `event_id` 重发返回 `duplicate_event`，不创建第二个 Turn。
-- 相同文本使用不同 `event_id` 时正常创建两个独立 Turn。
-- 空文本、超长文本、生成失败和断开连接有明确边界。
-- Turn 失败后 WebSocket 保持可用。
-- WebSocket 生命周期、协议错误、文本事件处理和聊天核心分离。
-
-### 当前调用链
+长期记忆链路：
 
 ```text
-Web 文本输入
--> web/app.js 发送 text_input(event_id, text)
--> transport/websocket.py 路由事件
--> transport/text_chat.py 校验输入和幂等键
--> ChatService.create_turn(session_id, user_text)
--> FakeLLM.stream(user_text)
--> text_delta(turn_id, sequence, delta)
--> web/app.js 增量更新助手消息
--> turn_completed(turn_id, text)
+Member Turn completed
+  -> Memory Job outbox
+  -> MemOS Add Message
+  -> remote task polling
+  -> completed / failed
 ```
 
-### 主要文件
-
-- `src/newtalk/chat/models.py`：P2 Turn 数据边界。
-- `src/newtalk/chat/service.py`：Turn 创建和回复流组织。
-- `src/newtalk/chat/fake_llm.py`：确定性异步文本流。
-- `src/newtalk/transport/protocol.py`：协议版本和公共错误事件。
-- `src/newtalk/transport/text_chat.py`：文本事件校验和协议输出。
-- `src/newtalk/transport/websocket.py`：连接生命周期和事件路由。
-- `web/index.html`、`web/app.js`、`web/styles.css`：P2 聊天页面。
-- `tests/test_chat.py`：聊天核心测试。
-- `tests/test_websocket.py`：Turn、重复输入和失败协议测试。
-- `tests/integration/test_runtime.py`：真实进程文本聊天集成测试。
-
-### 验证结果
-
-- `pytest` 执行结果为 `23 passed`。
-- JavaScript 语法检查通过。
-- 真实浏览器自动连接并收到 `hello 0.2`。
-- 真实页面发送文本后收到两个 delta 和完成事件。
-- 桌面和 390px 移动视口布局通过检查。
-- 浏览器控制台没有 JavaScript warning 或 error。
-
-### 当前边界
-
-- Fake LLM 不是 Provider 接口，只是 P2 测试实现。
-- 每个 Turn 当前独立，不保存 Dialogue Context。
-- 同一连接内 Turn 目前顺序处理，不实现并发打断。
-- 不包含真实 LLM、Memory、ASR、TTS、Vision 或 Tool。
-
-## P3：第一个真实流式 LLM
-
-### 目标
-
-基于一次真实 OpenAI-compatible 流式调用定义聊天核心当前真正需要的最小模型契约，同时保持 WebSocket 和 Turn 不感知厂商协议。
-
-### 已完成
-
-- 定义 `ChatModel.stream(user_text)` 和 `ChatModel.aclose()` 最小契约。
-- Fake LLM 和 OpenAI-compatible LLM 由同一个 `ChatService` 调用。
-- 使用 `AsyncOpenAI` 和异步 SSE 迭代，不在事件循环中执行同步网络请求。
-- 支持 API Key、Base URL、模型名、静态 System Prompt 和超时配置。
-- 默认使用 Fake；只有显式配置 `NEWTALK_LLM_BACKEND=openai` 才创建真实客户端。
-- API Key 不进入 `AppConfig` 的字符串表示，`.env` 保持 Git 忽略。
-- `ChatService` 记录首 Token、流完成总耗时和失败日志。
-- 空文本流视为模型失败，并沿用 `turn_failed` 协议，不关闭 WebSocket。
-- 浏览器提前断开或停止消费时显式关闭异步生成器和底层 HTTP 流。
-- 应用关闭时通过生命周期钩子关闭模型客户端。
-- 增加默认跳过的 `live` 冒烟测试，避免 CI 或普通 pytest 产生 API 费用。
-
-### 当前调用链
-
-```text
-Web text_input
--> transport/websocket.py
--> transport/text_chat.py
--> ChatService.create_turn()
--> ChatService.stream_reply()
--> ChatModel.stream(user_text)
-   |-> FakeLLM.stream()                    默认测试路径
-   `-> OpenAICompatibleChatModel.stream()  真实异步 SSE 路径
--> text_delta
--> turn_completed / turn_failed
-```
-
-### 主要文件
-
-- `src/newtalk/chat/model.py`：P3 最小模型契约。
-- `src/newtalk/chat/openai_compatible.py`：第一个真实异步流式实现。
-- `src/newtalk/chat/service.py`：统一调用模型并记录 LLM 耗时。
-- `src/newtalk/config.py`：LLM 环境变量校验和 Secret 边界。
-- `src/newtalk/app.py`：Fake/真实模型装配和资源生命周期。
-- `src/newtalk/transport/text_chat.py`：流式消费和提前关闭资源释放。
-- `tests/test_openai_compatible.py`：模拟 SSE、消息参数和资源释放测试。
-- `tests/live/test_llm.py`：显式开启的真实 Provider 冒烟测试。
-
-### 验证结果
-
-- `pytest` 执行结果为 `33 passed, 1 skipped`。
-- 默认跳过项是会产生真实外部调用的 `live` 测试。
-- 模拟流验证 System/User 消息、增量过滤、流上下文退出和客户端关闭。
-- Fake 路径继续通过真实 Uvicorn 子进程和 WebSocket 集成测试。
-- DeepSeek `deepseek-v4-pro` 真实流式冒烟测试通过，收到 6 个文本增量。
-- 本次真实调用首 Token 为 `2564.0ms`，流完成总耗时为 `2609.9ms`。
-- 用户通过真实 Web 页面完成文本发送，页面能够逐步显示 DeepSeek 流式回复。
-
-### 当前边界
-
-- 每个 Turn 仍然独立，只发送当前用户文本，不包含 Dialogue Context。
-- System Prompt 是可选静态配置，不是 Dynamic Prompt。
-- 只有一个真实 OpenAI-compatible 实现，没有 Registry、动态 Provider 加载或第二个 LLM 对比。
-- 不包含 Tool Calling、Token 统计、重试策略、ASR、TTS、Vision 或 Memory。
-- 同一连接仍然顺序处理 Turn，不包含打断和并发生成。
-
-## P4：TTS 播放闭环
-
-### 目标
-
-让 LLM 流式文本进入真实 TTS，并让浏览器在完整回复结束前开始播放音频。
-
-### 已完成
-
-- 根据真实豆包 V3 双向流式调用定义最小 `TextToSpeech` 契约。
-- 实现 Fake TTS 和豆包 TTS，不建立动态 Provider 注册中心。
-- LLM 文本增量经过独立分段器进入 TTS 文本队列。
-- LLM 和 TTS 是同一 Turn 内的两个异步生产者，共用有序输出队列。
-- WebSocket 使用 JSON 传输音频元数据，使用二进制帧传输 PCM。
-- 浏览器使用 24kHz、16-bit、单声道 AudioWorklet 队列播放。
-- 浏览器提供本地停止播放，并在实际取出首批样本时上报耗时。
-- 服务端记录 `llm_first_token`、`tts_first_audio` 和 `browser_playback_started`。
-- TTS 失败产生 `audio_failed`，不影响文本继续形成 `turn_completed`。
-- Provider 会话或浏览器断开时，异步生成器负责取消任务和关闭连接。
-- 豆包 App ID 和 Access Token 不进入配置对象的 `repr`。
-- 豆包 WebSocket 默认禁用 Windows 系统代理，避免本机代理为实时链路增加约 4 秒延迟；需要时可显式开启。
-
-### 当前调用链
-
-```text
-text_input
--> ChatService.stream_turn
-   |-> ChatModel.stream -> text_delta
-   |-> StreamingTextSegmenter -> TTS text queue
-   `-> TextToSpeech.stream -> PCM frames
--> transport/text_chat.py
--> audio_start -> WebSocket binary frames -> audio_end
--> web/app.js -> pcm-player-worklet.js -> system output
--> playback_started -> service log
-```
-
-### 验证结果
-
-- 普通测试 `50 passed, 2 skipped`，live 测试不会在 CI 中产生费用。
-- 豆包真实 V3 冒烟测试成功返回 PCM，配置、鉴权、Resource ID 和音色有效。
-- 真实 Uvicorn 子进程完成 HTTP、JSON WebSocket 和二进制音频集成测试。
-- 浏览器实际收到并消费 Fake PCM，状态从缓冲进入播放完成。
-- 浏览器测得本次 Fake 链路播放开始时间为 `347.3ms`。
-- 代理隔离测试中，完整真实管线首字由 `5.76–6.07s` 恢复为 `1.42–2.08s`，豆包首音频增量约 `253ms`。
-- JavaScript 语法检查通过，浏览器控制台无 warning/error。
-
-### 当前边界
-
-- 浏览器停止播放只清空本地播放队列，不取消服务端 LLM/TTS；服务端取消属于 P5。
-- 同一连接仍顺序处理 Turn，不支持麦克风输入和用户语音打断。
-- 只支持 PCM；Opus 与音频格式协商尚未实现。
-- 豆包每个 Turn 新建一条 Provider WebSocket，尚未实现连接复用。
-- 真实豆包音频与真实 LLM 的浏览器听感需要用户手工确认。
-- Dialogue Context、Memory、ASR、Vision 和 Tool 仍未实现。
-
-## P5-A：麦克风、VAD、Fake ASR 与打断
-
-### 已完成
-
-- 浏览器麦克风重采样为 16kHz、单声道、PCM S16LE，并按 20ms 发送。
-- 固定 Silero VAD v6.2.1 ONNX 模型，双阈值、滑动窗口、pre-roll 和静音结束均在服务端执行。
-- 定义最小 `SpeechRecognizer` 契约和 Fake ASR，ASR Final 进入现有 ChatService。
-- 每条连接持有独立 VAD/采集状态，只允许一个活动 capture 和一个活动 Turn。
-- WebSocket 接收循环不再阻塞于聊天生成，当前 Turn 可被新文本或 `speech_start` 取消。
-- 单一发送队列按 `turn_id` 丢弃旧 LLM/TTS 的迟到结果。
-- 浏览器收到 `audio_stop` 时清空播放队列，系统“停止播放”按钮仍只处理本地播放。
-
-### 验证结果
-
-- `63 passed, 2 skipped`，覆盖 VAD 边界、静音、音频会话、语音唯一 Turn 和 barge-in。
-- 真实 Silero ONNX 对 1 秒全零 PCM 推理完成，未产生误触发。
-- JavaScript 语法检查、`git diff --check` 和真实 Uvicorn HTTP/WebSocket 集成测试通过。
-- 用户通过 Chrome 完成真实麦克风测试，VAD 能检测声音并在静音后形成唯一 Fake ASR Turn。
-
-### 当前边界
-
-- Fake ASR 只返回 `.env` 中的固定测试文本，不代表语音内容识别正确。
-- 豆包真实流式 ASR 尚未接入，用户暂时不需要提供 App ID、Access Token 或 Resource ID。
-- Fake ASR 阶段不验证识别准确率；扬声器回声和真实流式识别下的打断听感留到 P5-B 验收。
-
-## P5-B：豆包双向流式 ASR
-
-### 已实现
+主 LLM 可按需调用 `memory_search`。普通聊天不强制等待 MemOS，Guest 不加载或写入成员长期记忆。
 
-- 根据官方 V3 协议实现鉴权头、gzip JSON 请求、PCM 音频包、序列号和服务响应解析。
-- 浏览器 20ms PCM 在 Provider 内聚合为 100ms 包；最后一包使用负序列结束 utterance。
-- 豆包 partial/final 映射到现有 `SpeechRecognizer` 契约，只有 final 创建 Turn。
-- 默认 `enable_nonstream=false`，继续由本地 Silero 决定打断和静音结束。
-- 记录 `asr_first_result` 和 `asr_stream_completed` 耗时日志。
-- 鉴权、协议或超时失败通过 `asr_failed` 返回浏览器，WebSocket 保持可用。
-- Fake ASR 保留为 CI 默认路径，普通测试不调用外部服务或消耗额度。
-
-### 人工验收
-
-- 用户在火山控制台开通正确项目的 ASR 资源后，Chrome 已能返回真实中文识别文本。
-- 握手失败时已验证火山错误正文和 `logid` 会进入服务日志，便于区分代码错误与资源未授权。
-- 耳机/扬声器回声场景和完整 ASR→LLM→TTS 延迟仍作为后续持续观测项，不阻塞 P5-B 完成。
-
-## P6：Session 和有限 Dialogue Context
-
-### 已实现
-
-- 每条 WebSocket 创建独立 `DialogueSession`，生命周期与当前连接一致。
-- `Turn.messages` 保存创建时的不可变消息快照，LLM 不再只接收单条用户字符串。
-- OpenAI-compatible 模型发送 System Prompt、历史用户/助手消息和当前用户输入。
-- 只有成功完成的 Turn 提交历史；被打断或失败的 Turn 不污染后续 Context。
-- 默认窗口最多 8 个完成轮次，并受 12000 字符总量限制；保留连续的最新对话后缀。
-- 不同 WebSocket 连接的 Dialogue History 相互隔离。
-- 记录 `context_ready` 的消息数、字符数和准备耗时。
-
-### 人工验收
-
-- 用户在同一浏览器连接中依次发送“请记住，我叫小明”和“我叫什么名字”，模型能够根据上一轮对话正确回答。
-- 该结果确认完整回复会提交到当前连接的 `DialogueSession`，下一轮创建时能够进入 LLM 消息上下文。
-
-### 当前边界
-
-- Session 尚不持久化，浏览器刷新或断开后历史清空。
-- 没有摘要和 Token 级压缩；P6 只使用有限轮次和字符预算。
-- 没有长期 Memory、User Profile、Identity 或 Tool 消息。
-
-## P7.1：Device、PostgreSQL 与成员管理
-
-### 已实现
-
-- 使用 PostgreSQL、异步 SQLAlchemy 和 Alembic 建立 `devices`、`identities` schema。
-- Web Device 使用随机 MAC 样式 `device_id`；设备凭据和恢复码只在服务端保存摘要。
-- HttpOnly Cookie 承载设备凭据，家庭恢复和恢复码轮换都会使旧值失效。
-- 恢复接口按客户端地址限速；成员 API 的每次查询和修改都限定当前 `device_id`。
-- Web 增加创建家庭、恢复家庭、恢复码一次性展示和成员新增/编辑/删除界面。
-- WebSocket 建连前验证设备 Cookie，并在 `hello` 中声明当前 `device_id`。
-- 新增 `/ready` 数据库就绪检查；应用不会在启动时隐式建表。
-- CI 增加 PostgreSQL Service、Alembic migration 和真实 Store 隔离测试。
-
-### 当前边界
-
-- P7.1 删除成员时还没有 VoicePrint、Profile 或 MemOS 外部数据，因此只删除本地成员记录；完整跨服务删除在 P7.6 实现。
-- 文本 Turn 尚未选择成员，语音 Turn 尚未执行声纹识别；P7.1 只建立可靠数据归属。
-- 本机已安装 PostgreSQL 17.11，并完成正式库和测试库 migration；普通单元测试仍使用内存 Store，不使用 SQLite。
-
-## P7.2：独立 VoicePrint 服务（已完成）
-
-### 已实现
-
-- `services/voiceprint` 使用独立 FastAPI 进程、依赖配置和 Dockerfile，主服务不加载 Torch/ModelScope。
-- CAM++ Embedder 按服务生命周期加载 `iic/speech_campplus_sv_zh-cn_3dspeaker_16k`，测试使用明确标注的 Deterministic Embedder。
-- 三段 16kHz、单声道、PCM16 WAV 分别提取归一化 Embedding，取平均后再次归一化，每个 Identity 只保留一个模板。
-- PostgreSQL 模板更新、查询和删除都同时限定 `device_id`、`identity_id` 与 Active 状态。
-- Newtalk 增加可关闭的内部 HTTP Client；声纹服务不可用时仅声纹操作返回 `503`，聊天不受影响。
-- Web 成员卡增加三段 4 秒录音、录入、重新录入和删除入口；录音前停止聊天麦克风和当前 TTS。
-- 自动测试覆盖服务 Token、音频格式、三段注册、家庭隔离、识别、删除、主服务成员归属和故障降级。
-
-### 真实环境验收
-
-- 本机 `.venv` 已安装 ModelScope、PyTorch 和音频依赖，真实 CAM++ 模型完成下载并在 CPU 启动。
-- 浏览器已完成三段家庭录音；PostgreSQL 已保存对应成员的 512 维 CAM++ 模板。
-- Docker Desktop 当前不是本地运行前提；容器镜像构建留待 Docker 运行时恢复后复验。
-- 相似度分数、阈值和有限汇合期限将在 P7.3 使用真实识别样本继续校准。
-- P7.2 不把识别结果写入 Turn；ASR/VoicePrint 有限期限汇合属于 P7.3。
-
-## P7.3：说话人汇合与多人 Dialogue（已完成）
-
-### 已实现
-
-- 同一 `utterance_id` 的 PCM 同时进入流式 ASR 和 VoicePrint，ASR partial/final 不等待声纹即可展示。
-- ASR Final 创建 Turn 前有限等待声纹；匹配成功映射为当前家庭 Member，超时、低分、过短、服务失败或身份不存在降级为 Guest。
-- VoicePrint 结果由服务端按 `device_id` 再次读取 Identity，客户端不能为语音 Turn 指定身份。
-- Member 共享 Family Dialogue，用户消息带姓名和家庭关系标签；Guest 使用独立 Dialogue，互不读取历史。
-- 文本输入提供 Member/Guest 显式选择，并使用与语音相同的 Turn 身份字段和 Dialogue 边界。
-- `turn_started` 返回固定 speaker，`speaker_resolved` 返回匹配结果、原因和识别耗时。
-- 自动测试覆盖 Member 匹配、Guest 超时降级、家庭 Dialogue 共享、Guest 隔离、无效身份拒绝和停止录音时 utterance 收尾。
-
-### 验证与当前边界
-
-- 主项目自动测试为 105 项通过、3 项 live/环境跳过；VoicePrint 服务为 3 项通过、1 项 CAM++ 环境测试跳过。
-- P7.2 已验证真实 CAM++ CPU 加载、浏览器三段录入和 512 维模板写入；真实家庭环境的同人/异人分数、阈值和 `1.5s` 汇合期限保留为持续校准项。
-- Family/Guest Dialogue 仍与当前 WebSocket 同生命周期，刷新恢复属于后续 Session 持久化阶段。
-- Profile 和长期 Memory 尚未接入，P7.3 只保证 Turn 的身份和短期上下文归属正确。
-
-## P7.4：按 Identity 隔离的 Profile Snapshot（待真实验收）
-
-### 已实现
-
-- 新增最小 `ProfileProvider` 契约、关闭实现和异步 `MemosProfileProvider`，没有提前扩展为完整 Memory Provider 世界。
-- MemOS 鉴权使用服务端 `Authorization: Token`；读取只请求 `profile` 类型。
-- 后端根据 `device_id + identity_id` 生成稳定的 MemOS `user_id`，不接受浏览器或 LLM 指定 Scope。
-- WebSocket 启动后异步预取当前家庭 Active Identity；缺少 Profile 时绑定配置的 Template 后重新读取。
-- `SessionProfileCache` 按 `identity_id` 保存不可变 Snapshot；连接建立后新增的成员在第一次选择时异步调度加载。
-- Member Turn 只把当前说话人已经就绪的 Profile 作为有独立字符预算的 `system` 消息注入模型。
-- Guest 不绑定、不加载、不注入 Profile；关闭 Memory、预取未完成和 Provider 失败均按无 Profile 继续聊天。
-- WebSocket 协议升级为 `0.7`，`hello` 暴露 Profile 是否启用，`turn_started` 暴露本 Turn 的 ready/field count。
+## 已验收能力
 
-### 自动验证与当前边界
+- 文本与语音均可完成流式问答。
+- 豆包 ASR/TTS 和 DeepSeek/OpenAI-compatible LLM 可真实调用。
+- 页面刷新后恢复当前设备的短期 Dialogue。
+- “新对话”清除当前 Session 的后端 Dialogue 与前端消息，不删除成员、声纹、Profile 和长期记忆。
+- AI 播放期间用户开口会触发 interruption，取消当前 TTS/Turn，并开始识别新语音。
+- 声纹服务以 CAM++ 启动时可以录入模板并识别成员。
+- Memory Center 可以管理 Profile 和 MemOS 记忆。
+- 日志可以查看 ASR 首结果、身份解析、LLM 首字、TTS 首包和播放完成时延。
+- 不同 Device/Family 的持久化数据按数据库关系隔离。
+- 同一 Device 内 Member/Guest 共用短期 Dialogue；声纹降级不会切断最近上下文，Profile/Memory 仍按成员隔离。
 
-- 主项目 121 项测试中 118 项通过、3 项显式 live/环境测试跳过。
-- 测试覆盖 MemOS Token、读取/绑定/再读取、Profile-only 请求、预取非阻塞、两成员不串、Guest 跳过、失败降级和 OpenAI-compatible system 消息顺序。
-- 本轮尚未使用真实 MemOS API Key 和 Profile Template 验收，因此外部账号权限、真实字段树和响应内容仍待浏览器/日志联调。
-- P7.4 不包含 `memory_search`、Tool Calling、长期记忆写入、Profile 自动更新或 Memory Center。
+## 已知边界
 
-## P7.5：按需 Memory Tool 与后台长期写入（待真实验收）
+### 被打断 Turn 不写入上下文
 
-### 已实现
+当前只有完整完成的 Turn 才提交 Dialogue。取消、失败和播放中被打断的 Turn 不恢复、不进入后续 Prompt。这保证了状态简单，但可能使“英文呢”“继续”等下一轮追问缺少指代对象。
 
-- 扩展最小 `ChatModel` 契约，支持流式 `ModelToolCall`、内部 Tool Result 和第二轮模型调用。
-- OpenAI-compatible 适配器聚合分片 Tool Call 参数，并拒绝文字与 Tool Call 混合、多个 Tool Call 或不完整调用。
-- 只有 Memory 已开启的 Member Turn 才注册 `memory_search`；Guest 和关闭 Memory 时模型看不到该工具。
-- 每个 Turn 最多查询一次，第二轮不再提供 Tool；只有最终文本进入 TTS。
-- 查询 Scope 只使用不可变 Turn 的 `device_id + speaker_identity_id`，模型参数只能提供 `query`。
-- MemOS Search 结果只包含事实、偏好和事件，按相关度排序并受条数与字符预算限制。
-- 查询失败转为受控 Tool Result，不关闭 WebSocket，也不让 Memory 成为普通聊天硬依赖。
-- 成功提交 Dialogue 的 Member Turn 写入 PostgreSQL `memory_jobs`；Guest、取消、失败和旧 Turn 不入队。
-- 后台 Worker 使用 `FOR UPDATE SKIP LOCKED`、领取租约、有限重试和 `turn_id` 唯一约束调用 MemOS Add Message 异步模式。
-- Alembic 新增 `20261004_03_memory_jobs`；应用生命周期负责启动与停止 Worker。
-
-### 自动验证与当前边界
-
-- 本机 PostgreSQL 应用到 `20261004_03 (head)`，主项目 137 项中 135 项通过、2 项付费 Provider live 测试跳过。
-- VoicePrint 4 项测试在同一真实 PostgreSQL 上全部通过；`pip check` 和 Python compileall 通过。
-- 测试覆盖 Tool 分片、Scope 防伪、Guest 隔离、Memory 失败降级、写入去重、最终失败、PostgreSQL 领取与租约恢复。
-- 真实 MemOS API Key/Profile Template 尚未配置，因此真实 Profile/Search/Add Message、任务状态和远端幂等仍待联调。
-- P7.5 不包含 Memory Center、Profile 字段锁定、记忆人工编辑删除、成员跨服务完整删除和 Session 恢复。
-
-## P7.6：Memory Center 与成员完整删除
-
-### 已实现
-
-- Web 增加按成员管理的 Memory Center，可查看、筛选、搜索、编辑和删除长期记忆。
-- Profile 支持查看、添加、修改、删除和锁定；手工变更同步到活动 WebSocket 的 Profile Snapshot。
-- 所有管理接口先用 HttpOnly Device Cookie 验证家庭，再校验 Active Identity 归属；浏览器不能指定 MemOS `user_id`。
-- 修改或删除单条 Memory 前，Provider 先分页列出该成员记忆并确认 `memory_id` 所有权。
-- 成员删除返回 `202 deletion_pending`，立即从成员列表、聊天和 Memory API 隐藏。
-- PostgreSQL `identity_deletion_jobs` 持久化跨服务删除任务；Worker 清理 VoicePrint、MemOS 全部 Memory 和 Profile，全部成功后再硬删除 Identity。
-- 删除任务支持 `FOR UPDATE SKIP LOCKED`、领取租约、有限重试和并发重复请求保护。
-- Alembic 已升级到 `20261004_04`，项目版本升级为 `0.12.0`。
-
-### 自动验证与当前边界
-
-- Python 全量测试通过；JavaScript 三个入口语法检查通过。
-- 真实 PostgreSQL 上迁移成功，Identity 隔离、Memory Job 与 Identity Deletion Job 三项集成测试通过。
-- 自动测试覆盖家庭越权拒绝、Memory CRUD、Profile 锁定、活动缓存更新、MemOS 请求体/所有权校验、删除失败重试与最终清理。
-- Memory Provider 关闭时 Memory Center 返回 503，聊天继续正常；删除成员时跳过未启用 Provider。
-- 真实 MemOS 账号仍未配置，因此 Profile/Edit/Get、Memory Get/Search/Update/Delete 和跨服务删除仍需真实浏览器验收。
-- P7.6 不包含页面刷新后的 Dialogue 恢复、Vision 或删除任务管理后台。
-
-## P7.7：Session/Dialogue 刷新恢复
-
-### 已实现
-
-- PostgreSQL 新增 `dialogue_sessions` 和 `dialogue_exchanges`；一个 `device_id` 唯一对应一个当前 Dialogue Session。
-- WebSocket 鉴权后先打开该家庭 Session，再发送带稳定 `session_id` 和 `dialogue` 快照的 `hello`。
-- Family 与 Guest 分别恢复到独立 `DialogueSession`，继续沿用最近轮数和总字符预算。
-- 只有当前活动 Turn 成功完成并提交到内存窗口后才写入 PostgreSQL；取消、失败、旧 Turn 和进行中 Turn 不持久化。
-- `turn_id` 唯一约束实现幂等；同一 Session 追加时锁定 Session 行，避免多页面并发提交破坏窗口裁剪。
-- 浏览器收到 `hello.dialogue.items` 后重建最近消息；空快照也会清理本地旧视图。
-- 成员完整删除会同时清理该成员的持久化 Dialogue 和活动 Family 缓存，Guest 交换不受影响。
-- Member Turn 完成提交前重新校验 Active Identity，覆盖“删除 Worker 已清理、旧 Turn 随后完成”的竞态。
-- WebSocket 协议升级为 `0.8`，Alembic 升级到 `20261004_05`，项目版本升级为 `0.13.0`。
-
-### 自动验证与当前边界
-
-- 主项目在真实 PostgreSQL 下 `148 passed, 2 skipped`；跳过项为显式开启的付费 LLM/TTS live 测试。
-- VoicePrint 子服务 `4 passed`；Python compileall、JavaScript 语法检查、`pip check` 和 `git diff --check` 均通过。
-- 自动测试覆盖同设备恢复、稳定 Session ID、Family/Guest 分窗、滑动裁剪、重复 Turn、不同设备隔离和成员删除清理。
-- 真实浏览器验证 Member 文本交换在刷新后恢复，刷新前后 `session_id` 一致；390px 视口无横向溢出且控制台无 warning/error。
-- Dialogue 持久化失败会记录异常但不撤销已经完成的用户回复；本次连接内上下文仍可继续使用。
-- 第一版不提供跨页面实时消息广播；两个页面在下一次刷新或重连时读取数据库中的最新窗口。
-- Guest 仍是每个家庭的一条共享 Guest 短期窗口，不区分多位未知访客。
-- P7.7 不包含 Vision、全部 Session 历史列表或任意 Session ID 选择。
-
-## 下一阶段
-
-语音打断链路已补齐“服务端生成完成、浏览器仍在播放缓冲 PCM”的生命周期：浏览器在 `vad_speech_start` 时立即清空 AudioWorklet 队列，并通过 `playback_drained` 回执告知服务端播放真正结束；服务端在回执前保留播放流状态，因此用户开口时即使旧 Turn 已完成，仍会发送 `audio_stop`。WebSocket 协议升级为 `0.9`，真实浏览器打断已由用户验收通过。
-
-声纹服务已将录入与识别的最短音频时长拆开：三段录入样本继续要求至少 `2` 秒，日常识别默认允许 `0.8` 秒，低于识别下限才返回 `422`。该调整不补静音、不修改 CAM++ 模型，也不要求重新录入已有模板。
-
-MemOS 异步任务状态机已补齐：迁移 `20261015_06` 增加 `submitted`，`/add/message` 返回的 `task_id` 会先落 PostgreSQL，再通过 `/get/status` 跟踪到远端 `completed/failed`。服务重启和状态查询短暂失败只恢复查询，不重复 Add Message；真实 PostgreSQL 迁移与恢复领取测试通过。官方接口没有声明幂等键，因此远端接收请求但本地尚未保存响应时的极小崩溃窗口仍然存在。
-
-本轮完成后的自动验证为主项目 `146 passed / 7 skipped`、VoicePrint `7 passed / 1 skipped`；Memory Job 使用本机 PostgreSQL 的独立集成测试通过，数据库 revision 为 `20261015_06 (head)`，Python 编译、前端语法、依赖和差异检查通过。
-
-下一阶段为 P7.8 Web 产品界面完善，再进入 P8 Vision。P7.8 保持当前原生 HTML/CSS/JavaScript 技术栈，重点整理聊天、成员、声纹、Profile、Memory Center、服务状态和开发日志的信息层级，不在本阶段迁移前端框架。
-
-P7.8 已补充“新对话”操作：页面清除当前 Session 的全部短期 Dialogue 和可见消息，服务端同步删除 PostgreSQL 中的 Family/Guest 交换及活动缓存，刷新后不会恢复已清记录；Profile、MemOS 长期记忆、成员和声纹均保留。WebSocket 协议升级为 `0.10`。主测试集 `151 passed / 7 skipped`，Dialogue 真实 PostgreSQL 测试 `2 passed`。
-
-可观测性补充每 Turn 单行 `turn_latency_summary`：统一记录来源、说话人类型、上下文与 Prompt 大小、输入/回复长度、文本分片、音频帧、首字、首音频、音频完成和服务端总耗时；完成、失败和取消使用同一日志结构，默认不记录聊天正文。
-
-P7.8 完成后进入 P8：以统一聊天输入实现摄像头/图片理解，不复用旧小智“图片转描述后伪装文本”的链路。
-
-P7 Memory 已确认第一版设计基线，并已合并记录在 [`P7_DESIGN.md`](P7_DESIGN.md)：
-
-- Dialogue 负责当前 Session 的短期上下文。
-- Profile 保存稳定资料，Session 建连后在后台按 `identity_id` 分别预取和缓存；Turn 不等待远程 Profile 查询。
-- 主 LLM 按需调用 `memory_search` 查询 MemOS，不增加独立 Memory Router。
-- Turn 完成后由后台 Memory Pipeline 写入 MemOS 和更新 Profile。
-- 增加 Memory Center，用于查看、搜索、编辑、删除、纠正和锁定资料。
-- Memory 可关闭，Guest 和关闭 Memory 的聊天链路都不依赖 MemOS。
-- Legacy 只接入了 Add Message、Search Memory 和异步任务轮询；当前官方文档的完整能力已在后续讨论中核对。
-
-后续讨论又确认：
-
-- Web `device_id` 延续小智概念，使用服务端签发的随机 MAC 样式标识；浏览器数据清除后使用家庭恢复码重新绑定。
-- P7 持久化数据库直接使用 PostgreSQL，不先以 SQLite 作为正式数据库。
-- 成员删除的产品语义为删除声纹、Profile、MemOS 记忆和本地成员数据。
-- 声纹能力在 Newtalk 同一仓库内重新实现为独立进程，参考 3D-Speaker/CAM++，不继续依赖外部 voiceprint-api 项目或其 MySQL。
-- MemOS 官方文档已确认 Get、Update、Delete、Profile Template 绑定、字段编辑/锁定和 Profile 删除 API，能够支撑规划中的 Memory Center 和 Profile 自动维护。
-
-## 变更记录
-
-| 日期 | Part | 内容 | 验证 |
-| --- | --- | --- | --- |
-| 2026-08-14 | P1 | 建立独立仓库、配置、日志、FastAPI、静态 Web 和 WebSocket 生命周期 | 15 项测试通过，包含真实服务 HTTP/WS 集成测试 |
-| 2026-08-14 | P1 工程流程 | 加入 GitHub Actions CI 和可调整的默认开发流程 | PR #1 CI 通过并合并到 main |
-| 2026-08-15 | P2 | 建立唯一 Turn、Fake LLM 流式回复和 Web 文本聊天闭环 | 23 项测试及真实浏览器桌面/移动验证通过 |
-| 2026-08-15 | P3 | 增加最小 ChatModel 契约、异步 OpenAI-compatible 流和 LLM 耗时日志 | 33 项通过；DeepSeek live 测试和真实 Web 流式聊天通过 |
-| 2026-08-16 | P4 | 增加豆包双向流式 TTS、PCM 二进制协议和 AudioWorklet 播放 | 50 项通过；豆包 live 与浏览器播放验证通过 |
-| 2026-08-18 | P5-A | 增加麦克风、Silero VAD、Fake ASR、可取消 Turn 和服务端 barge-in | 63 项通过；Silero 静音推理与协议集成测试通过 |
-| 2026-08-18 | P5-B | 增加豆包双向流式 ASR 协议、partial/final、失败反馈和耗时日志 | 76 项通过，2 项 live 跳过；真实 Chrome 中文识别通过 |
-| 2026-08-27 | P6 | 增加连接级 DialogueSession、有限上下文窗口和完成轮次提交 | 87 项通过，2 项 live 跳过；真实浏览器多轮上下文验收通过 |
-| 2026-08-29 | P7.1 | 增加 PostgreSQL/Alembic、Device Cookie/恢复码、成员隔离 CRUD 与管理页面 | 真实 PostgreSQL 下 95 项通过、2 项 live 跳过；正式 `/ready` 数据库检查、浏览器桌面交互与 390px 移动布局通过 |
-| 2026-08-29 | P7.2 | 增加独立 VoicePrint 服务、三段声纹录入/删除、家庭范围模板和 Web 录音界面 | 主项目 99 项通过、3 项 live/环境跳过；声纹服务测试通过；真实 CAM++ CPU 加载和 512 维家庭模板写入通过 |
-| 2026-09-07 | P7.3 | 增加 ASR/VoicePrint 有限汇合、Member/Guest Turn 映射和多人 Dialogue | 主项目 105 项通过、3 项跳过；声纹服务 3 项通过、1 项跳过；协议和前端语法检查通过 |
-| 2026-09-07 | P7.4 | 增加 MemOS Profile 懒绑定、连接后台预取、Identity Snapshot 隔离和无阻塞降级 | 主项目 118 项通过、3 项跳过；真实 MemOS 账号验收待完成 |
-| 2026-10-04 | P7.5 | 增加主 LLM `memory_search`、服务端 Scope、PostgreSQL Outbox 和 MemOS 后台写入 | 主项目 135 项通过、2 项 live 跳过；声纹服务 4 项通过；真实 MemOS 账号验收待完成 |
-| 2026-10-04 | P7.6 | 增加 Memory Center、Profile 锁定、记忆人工管理和持久化成员完整删除 | 全量测试通过；3 项真实 PostgreSQL 集成测试通过；真实 MemOS 验收待完成 |
-| 2026-10-04 | P7.7 | 增加 PostgreSQL Dialogue Session、刷新恢复、Family/Guest 分窗和成员删除清理 | 主项目 148 项通过、2 项付费 live 跳过；5 项真实 PostgreSQL 集成测试通过 |
-| 2026-10-15 | P7 稳定性收尾 | 修复浏览器真实语音打断、短语音声纹识别下限，补齐 MemOS 异步任务状态恢复与运行日志 | 主项目 146 项通过、7 项按环境跳过；VoicePrint 7 项通过、1 项环境跳过；真实 PostgreSQL Memory Job 集成测试通过 |
+是否保存用户问题及已播放回复片段仍需确定，见后续规划 B2。
+
+### 音频工程化仍有限
+
+- 浏览器具备基础回声消除约束，但没有工程级 AEC 与复杂环境稳定性保证。
+- VAD 阈值当前为固定配置，没有自动噪声校准。
+- 短语音可能因有效音频不足收到 VoicePrint 422，需要更好的质量提示与补帧策略。
+- VoicePrint 单模型实例的并发容量尚未完成压测。
+
+### 外部服务边界
+
+- MemOS、豆包和 LLM 均为外部依赖，需要正确配置和网络可用。
+- Memory Job 已跟踪远端任务状态；若进程恰好在 MemOS 接收请求后、保存 `task_id` 前崩溃，因官方接口没有明确幂等键，仍存在极小概率重复投递。
+- 豆包 ASR 每个 utterance 建立独立 WebSocket 连接，当前没有连接池复用。
+
+## 前端状态
+
+P7.8 已完成第一版可用界面：
+
+- 首页
+- 对话
+- 家庭成员与声纹录入
+- Profile 与 Memory Center
+- 服务状态、空状态与错误提示
+- 新对话、播放控制和说话人选择
+
+当前前端仍为单页原生 Web，实现以现有 API 为准。后续界面调整应优先服务于新的后端状态，不在没有明确收益时迁移框架。
+
+## 下一步
+
+优先讨论并确认：
+
+1. 被打断 Turn 应保存哪些内容。
+2. 音频质量诊断、动态 VAD 与 AEC 的投入范围。
+3. VoicePrint 云端容量目标。
+
+Vision、生产 CD 和更复杂的意图路由均不是当前自动进入开发的阶段。

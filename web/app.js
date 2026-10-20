@@ -1,5 +1,6 @@
 import {initializeIdentity, selectedTextSpeaker} from './identity.js?v=20261019.1';
-import {initializeMemoryCenter} from './memory-center.js?v=20261019.1';
+import {initializeMemoryCenter} from './memory-center.js?v=20261019.3';
+import {initializeCustomSelects} from './custom-select.js?v=20261019.2';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
@@ -57,12 +58,12 @@ function showView(viewName, {updateHash = true, moveFocus = true} = {}) {
 function initializeHomeShell() {
     const hour = new Date().getHours();
     const greeting = hour < 6
-        ? '夜深了，慢慢说。'
+        ? '夜深了。'
         : hour < 12
-            ? '早上好，今天想聊什么？'
+            ? '早上好。'
             : hour < 18
-                ? '下午好，欢迎回来。'
-                : '晚上好，今天过得怎么样？';
+                ? '下午好。'
+                : '晚上好。';
 
     greetingTitle.textContent = greeting;
     for (const trigger of viewTriggers) {
@@ -379,28 +380,40 @@ function appendMessage(role, text, meta, lane = null) {
     const item = document.createElement('li');
     const heading = document.createElement('div');
     const roleLabel = document.createElement('span');
+    const stateLabel = document.createElement('span');
     const metaLabel = document.createElement('code');
     const content = document.createElement('p');
 
     item.className = `message ${role}`;
     if (lane) item.dataset.lane = lane;
     heading.className = 'message-heading';
-    roleLabel.textContent = role === 'user' ? 'YOU' : 'NEWTALK';
+    roleLabel.textContent = role === 'user' ? '你' : 'Newtalk';
     roleLabel.className = 'message-role';
-    metaLabel.textContent = meta;
+    stateLabel.className = 'message-state';
+    stateLabel.hidden = true;
+    metaLabel.textContent = meta || '';
     content.className = 'message-content';
     content.textContent = text;
-    heading.append(roleLabel, metaLabel);
+    heading.append(roleLabel, stateLabel, metaLabel);
     item.append(heading, content);
     messageList.append(item);
     item.scrollIntoView({block: 'nearest'});
     return item;
 }
 
+function setMessageState(message, state, label = '') {
+    if (!message) return;
+    message.dataset.state = state;
+    const stateLabel = message.querySelector('.message-state');
+    if (!stateLabel) return;
+    stateLabel.textContent = label;
+    stateLabel.hidden = !label;
+}
+
 function markStreamingMessagesInterrupted() {
     for (const item of messagesByTurn.values()) {
         if (item.dataset.state === 'streaming') {
-            item.dataset.state = 'failed';
+            setMessageState(item, 'failed', '连接中断');
             const content = item.querySelector('.message-content');
             if (!content.textContent) content.textContent = '连接中断，回复未完成。';
         }
@@ -453,7 +466,7 @@ function handleIncoming(payload) {
         if (message) {
             message.querySelector('.message-role').textContent = payload.matched
                 ? payload.display_name
-                : 'GUEST';
+                : '访客';
             message.dataset.lane = payload.matched ? 'family' : 'guest';
             voiceMessagesByUtterance.delete(payload.utterance_id);
         }
@@ -471,7 +484,7 @@ function handleIncoming(payload) {
 
     if (payload.type === 'turn_cancelled') {
         const message = messagesByTurn.get(payload.turn_id);
-        if (message) message.dataset.state = 'failed';
+        setMessageState(message, 'failed', '已中断');
         return;
     }
 
@@ -485,7 +498,7 @@ function handleIncoming(payload) {
         turnStartedAt.set(payload.turn_id, performance.now());
         const lane = payload.speaker?.guest === false ? 'family' : 'guest';
         const message = appendMessage('assistant', '', payload.turn_id.slice(0, 8), lane);
-        message.dataset.state = 'streaming';
+        setMessageState(message, 'streaming', '正在生成');
         messagesByTurn.set(payload.turn_id, message);
         return;
     }
@@ -500,16 +513,19 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'audio_start') {
+        setMessageState(messagesByTurn.get(payload.turn_id), 'speaking', '正在播报');
         audioPlayer.begin(payload);
         return;
     }
 
     if (payload.type === 'audio_end') {
+        setMessageState(messagesByTurn.get(payload.turn_id), 'completed');
         audioPlayer.end(payload);
         return;
     }
 
     if (payload.type === 'audio_failed') {
+        setMessageState(messagesByTurn.get(payload.turn_id), 'failed', '播报失败');
         audioPlayer.fail();
         return;
     }
@@ -518,7 +534,7 @@ function handleIncoming(payload) {
         const message = messagesByTurn.get(payload.turn_id);
         if (message) {
             message.querySelector('.message-content').textContent = payload.text;
-            message.dataset.state = 'completed';
+            if (message.dataset.state !== 'speaking') setMessageState(message, 'completed');
         }
         return;
     }
@@ -528,7 +544,7 @@ function handleIncoming(payload) {
         const message = messagesByTurn.get(payload.turn_id);
         if (message) {
             message.querySelector('.message-content').textContent = '回复生成失败，请重新发送。';
-            message.dataset.state = 'failed';
+            setMessageState(message, 'failed', '生成失败');
         }
         audioPlayer.fail();
         return;
@@ -563,7 +579,7 @@ function renderDialogueSnapshot(items) {
         const user = appendMessage('user', item.user_text, item.turn_id.slice(0, 8), item.lane);
         user.querySelector('.message-role').textContent = item.speaker.display_name;
         const assistant = appendMessage('assistant', item.assistant_text, item.turn_id.slice(0, 8), item.lane);
-        assistant.dataset.state = 'completed';
+        setMessageState(assistant, 'completed');
         messagesByTurn.set(item.turn_id, assistant);
     }
 }
@@ -605,10 +621,20 @@ function connect() {
             audioPlayer.push(event.data);
             return;
         }
+        let payload;
         try {
-            handleIncoming(JSON.parse(event.data));
-        } catch {
+            payload = JSON.parse(event.data);
+        } catch (error) {
             appendProtocolEvent('incoming', event.data);
+            console.warn('WebSocket message is not valid JSON', error);
+            return;
+        }
+        try {
+            handleIncoming(payload);
+        } catch (error) {
+            const messageType = payload?.type || 'unknown';
+            console.error('WebSocket message handler failed', {payload, error});
+            appendProtocolEvent('system', `Message handling failed (${messageType})`);
         }
     });
 
@@ -710,5 +736,6 @@ micButton.addEventListener('click', async () => {
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
 initializeHomeShell();
+initializeCustomSelects();
 initializeMemoryCenter();
 initializeIdentity(() => connect());

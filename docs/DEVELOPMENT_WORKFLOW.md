@@ -99,8 +99,13 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 ```text
 安装 Newtalk 和开发依赖
 -> pip check
--> pytest
+-> Alembic migration
+-> Ruff 高置信静态检查
+-> 主项目 pytest + coverage 报告
+-> VoicePrint pytest
 ```
+
+Coverage 当前只生成趋势报告，不设置阻断阈值；Ruff 也只启用语法错误、未定义名称等高置信规则，避免把纯格式偏好当作交付问题。
 
 当前 CI 不使用真实 ASR、LLM、TTS、Vision 或 Memory 密钥。Provider 测试默认使用 Fake 或 Mock；真实 LLM 冒烟测试标记为 `live`，只有显式设置 `NEWTALK_RUN_LIVE_LLM=1` 才会产生外部调用和费用。
 
@@ -120,4 +125,4 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 
 ## 当前应用
 
-P1-P7 均按“功能分支 -> 本地测试 -> PR -> GitHub Actions CI -> 合并 main”交付。当前下一阶段为 P7.8 Web 产品界面完善；除非部署目标已经明确，否则合并只触发 CI，不触发生产部署。
+P1-P7.8 均按“功能分支 -> 本地测试 -> PR -> GitHub Actions CI -> 合并 main”交付。下一阶段需求需要先完成设计确认再创建分支；除非部署目标已经明确，否则合并只触发 CI，不触发生产部署。

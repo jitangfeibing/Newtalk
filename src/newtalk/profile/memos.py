@@ -17,7 +17,7 @@ from newtalk.profile.provider import (
 )
 
 
-class MemosProfileProvider:
+class MemosMemoryProvider:
     def __init__(
         self,
         *,
@@ -315,20 +315,14 @@ class MemosProfileProvider:
         scope: ProfileScope,
         memory_id: str,
     ) -> None:
-        page = 1
-        while True:
-            memories = await self.list_memories(
-                scope,
-                page=page,
-                size=50,
-                kinds=("fact", "preference", "event"),
-            )
-            if any(item.memory_id == memory_id for item in memories.items):
-                return
-            if page >= memories.pages:
-                break
-            page += 1
-        raise MemoryNotFoundError("Memory does not belong to this member")
+        payload = await self._get(f"/get/memory/{memory_id}")
+        data = payload.get("data")
+        if (
+            not isinstance(data, dict)
+            or data.get("id") != memory_id
+            or data.get("user_id") != scope.memos_user_id
+        ):
+            raise MemoryNotFoundError("Memory does not belong to this member")
 
     async def _expect_success(
         self,
@@ -346,28 +340,41 @@ class MemosProfileProvider:
             response = await self._client.post(path, json=body, headers=self._headers)
         except httpx.HTTPError as exc:
             raise ProfileProviderUnavailableError("MemOS is unavailable") from exc
-        if response.status_code >= 500:
-            raise ProfileProviderUnavailableError(
-                f"MemOS request failed ({response.status_code})"
-            )
-        if not response.is_success:
-            raise ProfileProviderError(f"MemOS request failed ({response.status_code})")
+        return _parse_response(response)
+
+    async def _get(self, path: str) -> dict[str, Any]:
         try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ProfileProviderError("MemOS returned invalid JSON") from exc
-        if not isinstance(payload, dict):
-            raise ProfileProviderError("MemOS response must be an object")
-        if payload.get("code") != 0:
-            message = payload.get("message")
-            raise ProfileProviderError(
-                message if isinstance(message, str) and message else "MemOS request failed"
-            )
-        return payload
+            response = await self._client.get(path, headers=self._headers)
+        except httpx.HTTPError as exc:
+            raise ProfileProviderUnavailableError("MemOS is unavailable") from exc
+        if response.status_code == 404:
+            raise MemoryNotFoundError("Memory does not belong to this member")
+        return _parse_response(response)
 
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _parse_response(response: httpx.Response) -> dict[str, Any]:
+    if response.status_code >= 500:
+        raise ProfileProviderUnavailableError(
+            f"MemOS request failed ({response.status_code})"
+        )
+    if not response.is_success:
+        raise ProfileProviderError(f"MemOS request failed ({response.status_code})")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ProfileProviderError("MemOS returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ProfileProviderError("MemOS response must be an object")
+    if payload.get("code") != 0:
+        message = payload.get("message")
+        raise ProfileProviderError(
+            message if isinstance(message, str) and message else "MemOS request failed"
+        )
+    return payload
 
 
 def _parse_search_items(data: dict[str, Any]) -> list[MemoryItem]:

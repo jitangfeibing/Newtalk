@@ -8,6 +8,10 @@ from newtalk.identity import (
     IdentityService,
     SqlAlchemyIdentityStore,
 )
+from newtalk.identity.recovery_limit import (
+    RecoveryRateLimitExceeded,
+    SqlAlchemyRecoveryRateLimiter,
+)
 
 
 DATABASE_URL = os.getenv("NEWTALK_TEST_DATABASE_URL")
@@ -44,5 +48,41 @@ def test_postgres_device_recovery_and_member_isolation() -> None:
             ).device_id == family_a.device.device_id
         finally:
             await service.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration URL is not configured")
+def test_postgres_recovery_rate_limit_survives_limiter_restart() -> None:
+    async def scenario() -> None:
+        client_key = f"integration-{os.getpid()}"
+        first = SqlAlchemyRecoveryRateLimiter(
+            DATABASE_URL,
+            max_attempts=2,
+            window_seconds=60,
+        )
+        await first.start()
+        try:
+            await first.clear(client_key)
+            await first.check(client_key)
+            await first.check(client_key)
+        finally:
+            await first.close()
+
+        second = SqlAlchemyRecoveryRateLimiter(
+            DATABASE_URL,
+            max_attempts=2,
+            window_seconds=60,
+        )
+        await second.start()
+        try:
+            with pytest.raises(RecoveryRateLimitExceeded):
+                await second.check(client_key)
+            await second.clear(client_key)
+            await second.check(client_key)
+        finally:
+            await second.clear(client_key)
+            await second.close()
 
     asyncio.run(scenario())

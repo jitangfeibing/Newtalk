@@ -163,296 +163,74 @@ class AppConfig:
         if dialogue_max_chars > 100000:
             raise ConfigError("NEWTALK_DIALOGUE_MAX_CHARS must not exceed 100000")
 
-        llm_backend = values.get("NEWTALK_LLM_BACKEND", DEFAULT_LLM_BACKEND).strip().lower()
-        if llm_backend not in VALID_LLM_BACKENDS:
-            allowed = ", ".join(sorted(VALID_LLM_BACKENDS))
-            raise ConfigError(f"NEWTALK_LLM_BACKEND must be one of: {allowed}")
+        (
+            llm_backend,
+            llm_api_key,
+            llm_base_url,
+            llm_model,
+            llm_system_prompt,
+            llm_timeout_seconds,
+        ) = _parse_llm_config(values)
 
-        llm_api_key = _optional_value(values.get("NEWTALK_LLM_API_KEY"))
-        llm_base_url = _optional_value(values.get("NEWTALK_LLM_BASE_URL"))
-        llm_model = _optional_value(values.get("NEWTALK_LLM_MODEL"))
-        llm_system_prompt = _optional_value(values.get("NEWTALK_LLM_SYSTEM_PROMPT"))
+        (
+            tts_backend,
+            tts_app_id,
+            tts_access_token,
+            tts_resource_id,
+            tts_voice_type,
+            tts_ws_url,
+            tts_audio_format,
+            tts_sample_rate,
+            tts_timeout_seconds,
+            tts_use_system_proxy,
+        ) = _parse_tts_config(values)
 
-        raw_timeout = values.get(
-            "NEWTALK_LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS)
-        ).strip()
-        try:
-            llm_timeout_seconds = float(raw_timeout)
-        except ValueError as exc:
-            raise ConfigError("NEWTALK_LLM_TIMEOUT_SECONDS must be a number") from exc
-        if llm_timeout_seconds <= 0:
-            raise ConfigError("NEWTALK_LLM_TIMEOUT_SECONDS must be greater than zero")
+        (
+            vad_model_path,
+            vad_threshold,
+            vad_threshold_low,
+            vad_min_silence_ms,
+            vad_pre_roll_ms,
+        ) = _parse_vad_config(values)
+        (
+            asr_backend,
+            asr_fake_text,
+            asr_api_key,
+            asr_resource_id,
+            asr_ws_url,
+            asr_packet_duration_ms,
+            asr_timeout_seconds,
+            asr_use_system_proxy,
+        ) = _parse_asr_config(values)
 
-        if llm_backend == "openai":
-            if not llm_api_key:
-                raise ConfigError(
-                    "NEWTALK_LLM_API_KEY is required when NEWTALK_LLM_BACKEND=openai"
-                )
-            if not llm_model:
-                raise ConfigError(
-                    "NEWTALK_LLM_MODEL is required when NEWTALK_LLM_BACKEND=openai"
-                )
+        (
+            database_url,
+            device_cookie_name,
+            device_cookie_secure,
+            device_cookie_max_age_days,
+            recovery_max_attempts,
+            recovery_window_seconds,
+        ) = _parse_identity_config(values)
+        (
+            voiceprint_url,
+            voiceprint_api_token,
+            voiceprint_timeout_seconds,
+            voiceprint_join_timeout_seconds,
+        ) = _parse_voiceprint_config(values)
 
-        tts_backend = values.get("NEWTALK_TTS_BACKEND", DEFAULT_TTS_BACKEND).strip().lower()
-        if tts_backend not in VALID_TTS_BACKENDS:
-            allowed = ", ".join(sorted(VALID_TTS_BACKENDS))
-            raise ConfigError(f"NEWTALK_TTS_BACKEND must be one of: {allowed}")
-
-        tts_app_id = _optional_value(values.get("NEWTALK_TTS_APP_ID"))
-        tts_access_token = _optional_value(values.get("NEWTALK_TTS_ACCESS_TOKEN"))
-        tts_resource_id = _optional_value(values.get("NEWTALK_TTS_RESOURCE_ID"))
-        tts_voice_type = _optional_value(values.get("NEWTALK_TTS_VOICE_TYPE"))
-        tts_ws_url = values.get("NEWTALK_TTS_WS_URL", DEFAULT_TTS_WS_URL).strip()
-        if not tts_ws_url.startswith(("ws://", "wss://")):
-            raise ConfigError("NEWTALK_TTS_WS_URL must be a WebSocket URL")
-
-        tts_audio_format = values.get(
-            "NEWTALK_TTS_AUDIO_FORMAT", DEFAULT_TTS_AUDIO_FORMAT
-        ).strip().lower()
-        if tts_audio_format != "pcm":
-            raise ConfigError("P4 only supports NEWTALK_TTS_AUDIO_FORMAT=pcm")
-
-        raw_sample_rate = values.get(
-            "NEWTALK_TTS_SAMPLE_RATE", str(DEFAULT_TTS_SAMPLE_RATE)
-        ).strip()
-        try:
-            tts_sample_rate = int(raw_sample_rate)
-        except ValueError as exc:
-            raise ConfigError("NEWTALK_TTS_SAMPLE_RATE must be an integer") from exc
-        if tts_sample_rate not in VALID_TTS_SAMPLE_RATES:
-            allowed = ", ".join(str(value) for value in sorted(VALID_TTS_SAMPLE_RATES))
-            raise ConfigError(f"NEWTALK_TTS_SAMPLE_RATE must be one of: {allowed}")
-
-        raw_tts_timeout = values.get(
-            "NEWTALK_TTS_TIMEOUT_SECONDS", str(DEFAULT_TTS_TIMEOUT_SECONDS)
-        ).strip()
-        try:
-            tts_timeout_seconds = float(raw_tts_timeout)
-        except ValueError as exc:
-            raise ConfigError("NEWTALK_TTS_TIMEOUT_SECONDS must be a number") from exc
-        if tts_timeout_seconds <= 0:
-            raise ConfigError("NEWTALK_TTS_TIMEOUT_SECONDS must be greater than zero")
-
-        tts_use_system_proxy = _boolean_value(
-            values.get("NEWTALK_TTS_USE_SYSTEM_PROXY"),
-            default=DEFAULT_TTS_USE_SYSTEM_PROXY,
-            name="NEWTALK_TTS_USE_SYSTEM_PROXY",
-        )
-
-        if tts_backend == "doubao":
-            required_tts_values = {
-                "NEWTALK_TTS_APP_ID": tts_app_id,
-                "NEWTALK_TTS_ACCESS_TOKEN": tts_access_token,
-                "NEWTALK_TTS_RESOURCE_ID": tts_resource_id,
-                "NEWTALK_TTS_VOICE_TYPE": tts_voice_type,
-            }
-            for name, value in required_tts_values.items():
-                if not value:
-                    raise ConfigError(
-                        f"{name} is required when NEWTALK_TTS_BACKEND=doubao"
-                    )
-
-        raw_vad_model_path = values.get("NEWTALK_VAD_MODEL_PATH")
-        vad_model_path = (
-            Path(raw_vad_model_path).expanduser().resolve()
-            if raw_vad_model_path
-            else DEFAULT_VAD_MODEL_PATH
-        )
-        vad_threshold = _float_value(
-            values,
-            "NEWTALK_VAD_THRESHOLD",
-            DEFAULT_VAD_THRESHOLD,
-        )
-        vad_threshold_low = _float_value(
-            values,
-            "NEWTALK_VAD_THRESHOLD_LOW",
-            DEFAULT_VAD_THRESHOLD_LOW,
-        )
-        if not 0 <= vad_threshold_low < vad_threshold <= 1:
-            raise ConfigError(
-                "VAD thresholds must satisfy 0 <= low < high <= 1"
-            )
-        vad_min_silence_ms = _positive_int_value(
-            values,
-            "NEWTALK_VAD_MIN_SILENCE_MS",
-            DEFAULT_VAD_MIN_SILENCE_MS,
-        )
-        vad_pre_roll_ms = _positive_int_value(
-            values,
-            "NEWTALK_VAD_PRE_ROLL_MS",
-            DEFAULT_VAD_PRE_ROLL_MS,
-        )
-
-        asr_backend = values.get(
-            "NEWTALK_ASR_BACKEND", DEFAULT_ASR_BACKEND
-        ).strip().lower()
-        if asr_backend not in VALID_ASR_BACKENDS:
-            allowed = ", ".join(sorted(VALID_ASR_BACKENDS))
-            raise ConfigError(f"NEWTALK_ASR_BACKEND must be one of: {allowed}")
-        asr_fake_text = values.get(
-            "NEWTALK_ASR_FAKE_TEXT", DEFAULT_ASR_FAKE_TEXT
-        ).strip()
-        if not asr_fake_text:
-            raise ConfigError("NEWTALK_ASR_FAKE_TEXT must not be empty")
-        asr_api_key = _optional_value(values.get("NEWTALK_ASR_API_KEY"))
-        asr_resource_id = _optional_value(values.get("NEWTALK_ASR_RESOURCE_ID"))
-        asr_ws_url = values.get("NEWTALK_ASR_WS_URL", DEFAULT_ASR_WS_URL).strip()
-        if not asr_ws_url.startswith(("ws://", "wss://")):
-            raise ConfigError("NEWTALK_ASR_WS_URL must be a WebSocket URL")
-        asr_packet_duration_ms = _positive_int_value(
-            values,
-            "NEWTALK_ASR_PACKET_DURATION_MS",
-            DEFAULT_ASR_PACKET_DURATION_MS,
-        )
-        if asr_packet_duration_ms > 1000:
-            raise ConfigError("NEWTALK_ASR_PACKET_DURATION_MS must not exceed 1000")
-        asr_timeout_seconds = _positive_float_value(
-            values,
-            "NEWTALK_ASR_TIMEOUT_SECONDS",
-            DEFAULT_ASR_TIMEOUT_SECONDS,
-        )
-        asr_use_system_proxy = _boolean_value(
-            values.get("NEWTALK_ASR_USE_SYSTEM_PROXY"),
-            default=DEFAULT_ASR_USE_SYSTEM_PROXY,
-            name="NEWTALK_ASR_USE_SYSTEM_PROXY",
-        )
-        if asr_backend == "doubao":
-            required_asr_values = {
-                "NEWTALK_ASR_API_KEY": asr_api_key,
-                "NEWTALK_ASR_RESOURCE_ID": asr_resource_id,
-            }
-            for name, value in required_asr_values.items():
-                if not value:
-                    raise ConfigError(
-                        f"{name} is required when NEWTALK_ASR_BACKEND=doubao"
-                    )
-
-        database_url = values.get(
-            "NEWTALK_DATABASE_URL", DEFAULT_DATABASE_URL
-        ).strip()
-        if not database_url.startswith("postgresql+asyncpg://"):
-            raise ConfigError(
-                "NEWTALK_DATABASE_URL must use postgresql+asyncpg://"
-            )
-        device_cookie_name = values.get(
-            "NEWTALK_DEVICE_COOKIE_NAME", DEFAULT_DEVICE_COOKIE_NAME
-        ).strip()
-        if not device_cookie_name or any(
-            character.isspace() for character in device_cookie_name
-        ):
-            raise ConfigError(
-                "NEWTALK_DEVICE_COOKIE_NAME must be a non-empty cookie name"
-            )
-        device_cookie_secure = _boolean_value(
-            values.get("NEWTALK_DEVICE_COOKIE_SECURE"),
-            default=DEFAULT_DEVICE_COOKIE_SECURE,
-            name="NEWTALK_DEVICE_COOKIE_SECURE",
-        )
-        device_cookie_max_age_days = _positive_int_value(
-            values,
-            "NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS",
-            DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS,
-        )
-        recovery_max_attempts = _positive_int_value(
-            values,
-            "NEWTALK_RECOVERY_MAX_ATTEMPTS",
-            DEFAULT_RECOVERY_MAX_ATTEMPTS,
-        )
-        recovery_window_seconds = _positive_int_value(
-            values,
-            "NEWTALK_RECOVERY_WINDOW_SECONDS",
-            DEFAULT_RECOVERY_WINDOW_SECONDS,
-        )
-        voiceprint_url = _optional_value(values.get("NEWTALK_VOICEPRINT_URL"))
-        voiceprint_api_token = _optional_value(
-            values.get("NEWTALK_VOICEPRINT_API_TOKEN")
-        )
-        voiceprint_timeout_seconds = _positive_float_value(
-            values,
-            "NEWTALK_VOICEPRINT_TIMEOUT_SECONDS",
-            DEFAULT_VOICEPRINT_TIMEOUT_SECONDS,
-        )
-        voiceprint_join_timeout_seconds = _positive_float_value(
-            values,
-            "NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS",
-            DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS,
-        )
-        if voiceprint_url and not voiceprint_url.startswith(("http://", "https://")):
-            raise ConfigError("NEWTALK_VOICEPRINT_URL must be an HTTP URL")
-        if voiceprint_url and not voiceprint_api_token:
-            raise ConfigError(
-                "NEWTALK_VOICEPRINT_API_TOKEN is required when VoicePrint is enabled"
-            )
-
-        memory_backend = values.get(
-            "NEWTALK_MEMORY_BACKEND", DEFAULT_MEMORY_BACKEND
-        ).strip().lower()
-        if memory_backend not in VALID_MEMORY_BACKENDS:
-            allowed = ", ".join(sorted(VALID_MEMORY_BACKENDS))
-            raise ConfigError(f"NEWTALK_MEMORY_BACKEND must be one of: {allowed}")
-        memos_base_url = values.get(
-            "NEWTALK_MEMOS_BASE_URL", DEFAULT_MEMOS_BASE_URL
-        ).strip().rstrip("/")
-        if not memos_base_url.startswith(("http://", "https://")):
-            raise ConfigError("NEWTALK_MEMOS_BASE_URL must be an HTTP URL")
-        memos_api_key = _optional_value(values.get("NEWTALK_MEMOS_API_KEY"))
-        memos_profile_template_id = _optional_value(
-            values.get("NEWTALK_MEMOS_PROFILE_TEMPLATE_ID")
-        )
-        memos_timeout_seconds = _positive_float_value(
-            values,
-            "NEWTALK_MEMOS_TIMEOUT_SECONDS",
-            DEFAULT_MEMOS_TIMEOUT_SECONDS,
-        )
-        profile_max_chars = _bounded_int_value(
-            values,
-            "NEWTALK_PROFILE_MAX_CHARS",
-            DEFAULT_PROFILE_MAX_CHARS,
-            minimum=100,
-            maximum=10000,
-        )
-        memory_search_limit = _bounded_int_value(
-            values,
-            "NEWTALK_MEMORY_SEARCH_LIMIT",
-            DEFAULT_MEMORY_SEARCH_LIMIT,
-            minimum=1,
-            maximum=25,
-        )
-        memory_search_relativity = _bounded_float_value(
-            values,
-            "NEWTALK_MEMORY_SEARCH_RELATIVITY",
-            DEFAULT_MEMORY_SEARCH_RELATIVITY,
-            minimum=0.0,
-            maximum=1.0,
-        )
-        memory_result_max_chars = _bounded_int_value(
-            values,
-            "NEWTALK_MEMORY_RESULT_MAX_CHARS",
-            DEFAULT_MEMORY_RESULT_MAX_CHARS,
-            minimum=500,
-            maximum=20000,
-        )
-        memory_job_poll_seconds = _positive_float_value(
-            values,
-            "NEWTALK_MEMORY_JOB_POLL_SECONDS",
-            DEFAULT_MEMORY_JOB_POLL_SECONDS,
-        )
-        memory_job_max_attempts = _bounded_int_value(
-            values,
-            "NEWTALK_MEMORY_JOB_MAX_ATTEMPTS",
-            DEFAULT_MEMORY_JOB_MAX_ATTEMPTS,
-            minimum=1,
-            maximum=10,
-        )
-        if memory_backend == "memos":
-            if not memos_api_key:
-                raise ConfigError(
-                    "NEWTALK_MEMOS_API_KEY is required when MemOS is enabled"
-                )
-            if not memos_profile_template_id:
-                raise ConfigError(
-                    "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID is required when MemOS is enabled"
-                )
+        (
+            memory_backend,
+            memos_base_url,
+            memos_api_key,
+            memos_profile_template_id,
+            memos_timeout_seconds,
+            profile_max_chars,
+            memory_search_limit,
+            memory_search_relativity,
+            memory_result_max_chars,
+            memory_job_poll_seconds,
+            memory_job_max_attempts,
+        ) = _parse_memory_config(values)
 
         return cls(
             host=host,
@@ -512,6 +290,363 @@ class AppConfig:
             memory_job_poll_seconds=memory_job_poll_seconds,
             memory_job_max_attempts=memory_job_max_attempts,
         )
+
+
+def _parse_llm_config(
+    values: Mapping[str, str],
+) -> tuple[str, str | None, str | None, str | None, str | None, float]:
+    backend = values.get("NEWTALK_LLM_BACKEND", DEFAULT_LLM_BACKEND).strip().lower()
+    if backend not in VALID_LLM_BACKENDS:
+        allowed = ", ".join(sorted(VALID_LLM_BACKENDS))
+        raise ConfigError(f"NEWTALK_LLM_BACKEND must be one of: {allowed}")
+
+    api_key = _optional_value(values.get("NEWTALK_LLM_API_KEY"))
+    base_url = _optional_value(values.get("NEWTALK_LLM_BASE_URL"))
+    model = _optional_value(values.get("NEWTALK_LLM_MODEL"))
+    system_prompt = _optional_value(values.get("NEWTALK_LLM_SYSTEM_PROMPT"))
+    timeout_seconds = _positive_float_value(
+        values,
+        "NEWTALK_LLM_TIMEOUT_SECONDS",
+        DEFAULT_LLM_TIMEOUT_SECONDS,
+    )
+    if backend == "openai":
+        if not api_key:
+            raise ConfigError(
+                "NEWTALK_LLM_API_KEY is required when NEWTALK_LLM_BACKEND=openai"
+            )
+        if not model:
+            raise ConfigError(
+                "NEWTALK_LLM_MODEL is required when NEWTALK_LLM_BACKEND=openai"
+            )
+    return backend, api_key, base_url, model, system_prompt, timeout_seconds
+
+
+def _parse_tts_config(
+    values: Mapping[str, str],
+) -> tuple[
+    str,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str,
+    str,
+    int,
+    float,
+    bool,
+]:
+    backend = values.get("NEWTALK_TTS_BACKEND", DEFAULT_TTS_BACKEND).strip().lower()
+    if backend not in VALID_TTS_BACKENDS:
+        allowed = ", ".join(sorted(VALID_TTS_BACKENDS))
+        raise ConfigError(f"NEWTALK_TTS_BACKEND must be one of: {allowed}")
+
+    app_id = _optional_value(values.get("NEWTALK_TTS_APP_ID"))
+    access_token = _optional_value(values.get("NEWTALK_TTS_ACCESS_TOKEN"))
+    resource_id = _optional_value(values.get("NEWTALK_TTS_RESOURCE_ID"))
+    voice_type = _optional_value(values.get("NEWTALK_TTS_VOICE_TYPE"))
+    ws_url = values.get("NEWTALK_TTS_WS_URL", DEFAULT_TTS_WS_URL).strip()
+    if not ws_url.startswith(("ws://", "wss://")):
+        raise ConfigError("NEWTALK_TTS_WS_URL must be a WebSocket URL")
+
+    audio_format = values.get(
+        "NEWTALK_TTS_AUDIO_FORMAT", DEFAULT_TTS_AUDIO_FORMAT
+    ).strip().lower()
+    if audio_format != "pcm":
+        raise ConfigError("P4 only supports NEWTALK_TTS_AUDIO_FORMAT=pcm")
+    raw_sample_rate = values.get(
+        "NEWTALK_TTS_SAMPLE_RATE", str(DEFAULT_TTS_SAMPLE_RATE)
+    ).strip()
+    try:
+        sample_rate = int(raw_sample_rate)
+    except ValueError as exc:
+        raise ConfigError("NEWTALK_TTS_SAMPLE_RATE must be an integer") from exc
+    if sample_rate not in VALID_TTS_SAMPLE_RATES:
+        allowed = ", ".join(str(value) for value in sorted(VALID_TTS_SAMPLE_RATES))
+        raise ConfigError(f"NEWTALK_TTS_SAMPLE_RATE must be one of: {allowed}")
+    timeout_seconds = _positive_float_value(
+        values,
+        "NEWTALK_TTS_TIMEOUT_SECONDS",
+        DEFAULT_TTS_TIMEOUT_SECONDS,
+    )
+    use_system_proxy = _boolean_value(
+        values.get("NEWTALK_TTS_USE_SYSTEM_PROXY"),
+        default=DEFAULT_TTS_USE_SYSTEM_PROXY,
+        name="NEWTALK_TTS_USE_SYSTEM_PROXY",
+    )
+    if backend == "doubao":
+        required = {
+            "NEWTALK_TTS_APP_ID": app_id,
+            "NEWTALK_TTS_ACCESS_TOKEN": access_token,
+            "NEWTALK_TTS_RESOURCE_ID": resource_id,
+            "NEWTALK_TTS_VOICE_TYPE": voice_type,
+        }
+        for name, value in required.items():
+            if not value:
+                raise ConfigError(
+                    f"{name} is required when NEWTALK_TTS_BACKEND=doubao"
+                )
+    return (
+        backend,
+        app_id,
+        access_token,
+        resource_id,
+        voice_type,
+        ws_url,
+        audio_format,
+        sample_rate,
+        timeout_seconds,
+        use_system_proxy,
+    )
+
+
+def _parse_vad_config(
+    values: Mapping[str, str],
+) -> tuple[Path, float, float, int, int]:
+    raw_model_path = values.get("NEWTALK_VAD_MODEL_PATH")
+    model_path = (
+        Path(raw_model_path).expanduser().resolve()
+        if raw_model_path
+        else DEFAULT_VAD_MODEL_PATH
+    )
+    threshold = _float_value(values, "NEWTALK_VAD_THRESHOLD", DEFAULT_VAD_THRESHOLD)
+    threshold_low = _float_value(
+        values,
+        "NEWTALK_VAD_THRESHOLD_LOW",
+        DEFAULT_VAD_THRESHOLD_LOW,
+    )
+    if not 0 <= threshold_low < threshold <= 1:
+        raise ConfigError("VAD thresholds must satisfy 0 <= low < high <= 1")
+    min_silence_ms = _positive_int_value(
+        values,
+        "NEWTALK_VAD_MIN_SILENCE_MS",
+        DEFAULT_VAD_MIN_SILENCE_MS,
+    )
+    pre_roll_ms = _positive_int_value(
+        values,
+        "NEWTALK_VAD_PRE_ROLL_MS",
+        DEFAULT_VAD_PRE_ROLL_MS,
+    )
+    return model_path, threshold, threshold_low, min_silence_ms, pre_roll_ms
+
+
+def _parse_asr_config(
+    values: Mapping[str, str],
+) -> tuple[str, str, str | None, str | None, str, int, float, bool]:
+    backend = values.get("NEWTALK_ASR_BACKEND", DEFAULT_ASR_BACKEND).strip().lower()
+    if backend not in VALID_ASR_BACKENDS:
+        allowed = ", ".join(sorted(VALID_ASR_BACKENDS))
+        raise ConfigError(f"NEWTALK_ASR_BACKEND must be one of: {allowed}")
+    fake_text = values.get("NEWTALK_ASR_FAKE_TEXT", DEFAULT_ASR_FAKE_TEXT).strip()
+    if not fake_text:
+        raise ConfigError("NEWTALK_ASR_FAKE_TEXT must not be empty")
+    api_key = _optional_value(values.get("NEWTALK_ASR_API_KEY"))
+    resource_id = _optional_value(values.get("NEWTALK_ASR_RESOURCE_ID"))
+    ws_url = values.get("NEWTALK_ASR_WS_URL", DEFAULT_ASR_WS_URL).strip()
+    if not ws_url.startswith(("ws://", "wss://")):
+        raise ConfigError("NEWTALK_ASR_WS_URL must be a WebSocket URL")
+    packet_duration_ms = _positive_int_value(
+        values,
+        "NEWTALK_ASR_PACKET_DURATION_MS",
+        DEFAULT_ASR_PACKET_DURATION_MS,
+    )
+    if packet_duration_ms > 1000:
+        raise ConfigError("NEWTALK_ASR_PACKET_DURATION_MS must not exceed 1000")
+    timeout_seconds = _positive_float_value(
+        values,
+        "NEWTALK_ASR_TIMEOUT_SECONDS",
+        DEFAULT_ASR_TIMEOUT_SECONDS,
+    )
+    use_system_proxy = _boolean_value(
+        values.get("NEWTALK_ASR_USE_SYSTEM_PROXY"),
+        default=DEFAULT_ASR_USE_SYSTEM_PROXY,
+        name="NEWTALK_ASR_USE_SYSTEM_PROXY",
+    )
+    if backend == "doubao":
+        required = {
+            "NEWTALK_ASR_API_KEY": api_key,
+            "NEWTALK_ASR_RESOURCE_ID": resource_id,
+        }
+        for name, value in required.items():
+            if not value:
+                raise ConfigError(
+                    f"{name} is required when NEWTALK_ASR_BACKEND=doubao"
+                )
+    return (
+        backend,
+        fake_text,
+        api_key,
+        resource_id,
+        ws_url,
+        packet_duration_ms,
+        timeout_seconds,
+        use_system_proxy,
+    )
+
+
+def _parse_identity_config(
+    values: Mapping[str, str],
+) -> tuple[str, str, bool, int, int, int]:
+    database_url = values.get("NEWTALK_DATABASE_URL", DEFAULT_DATABASE_URL).strip()
+    if not database_url.startswith("postgresql+asyncpg://"):
+        raise ConfigError("NEWTALK_DATABASE_URL must use postgresql+asyncpg://")
+    cookie_name = values.get(
+        "NEWTALK_DEVICE_COOKIE_NAME", DEFAULT_DEVICE_COOKIE_NAME
+    ).strip()
+    if not cookie_name or any(character.isspace() for character in cookie_name):
+        raise ConfigError(
+            "NEWTALK_DEVICE_COOKIE_NAME must be a non-empty cookie name"
+        )
+    cookie_secure = _boolean_value(
+        values.get("NEWTALK_DEVICE_COOKIE_SECURE"),
+        default=DEFAULT_DEVICE_COOKIE_SECURE,
+        name="NEWTALK_DEVICE_COOKIE_SECURE",
+    )
+    cookie_max_age_days = _positive_int_value(
+        values,
+        "NEWTALK_DEVICE_COOKIE_MAX_AGE_DAYS",
+        DEFAULT_DEVICE_COOKIE_MAX_AGE_DAYS,
+    )
+    recovery_max_attempts = _positive_int_value(
+        values,
+        "NEWTALK_RECOVERY_MAX_ATTEMPTS",
+        DEFAULT_RECOVERY_MAX_ATTEMPTS,
+    )
+    recovery_window_seconds = _positive_int_value(
+        values,
+        "NEWTALK_RECOVERY_WINDOW_SECONDS",
+        DEFAULT_RECOVERY_WINDOW_SECONDS,
+    )
+    return (
+        database_url,
+        cookie_name,
+        cookie_secure,
+        cookie_max_age_days,
+        recovery_max_attempts,
+        recovery_window_seconds,
+    )
+
+
+def _parse_voiceprint_config(
+    values: Mapping[str, str],
+) -> tuple[str | None, str | None, float, float]:
+    url = _optional_value(values.get("NEWTALK_VOICEPRINT_URL"))
+    api_token = _optional_value(values.get("NEWTALK_VOICEPRINT_API_TOKEN"))
+    timeout_seconds = _positive_float_value(
+        values,
+        "NEWTALK_VOICEPRINT_TIMEOUT_SECONDS",
+        DEFAULT_VOICEPRINT_TIMEOUT_SECONDS,
+    )
+    join_timeout_seconds = _positive_float_value(
+        values,
+        "NEWTALK_VOICEPRINT_JOIN_TIMEOUT_SECONDS",
+        DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS,
+    )
+    if url and not url.startswith(("http://", "https://")):
+        raise ConfigError("NEWTALK_VOICEPRINT_URL must be an HTTP URL")
+    if url and not api_token:
+        raise ConfigError(
+            "NEWTALK_VOICEPRINT_API_TOKEN is required when VoicePrint is enabled"
+        )
+    return url, api_token, timeout_seconds, join_timeout_seconds
+
+
+def _parse_memory_config(
+    values: Mapping[str, str],
+) -> tuple[
+    str,
+    str,
+    str | None,
+    str | None,
+    float,
+    int,
+    int,
+    float,
+    int,
+    float,
+    int,
+]:
+    backend = values.get(
+        "NEWTALK_MEMORY_BACKEND", DEFAULT_MEMORY_BACKEND
+    ).strip().lower()
+    if backend not in VALID_MEMORY_BACKENDS:
+        allowed = ", ".join(sorted(VALID_MEMORY_BACKENDS))
+        raise ConfigError(f"NEWTALK_MEMORY_BACKEND must be one of: {allowed}")
+    base_url = values.get(
+        "NEWTALK_MEMOS_BASE_URL", DEFAULT_MEMOS_BASE_URL
+    ).strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise ConfigError("NEWTALK_MEMOS_BASE_URL must be an HTTP URL")
+    api_key = _optional_value(values.get("NEWTALK_MEMOS_API_KEY"))
+    profile_template_id = _optional_value(
+        values.get("NEWTALK_MEMOS_PROFILE_TEMPLATE_ID")
+    )
+    timeout_seconds = _positive_float_value(
+        values,
+        "NEWTALK_MEMOS_TIMEOUT_SECONDS",
+        DEFAULT_MEMOS_TIMEOUT_SECONDS,
+    )
+    profile_max_chars = _bounded_int_value(
+        values,
+        "NEWTALK_PROFILE_MAX_CHARS",
+        DEFAULT_PROFILE_MAX_CHARS,
+        minimum=100,
+        maximum=10000,
+    )
+    search_limit = _bounded_int_value(
+        values,
+        "NEWTALK_MEMORY_SEARCH_LIMIT",
+        DEFAULT_MEMORY_SEARCH_LIMIT,
+        minimum=1,
+        maximum=25,
+    )
+    search_relativity = _bounded_float_value(
+        values,
+        "NEWTALK_MEMORY_SEARCH_RELATIVITY",
+        DEFAULT_MEMORY_SEARCH_RELATIVITY,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    result_max_chars = _bounded_int_value(
+        values,
+        "NEWTALK_MEMORY_RESULT_MAX_CHARS",
+        DEFAULT_MEMORY_RESULT_MAX_CHARS,
+        minimum=500,
+        maximum=20000,
+    )
+    job_poll_seconds = _positive_float_value(
+        values,
+        "NEWTALK_MEMORY_JOB_POLL_SECONDS",
+        DEFAULT_MEMORY_JOB_POLL_SECONDS,
+    )
+    job_max_attempts = _bounded_int_value(
+        values,
+        "NEWTALK_MEMORY_JOB_MAX_ATTEMPTS",
+        DEFAULT_MEMORY_JOB_MAX_ATTEMPTS,
+        minimum=1,
+        maximum=10,
+    )
+    if backend == "memos":
+        if not api_key:
+            raise ConfigError(
+                "NEWTALK_MEMOS_API_KEY is required when MemOS is enabled"
+            )
+        if not profile_template_id:
+            raise ConfigError(
+                "NEWTALK_MEMOS_PROFILE_TEMPLATE_ID is required when MemOS is enabled"
+            )
+    return (
+        backend,
+        base_url,
+        api_key,
+        profile_template_id,
+        timeout_seconds,
+        profile_max_chars,
+        search_limit,
+        search_relativity,
+        result_max_chars,
+        job_poll_seconds,
+        job_max_attempts,
+    )
 
 
 def load_config(values: Mapping[str, str] | None = None) -> AppConfig:
