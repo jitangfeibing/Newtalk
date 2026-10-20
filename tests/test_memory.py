@@ -79,6 +79,18 @@ class RecordingMemoryProvider:
         return None
 
 
+class FlakyClaimMemoryJobStore(InMemoryMemoryJobStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.claim_calls = 0
+
+    async def claim(self) -> MemoryWriteJob | None:
+        self.claim_calls += 1
+        if self.claim_calls == 1:
+            raise RuntimeError("temporary database failure")
+        return await super().claim()
+
+
 class MemoryToolModel:
     def __init__(self) -> None:
         self.requests: list[tuple[tuple[ChatMessage, ...], tuple[dict, ...]]] = []
@@ -217,6 +229,31 @@ def test_memory_write_worker_is_idempotent_and_persists_completed_member_turn() 
         assert write["user_text"] == turn.user_text
         job_id = next(iter(store.jobs))
         assert store.provider_task_ids[job_id] == "provider-task-1"
+
+    asyncio.run(scenario())
+
+
+def test_memory_write_worker_recovers_after_claim_failure() -> None:
+    async def scenario() -> None:
+        provider = RecordingMemoryProvider()
+        store = FlakyClaimMemoryJobStore()
+        service = MemoryWriteService(store, provider, poll_seconds=0.001)
+        await service.start()
+        turn = ChatService().create_turn(
+            session_id="session-1",
+            user_text="数据库恢复后继续写入",
+            device_id="02:00:00:00:00:01",
+            speaker_identity_id="11111111-1111-1111-1111-111111111111",
+            speaker_display_name="小明",
+        )
+        try:
+            assert await service.enqueue_completed_turn(turn, "这条记忆只写一次")
+            await _wait_for_status(store, "completed")
+        finally:
+            await service.close()
+
+        assert store.claim_calls >= 2
+        assert len(provider.writes) == 1
 
     asyncio.run(scenario())
 

@@ -2,15 +2,10 @@ from typing import Protocol
 
 from newtalk.memory.models import MemoryPage, MemorySearchResult, MemoryWriteReceipt
 from newtalk.profile.models import ProfileScope, ProfileSnapshot
-from newtalk.profile.provider import ProfileProviderUnavailableError
+from newtalk.profile.provider import ProfileProvider, ProfileProviderUnavailableError
 
 
-class MemoryProvider(Protocol):
-    @property
-    def enabled(self) -> bool: ...
-
-    async def prepare_profile(self, scope: ProfileScope) -> ProfileSnapshot: ...
-
+class MemoryProvider(ProfileProvider, Protocol):
     async def search(
         self,
         scope: ProfileScope,
@@ -67,9 +62,6 @@ class MemoryProvider(Protocol):
     async def delete_all_memories(self, scope: ProfileScope) -> None: ...
 
     async def delete_profile(self, scope: ProfileScope) -> None: ...
-
-    async def aclose(self) -> None: ...
-
 
 class DisabledMemoryProvider:
     @property

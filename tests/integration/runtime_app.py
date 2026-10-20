@@ -6,4 +6,5 @@ from newtalk.identity import IdentityService, InMemoryIdentityStore
 app = create_app(
     AppConfig(),
     identity_service=IdentityService(InMemoryIdentityStore()),
+    persistence_backend="memory",
 )

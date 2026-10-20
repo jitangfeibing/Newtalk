@@ -34,6 +34,7 @@ def make_client(voiceprint_client):
         AppConfig(),
         identity_service=IdentityService(InMemoryIdentityStore()),
         voiceprint_client=voiceprint_client,
+        persistence_backend="memory",
     )
     client = TestClient(app)
     client.post("/api/device")

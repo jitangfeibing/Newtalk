@@ -1,12 +1,14 @@
-from collections import defaultdict, deque
 from datetime import datetime
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 
 from newtalk.config import AppConfig
 from newtalk.identity.models import Device, Identity
+from newtalk.identity.recovery_limit import (
+    RecoveryRateLimitExceeded,
+    RecoveryRateLimiter,
+)
 from newtalk.identity.deletion import IdentityDeletionScheduler
 from newtalk.identity.service import (
     DeviceAuthenticationError,
@@ -17,38 +19,6 @@ from newtalk.identity.service import (
 
 
 router = APIRouter(prefix="/api", tags=["identity"])
-
-
-class RecoveryRateLimiter:
-    def __init__(self, *, max_attempts: int, window_seconds: int) -> None:
-        self._max_attempts = max_attempts
-        self._window_seconds = window_seconds
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
-
-    def check(self, key: str) -> None:
-        now = time.monotonic()
-        if len(self._attempts) > 1024:
-            cutoff = now - self._window_seconds
-            self._attempts = defaultdict(
-                deque,
-                {
-                    candidate: attempts
-                    for candidate, attempts in self._attempts.items()
-                    if attempts and attempts[-1] > cutoff
-                },
-            )
-        attempts = self._attempts[key]
-        while attempts and attempts[0] <= now - self._window_seconds:
-            attempts.popleft()
-        if len(attempts) >= self._max_attempts:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many recovery attempts",
-            )
-        attempts.append(now)
-
-    def clear(self, key: str) -> None:
-        self._attempts.pop(key, None)
 
 
 class DeviceResponse(BaseModel):
@@ -220,7 +190,13 @@ async def recover_device(
 ) -> DeviceResponse:
     client_key = request.client.host if request.client else "unknown"
     limiter: RecoveryRateLimiter = request.app.state.recovery_rate_limiter
-    limiter.check(client_key)
+    try:
+        await limiter.check(client_key)
+    except RecoveryRateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many recovery attempts",
+        ) from exc
     try:
         registration = await service.recover_device(payload.recovery_code)
     except DeviceRecoveryError as exc:
@@ -228,7 +204,7 @@ async def recover_device(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Recovery code is invalid",
         ) from exc
-    limiter.clear(client_key)
+    await limiter.clear(client_key)
     _set_device_cookie(response, config, registration.credential)
     return _device_response(registration.device)
 

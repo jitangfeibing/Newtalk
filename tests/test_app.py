@@ -1,7 +1,9 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 import pytest
 
-from newtalk.app import create_app
+from newtalk.app import _close_lifecycle_components, create_app
 from newtalk.config import AppConfig
 from newtalk.identity import IdentityService, InMemoryIdentityStore
 
@@ -10,6 +12,7 @@ client = TestClient(
     create_app(
         AppConfig(),
         identity_service=IdentityService(InMemoryIdentityStore()),
+        persistence_backend="memory",
     )
 )
 
@@ -52,3 +55,34 @@ def test_app_fails_fast_when_web_root_is_missing(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="Web root does not exist"):
         create_app(config)
+
+
+def test_app_rejects_unknown_persistence_backend() -> None:
+    with pytest.raises(ValueError, match="Persistence backend"):
+        create_app(AppConfig(), persistence_backend="invalid")  # type: ignore[arg-type]
+
+
+def test_shutdown_closes_remaining_components_after_failure() -> None:
+    async def scenario() -> None:
+        closed: list[str] = []
+
+        async def fail_first() -> None:
+            closed.append("first")
+            raise RuntimeError("close failed")
+
+        async def close_second() -> None:
+            closed.append("second")
+
+        async def close_third() -> None:
+            closed.append("third")
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            await _close_lifecycle_components(
+                ("first", fail_first),
+                ("second", close_second),
+                ("third", close_third),
+            )
+
+        assert closed == ["first", "second", "third"]
+
+    asyncio.run(scenario())

@@ -1,9 +1,10 @@
 import asyncio
+from collections import deque
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 import logging
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import WebSocket
 
@@ -43,6 +44,7 @@ from newtalk.voiceprint import (
 
 logger = logging.getLogger(__name__)
 _SEND_END = object()
+_RECENT_EVENT_LIMIT = 4096
 
 
 def _format_optional_ms(value: float | None) -> str:
@@ -54,6 +56,192 @@ class _OutboundFrame:
     payload: dict[str, Any] | bytes | object
     turn_id: str | None
     delivered: asyncio.Future[None]
+
+
+class _OutboundSender:
+    """Serializes WebSocket writes and propagates terminal send failures."""
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        *,
+        session_id: str,
+        active_turn_id: Callable[[], str | None],
+    ) -> None:
+        self._websocket = websocket
+        self._session_id = session_id
+        self._active_turn_id = active_turn_id
+        self._queue: asyncio.Queue[_OutboundFrame] = asyncio.Queue(maxsize=256)
+        self._task: asyncio.Task[None] | None = None
+        self._terminal_error: Exception | None = None
+
+    def start(self) -> None:
+        self._terminal_error = None
+        self._task = asyncio.create_task(self._run())
+
+    async def send(
+        self,
+        payload: dict[str, Any] | bytes | object,
+        *,
+        turn_id: str | None,
+    ) -> None:
+        task = self._task
+        if task is None:
+            raise RuntimeError("Connection sender has not started")
+        if task.done():
+            raise self._terminal_error or RuntimeError("Connection sender stopped")
+        delivered: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        frame = _OutboundFrame(payload, turn_id, delivered)
+        put_task = asyncio.create_task(self._queue.put(frame))
+        try:
+            done, _ = await asyncio.wait(
+                (put_task, task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done and not put_task.done():
+                put_task.cancel()
+                await asyncio.gather(put_task, return_exceptions=True)
+                raise self._terminal_error or RuntimeError(
+                    "Connection sender stopped"
+                )
+            await put_task
+        except BaseException:
+            if not put_task.done():
+                put_task.cancel()
+                await asyncio.gather(put_task, return_exceptions=True)
+            raise
+
+        # sender 可能在 queue.put 与此检查之间结束，并已完成 finally 清理。
+        if task.done() and not delivered.done():
+            delivered.set_exception(
+                self._terminal_error or RuntimeError("Connection sender stopped")
+            )
+        await delivered
+
+    async def close(self) -> None:
+        task = self._task
+        if task is None:
+            return
+        if not task.done():
+            with suppress(Exception):
+                await self.send(_SEND_END, turn_id=None)
+        with suppress(Exception):
+            await task
+
+    async def _run(self) -> None:
+        failure: Exception | None = None
+        try:
+            while True:
+                item = await self._queue.get()
+                try:
+                    if item.payload is _SEND_END:
+                        if not item.delivered.done():
+                            item.delivered.set_result(None)
+                        return
+                    if (
+                        item.turn_id is not None
+                        and item.turn_id != self._active_turn_id()
+                    ):
+                        if not item.delivered.done():
+                            item.delivered.set_result(None)
+                        continue
+                    if isinstance(item.payload, bytes):
+                        await self._websocket.send_bytes(item.payload)
+                    elif isinstance(item.payload, dict):
+                        await self._websocket.send_json(item.payload)
+                    if not item.delivered.done():
+                        item.delivered.set_result(None)
+                except Exception as exc:
+                    if not item.delivered.done():
+                        item.delivered.set_exception(exc)
+                    raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = exc
+            logger.warning(
+                "websocket_sender_failed session_id=%s error_type=%s",
+                self._session_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+        finally:
+            error = failure or RuntimeError("Connection sender stopped")
+            self._terminal_error = error
+            while not self._queue.empty():
+                pending = self._queue.get_nowait()
+                if not pending.delivered.done():
+                    pending.delivered.set_exception(error)
+
+
+@dataclass(frozen=True, slots=True)
+class _TurnCancellation:
+    task: asyncio.Task[None] | None
+    turn_id: str | None
+    stream_id: str | None
+    playback_turn_id: str | None
+    playback_stream_id: str | None
+
+
+@dataclass(slots=True)
+class _TurnState:
+    task: asyncio.Task[None] | None = None
+    turn_id: str | None = None
+    stream_id: str | None = None
+    playback_turn_id: str | None = None
+    playback_stream_id: str | None = None
+
+    def activate(self, turn_id: str) -> None:
+        self.task = None
+        self.turn_id = turn_id
+        self.stream_id = None
+
+    def attach_task(self, turn_id: str, task: asyncio.Task[None]) -> None:
+        if self.turn_id != turn_id:
+            task.cancel()
+            raise RuntimeError("Cannot attach a task to an inactive Turn")
+        self.task = task
+
+    def begin_playback(self, turn_id: str, stream_id: str) -> bool:
+        if self.turn_id != turn_id:
+            return False
+        self.stream_id = stream_id
+        self.playback_turn_id = turn_id
+        self.playback_stream_id = stream_id
+        return True
+
+    def clear_playback(self, turn_id: str, stream_id: str) -> bool:
+        if (
+            self.playback_turn_id != turn_id
+            or self.playback_stream_id != stream_id
+        ):
+            return False
+        self.playback_turn_id = None
+        self.playback_stream_id = None
+        return True
+
+    def clear_active(self, turn_id: str) -> bool:
+        if self.turn_id != turn_id:
+            return False
+        self.task = None
+        self.turn_id = None
+        self.stream_id = None
+        return True
+
+    def take_for_cancellation(self) -> _TurnCancellation:
+        snapshot = _TurnCancellation(
+            task=self.task,
+            turn_id=self.turn_id,
+            stream_id=self.stream_id,
+            playback_turn_id=self.playback_turn_id,
+            playback_stream_id=self.playback_stream_id,
+        )
+        self.task = None
+        self.turn_id = None
+        self.stream_id = None
+        self.playback_turn_id = None
+        self.playback_stream_id = None
+        return snapshot
 
 
 @dataclass(slots=True)
@@ -98,7 +286,6 @@ class ConnectionRuntime:
         dialogue_snapshot: DialogueSnapshot,
         dialogue_coordinator: DialogueCacheCoordinator,
     ) -> None:
-        self.websocket = websocket
         self.session_id = session_id
         self.device_id = device_id
         self._chat_service = chat_service
@@ -107,50 +294,49 @@ class ConnectionRuntime:
         self._vad = vad
         self._recognizer = recognizer
         self._vad_pre_roll_ms = vad_pre_roll_ms
-        self._family_dialogue = DialogueSession(
+        self._dialogue = DialogueSession(
             session_id,
             max_turns=dialogue_max_turns,
             max_chars=dialogue_max_chars,
         )
-        self._guest_dialogue = DialogueSession(
-            session_id,
-            max_turns=dialogue_max_turns,
-            max_chars=dialogue_max_chars,
+        # 同一设备代表同一家庭空间。声纹只标记当前说话人，不能因为一次
+        # no_match/timeout 就切断整段对话，因此按真实时间顺序恢复统一窗口。
+        self._dialogue.restore(
+            tuple(
+                item.exchange
+                for item in dialogue_snapshot.history[-dialogue_max_turns:]
+            )
         )
-        self._family_dialogue.restore(dialogue_snapshot.family)
-        self._guest_dialogue.restore(dialogue_snapshot.guest)
         self._dialogue_store = dialogue_store
         self._dialogue_coordinator = dialogue_coordinator
-        self._dialogue_coordinator.register(
-            device_id, "family", self._family_dialogue
-        )
-        self._dialogue_coordinator.register(
-            device_id, "guest", self._guest_dialogue
-        )
+        # family 注册范围表示成员删除时需要同步移除其活跃缓存；Guest 记录
+        # 没有 identity_id，不会受 remove_identity 影响。
+        self._dialogue_coordinator.register(device_id, "family", self._dialogue)
         self._voiceprint_join_timeout_seconds = voiceprint_join_timeout_seconds
         self._profile_cache = profile_cache
         self._profile_max_chars = profile_max_chars
         self._memory_writer = memory_writer
         self._voice_joins: dict[str, _VoiceJoinState] = {}
         self._seen_event_ids: set[str] = set()
-        self._outbound: asyncio.Queue[_OutboundFrame] = asyncio.Queue(maxsize=256)
-        self._sender_task: asyncio.Task[None] | None = None
-        self._active_turn_task: asyncio.Task[None] | None = None
-        self._active_turn_id: str | None = None
-        self._active_stream_id: str | None = None
-        self._playback_turn_id: str | None = None
-        self._playback_stream_id: str | None = None
+        self._event_id_order: deque[str] = deque()
+        self._turn_transition_lock = asyncio.Lock()
+        self._turn_state = _TurnState()
         self._audio_session: AudioInputSession | None = None
         self._capture_id: str | None = None
         self._audio_started_at: float | None = None
         self._closing = False
+        self._sender = _OutboundSender(
+            websocket,
+            session_id=session_id,
+            active_turn_id=lambda: self._turn_state.turn_id,
+        )
 
     @property
     def active_turn_id(self) -> str | None:
-        return self._active_turn_id
+        return self._turn_state.turn_id
 
     async def start(self) -> None:
-        self._sender_task = asyncio.create_task(self._send_loop())
+        self._sender.start()
         self._profile_cache.start()
 
     async def send_json(
@@ -159,10 +345,10 @@ class ConnectionRuntime:
         *,
         turn_id: str | None = None,
     ) -> None:
-        await self._enqueue(payload, turn_id=turn_id)
+        await self._sender.send(payload, turn_id=turn_id)
 
     async def send_bytes(self, payload: bytes, *, turn_id: str) -> None:
-        await self._enqueue(payload, turn_id=turn_id)
+        await self._sender.send(payload, turn_id=turn_id)
 
     async def send_error(
         self,
@@ -184,6 +370,9 @@ class ConnectionRuntime:
         if event_id in self._seen_event_ids:
             return False
         self._seen_event_ids.add(event_id)
+        self._event_id_order.append(event_id)
+        if len(self._event_id_order) > _RECENT_EVENT_LIMIT:
+            self._seen_event_ids.discard(self._event_id_order.popleft())
         return True
 
     async def start_text_turn(
@@ -255,147 +444,153 @@ class ConnectionRuntime:
         event_id: str,
         identity: Identity | None,
     ) -> None:
-        await self.cancel_turn(reason="superseded")
-        context_started_at = perf_counter()
-        dialogue = self._family_dialogue if identity is not None else self._guest_dialogue
-        speaker_display_name = identity.display_name if identity is not None else "Guest"
-        speaker_relationship = identity.relationship if identity is not None else None
-        speaker_identity_id = identity.identity_id if identity is not None else None
-        profile_snapshot = (
-            self._profile_cache.snapshot_for(speaker_identity_id)
-            if speaker_identity_id is not None
-            else None
-        )
-        profile_prompt = (
-            profile_snapshot.to_prompt(max_chars=self._profile_max_chars)
-            if profile_snapshot is not None
-            else None
-        )
-        context_messages = (
-            (ChatMessage(role="system", content=profile_prompt),)
-            if profile_prompt
-            else ()
-        )
-        messages = dialogue.messages_for(
-            text,
-            speaker_identity_id=speaker_identity_id,
-            speaker_display_name=speaker_display_name,
-            speaker_relationship=speaker_relationship,
-            context_messages=context_messages,
-        )
-        turn = self._chat_service.create_turn(
-            session_id=self.session_id,
-            user_text=text,
-            messages=messages,
-            device_id=self.device_id,
-            speaker_identity_id=speaker_identity_id,
-            speaker_display_name=speaker_display_name,
-            speaker_relationship=speaker_relationship,
-            profile_ready=profile_snapshot is not None,
-            profile_field_count=(
-                len(profile_snapshot.fields) if profile_snapshot is not None else 0
-            ),
-        )
-        self._active_turn_id = turn.turn_id
-        self._active_stream_id = None
-        logger.info(
-            "turn_started session_id=%s turn_id=%s event_id=%s",
-            self.session_id,
-            turn.turn_id,
-            event_id,
-        )
-        logger.info(
-            "context_ready session_id=%s turn_id=%s completed_turns=%s messages=%s chars=%s elapsed_ms=%.1f",
-            self.session_id,
-            turn.turn_id,
-            len(dialogue.exchanges),
-            len(messages),
-            sum(len(message.content) for message in messages),
-            (perf_counter() - context_started_at) * 1000,
-        )
-        await self.send_json(
-            {
-                "type": "turn_started",
-                "session_id": self.session_id,
-                "turn_id": turn.turn_id,
-                "event_id": event_id,
-                "speaker": {
-                    "identity_id": speaker_identity_id,
-                    "display_name": speaker_display_name,
-                    "guest": identity is None,
-                },
-                "profile": {
-                    "enabled": self._profile_cache.enabled,
-                    "ready": turn.profile_ready,
-                    "fields": turn.profile_field_count,
-                },
-            },
-            turn_id=turn.turn_id,
-        )
-        self._active_turn_task = asyncio.create_task(
-            self._stream_turn(turn, event_id=event_id, dialogue=dialogue)
-        )
+        # 文本输入和 ASR Final 可能同时到达。整个替换过程必须串行，
+        # 否则新 Turn 可能在旧 Turn 保存 task 引用前完成取消，留下孤儿任务。
+        async with self._turn_transition_lock:
+            await self._cancel_turn(reason="superseded")
+            context_started_at = perf_counter()
+            dialogue = self._dialogue
+            speaker_display_name = (
+                identity.display_name if identity is not None else "Guest"
+            )
+            speaker_relationship = (
+                identity.relationship if identity is not None else None
+            )
+            speaker_identity_id = (
+                identity.identity_id if identity is not None else None
+            )
+            profile_snapshot = (
+                self._profile_cache.snapshot_for(speaker_identity_id)
+                if speaker_identity_id is not None
+                else None
+            )
+            profile_prompt = (
+                profile_snapshot.to_prompt(max_chars=self._profile_max_chars)
+                if profile_snapshot is not None
+                else None
+            )
+            context_messages = (
+                (ChatMessage(role="system", content=profile_prompt),)
+                if profile_prompt
+                else ()
+            )
+            messages = dialogue.messages_for(
+                text,
+                speaker_identity_id=speaker_identity_id,
+                speaker_display_name=speaker_display_name,
+                speaker_relationship=speaker_relationship,
+                context_messages=context_messages,
+            )
+            turn = self._chat_service.create_turn(
+                session_id=self.session_id,
+                user_text=text,
+                messages=messages,
+                device_id=self.device_id,
+                speaker_identity_id=speaker_identity_id,
+                speaker_display_name=speaker_display_name,
+                speaker_relationship=speaker_relationship,
+                profile_ready=profile_snapshot is not None,
+                profile_field_count=(
+                    len(profile_snapshot.fields) if profile_snapshot is not None else 0
+                ),
+            )
+            self._turn_state.activate(turn.turn_id)
+            logger.info(
+                "turn_started session_id=%s turn_id=%s event_id=%s",
+                self.session_id,
+                turn.turn_id,
+                event_id,
+            )
+            logger.info(
+                "context_ready session_id=%s turn_id=%s completed_turns=%s messages=%s chars=%s elapsed_ms=%.1f",
+                self.session_id,
+                turn.turn_id,
+                len(dialogue.exchanges),
+                len(messages),
+                sum(len(message.content) for message in messages),
+                (perf_counter() - context_started_at) * 1000,
+            )
+            try:
+                await self.send_json(
+                    {
+                        "type": "turn_started",
+                        "session_id": self.session_id,
+                        "turn_id": turn.turn_id,
+                        "event_id": event_id,
+                        "speaker": {
+                            "identity_id": speaker_identity_id,
+                            "display_name": speaker_display_name,
+                            "guest": identity is None,
+                        },
+                        "profile": {
+                            "enabled": self._profile_cache.enabled,
+                            "ready": turn.profile_ready,
+                            "fields": turn.profile_field_count,
+                        },
+                    },
+                    turn_id=turn.turn_id,
+                )
+            except BaseException:
+                self._turn_state.clear_active(turn.turn_id)
+                raise
+            task = asyncio.create_task(
+                self._stream_turn(turn, event_id=event_id, dialogue=dialogue)
+            )
+            self._turn_state.attach_task(turn.turn_id, task)
 
     async def cancel_turn(self, *, reason: str, notify: bool = True) -> None:
-        task = self._active_turn_task
-        turn_id = self._active_turn_id
-        stream_id = self._active_stream_id
-        playback_turn_id = self._playback_turn_id
-        playback_stream_id = self._playback_stream_id
-        if turn_id is None and playback_turn_id is None:
+        async with self._turn_transition_lock:
+            await self._cancel_turn(reason=reason, notify=notify)
+
+    async def _cancel_turn(self, *, reason: str, notify: bool = True) -> None:
+        cancellation = self._turn_state.take_for_cancellation()
+        if cancellation.turn_id is None and cancellation.playback_turn_id is None:
             return
 
-        self._active_turn_id = None
-        self._active_stream_id = None
-        self._active_turn_task = None
-        self._playback_turn_id = None
-        self._playback_stream_id = None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        if turn_id is not None:
+        if cancellation.task is not None:
+            cancellation.task.cancel()
+            await asyncio.gather(cancellation.task, return_exceptions=True)
+        if cancellation.turn_id is not None:
             logger.info(
                 "turn_cancelled session_id=%s turn_id=%s reason=%s",
                 self.session_id,
-                turn_id,
+                cancellation.turn_id,
                 reason,
             )
-        elif playback_turn_id is not None:
+        elif cancellation.playback_turn_id is not None:
             logger.info(
                 "playback_interrupted session_id=%s turn_id=%s stream_id=%s reason=%s",
                 self.session_id,
-                playback_turn_id,
-                playback_stream_id,
+                cancellation.playback_turn_id,
+                cancellation.playback_stream_id,
                 reason,
             )
         if notify and not self._closing:
-            if turn_id is not None:
+            if cancellation.turn_id is not None:
                 await self.send_json(
                     {
                         "type": "turn_cancelled",
-                        "turn_id": turn_id,
+                        "turn_id": cancellation.turn_id,
                         "reason": reason,
                     }
                 )
-            audio_turn_id = playback_turn_id or turn_id
+            audio_turn_id = cancellation.playback_turn_id or cancellation.turn_id
             if audio_turn_id is not None:
                 await self.send_json(
                     {
                         "type": "audio_stop",
                         "turn_id": audio_turn_id,
-                        "stream_id": playback_stream_id or stream_id,
+                        "stream_id": (
+                            cancellation.playback_stream_id
+                            or cancellation.stream_id
+                        ),
                         "reason": reason,
                     }
                 )
 
     async def playback_drained(self, *, turn_id: str, stream_id: str) -> None:
-        if (
-            turn_id != self._playback_turn_id
-            or stream_id != self._playback_stream_id
-        ):
+        if not self._turn_state.clear_playback(turn_id, stream_id):
             return
-        self._playback_turn_id = None
-        self._playback_stream_id = None
         logger.info(
             "browser_playback_drained session_id=%s turn_id=%s stream_id=%s",
             self.session_id,
@@ -495,14 +690,13 @@ class ConnectionRuntime:
         if self._closing:
             return
         self._closing = True
-        self._dialogue_coordinator.unregister(self._family_dialogue)
-        self._dialogue_coordinator.unregister(self._guest_dialogue)
+        self._dialogue_coordinator.unregister(self._dialogue)
         await self._profile_cache.close()
         if self._audio_session is not None:
             session = self._audio_session
             self._audio_session = None
             with suppress(Exception):
-                await session.close()
+                await session.abort()
         voiceprint_tasks = [
             state.task
             for state in self._voice_joins.values()
@@ -514,12 +708,7 @@ class ConnectionRuntime:
             await asyncio.gather(*voiceprint_tasks, return_exceptions=True)
         self._voice_joins.clear()
         await self.cancel_turn(reason="connection_closed", notify=False)
-        if self._sender_task is not None and not self._sender_task.done():
-            with suppress(Exception):
-                await self._enqueue(_SEND_END, turn_id=None)
-        if self._sender_task is not None:
-            with suppress(Exception):
-                await self._sender_task
+        await self._sender.close()
 
     async def _stream_turn(
         self,
@@ -586,10 +775,10 @@ class ConnectionRuntime:
                     elif isinstance(output, AudioStarted):
                         if first_audio_ms is None:
                             first_audio_ms = (perf_counter() - started_at) * 1000
-                        if self._active_turn_id == turn.turn_id:
-                            self._active_stream_id = output.stream_id
-                            self._playback_turn_id = turn.turn_id
-                            self._playback_stream_id = output.stream_id
+                        self._turn_state.begin_playback(
+                            turn.turn_id,
+                            output.stream_id,
+                        )
                         await self.send_json(
                             {
                                 "type": "audio_start",
@@ -618,12 +807,10 @@ class ConnectionRuntime:
                             turn_id=turn.turn_id,
                         )
                     elif isinstance(output, AudioFailed):
-                        if (
-                            self._playback_turn_id == turn.turn_id
-                            and self._playback_stream_id == output.stream_id
-                        ):
-                            self._playback_turn_id = None
-                            self._playback_stream_id = None
+                        self._turn_state.clear_playback(
+                            turn.turn_id,
+                            output.stream_id,
+                        )
                         await self.send_json(
                             {
                                 "type": "audio_failed",
@@ -636,11 +823,18 @@ class ConnectionRuntime:
                     elif isinstance(output, TurnCompleted):
                         log_summary("completed", response_chars=len(output.text))
                         committed = False
+                        persisted = False
                         if (
-                            self._active_turn_id == turn.turn_id
+                            self._turn_state.turn_id == turn.turn_id
                             and await self._can_commit_turn(turn)
                         ):
-                            dialogue.commit(turn, output.text)
+                            # 同一设备的多个活跃连接共享家庭短期上下文；这里只同步
+                            # 已完整完成的 Turn，不传播进行中输出或播放状态。
+                            self._dialogue_coordinator.commit(
+                                self.device_id,
+                                turn,
+                                output.text,
+                            )
                             committed = True
                             lane = (
                                 "family"
@@ -654,6 +848,7 @@ class ConnectionRuntime:
                                     exchange=dialogue.exchanges[-1],
                                     max_turns=dialogue.max_turns,
                                 )
+                                persisted = True
                             except Exception:
                                 logger.exception(
                                     "dialogue_persist_failed session_id=%s turn_id=%s",
@@ -661,12 +856,18 @@ class ConnectionRuntime:
                                     turn.turn_id,
                                 )
                             logger.info(
-                                "dialogue_committed session_id=%s turn_id=%s completed_turns=%s",
+                                "dialogue_committed session_id=%s turn_id=%s "
+                                "completed_turns=%s persisted=%s",
                                 self.session_id,
                                 turn.turn_id,
                                 len(dialogue.exchanges),
+                                persisted,
                             )
-                        if committed and turn.speaker_identity_id is not None:
+                        if (
+                            committed
+                            and persisted
+                            and turn.speaker_identity_id is not None
+                        ):
                             try:
                                 await self._memory_writer.enqueue_completed_turn(
                                     turn, output.text
@@ -708,10 +909,7 @@ class ConnectionRuntime:
                 turn_id=turn.turn_id,
             )
         finally:
-            if self._active_turn_id == turn.turn_id:
-                self._active_turn_id = None
-                self._active_stream_id = None
-                self._active_turn_task = None
+            if self._turn_state.clear_active(turn.turn_id):
                 logger.info(
                     "turn_completed session_id=%s turn_id=%s",
                     self.session_id,
@@ -744,8 +942,9 @@ class ConnectionRuntime:
                 turn.turn_id,
                 turn.speaker_identity_id,
             )
-            # Keep this connection usable; PostgreSQL persistence has its own failure boundary.
-            return True
+            # 回复已经可以继续交付当前连接，但无法确认成员仍有效时，不能把
+            # 私人 Dialogue 或 Memory 写入长期存储。
+            return False
 
     async def _on_speech_boundary(self, event: SpeechBoundary) -> None:
         if self._closing:
@@ -822,7 +1021,7 @@ class ConnectionRuntime:
             )
             if text:
                 event_id = f"voice-{utterance_id}"
-                self._seen_event_ids.add(event_id)
+                self.remember_event(event_id)
                 resolution = await self._resolve_voice_speaker(utterance_id)
                 await self.send_json(
                     {
@@ -956,50 +1155,6 @@ class ConnectionRuntime:
             }
         )
         await self._discard_voice_join(utterance_id)
-
-    async def _enqueue(self, payload: dict[str, Any] | bytes | object, *, turn_id: str | None) -> None:
-        if self._sender_task is None:
-            raise RuntimeError("Connection sender has not started")
-        loop = asyncio.get_running_loop()
-        delivered: asyncio.Future[None] = loop.create_future()
-        await self._outbound.put(_OutboundFrame(payload, turn_id, delivered))
-        await delivered
-
-    async def _send_loop(self) -> None:
-        failure: Exception | None = None
-        try:
-            while True:
-                item = await self._outbound.get()
-                try:
-                    if item.payload is _SEND_END:
-                        if not item.delivered.done():
-                            item.delivered.set_result(None)
-                        return
-                    if item.turn_id is not None and item.turn_id != self._active_turn_id:
-                        if not item.delivered.done():
-                            item.delivered.set_result(None)
-                        continue
-                    if isinstance(item.payload, bytes):
-                        await self.websocket.send_bytes(item.payload)
-                    elif isinstance(item.payload, dict):
-                        await self.websocket.send_json(item.payload)
-                    if not item.delivered.done():
-                        item.delivered.set_result(None)
-                except Exception as exc:
-                    if not item.delivered.done():
-                        item.delivered.set_exception(exc)
-                    raise
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            failure = exc
-        finally:
-            error = failure or RuntimeError("Connection sender stopped")
-            while not self._outbound.empty():
-                pending = self._outbound.get_nowait()
-                if not pending.delivered.done():
-                    pending.delivered.set_exception(error)
-
 
 def _matches_input_format(value: Any) -> bool:
     return isinstance(value, dict) and value == {

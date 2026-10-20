@@ -1,5 +1,8 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 @dataclass(frozen=True, slots=True)
@@ -9,7 +12,8 @@ class VoicePrintConfig:
     log_level: str = "INFO"
     database_url: str = "postgresql+asyncpg://newtalk:newtalk@127.0.0.1:5432/newtalk"
     api_token: str = "local-voiceprint-token"
-    backend: str = "deterministic"
+    # 直接运行服务时必须使用真实模型；deterministic 只能由测试显式选择。
+    backend: str = "campplus"
     model_id: str = "iic/speech_campplus_sv_zh-cn_3dspeaker_16k"
     device: str = "cpu"
     similarity_threshold: float = 0.5
@@ -20,13 +24,22 @@ class VoicePrintConfig:
 
     @classmethod
     def from_environment(cls) -> "VoicePrintConfig":
+        # 与主服务保持相同的本机启动体验；容器显式注入的环境变量优先，
+        # 因此 Docker/云部署不会被工作目录中的文件覆盖。
+        load_dotenv(Path.cwd() / ".env", override=False)
         defaults = cls()
         config = cls(
             host=os.getenv("VOICEPRINT_HOST", defaults.host),
             port=int(os.getenv("VOICEPRINT_PORT", str(defaults.port))),
             log_level=os.getenv("VOICEPRINT_LOG_LEVEL", defaults.log_level).upper(),
-            database_url=os.getenv("VOICEPRINT_DATABASE_URL", defaults.database_url),
-            api_token=os.getenv("VOICEPRINT_API_TOKEN", defaults.api_token),
+            database_url=os.getenv(
+                "VOICEPRINT_DATABASE_URL",
+                os.getenv("NEWTALK_DATABASE_URL", defaults.database_url),
+            ),
+            api_token=os.getenv(
+                "VOICEPRINT_API_TOKEN",
+                os.getenv("NEWTALK_VOICEPRINT_API_TOKEN", defaults.api_token),
+            ),
             backend=os.getenv("VOICEPRINT_BACKEND", defaults.backend).lower(),
             model_id=os.getenv("VOICEPRINT_MODEL_ID", defaults.model_id),
             device=os.getenv("VOICEPRINT_DEVICE", defaults.device).lower(),

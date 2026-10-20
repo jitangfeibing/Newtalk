@@ -73,6 +73,7 @@ def make_service(store: MemoryStore | None = None) -> VoicePrintService:
 
 
 def test_default_similarity_threshold_is_half() -> None:
+    assert VoicePrintConfig().backend == "campplus"
     assert VoicePrintConfig().similarity_threshold == 0.5
     assert VoicePrintConfig().identify_min_sample_seconds == 0.8
 
@@ -146,7 +147,7 @@ def test_registration_rejects_wrong_count_invalid_audio_and_foreign_member() -> 
 
 
 def test_http_api_requires_token_and_supports_register_identify_delete() -> None:
-    config = VoicePrintConfig(api_token="test-token")
+    config = VoicePrintConfig(api_token="test-token", backend="deterministic")
     service = make_service()
     app = create_app(config, service=service)
     headers = {"Authorization": "Bearer test-token"}
@@ -154,7 +155,10 @@ def test_http_api_requires_token_and_supports_register_identify_delete() -> None
     files = [("samples", (f"sample-{index}.wav", sample, "audio/wav")) for index in range(3)]
 
     with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["backend"] == "deterministic"
+        assert health.json()["model"] == "deterministic-test-v1"
         assert client.post("/v1/templates").status_code == 401
         registered = client.post(
             "/v1/templates",
@@ -178,7 +182,7 @@ def test_http_api_requires_token_and_supports_register_identify_delete() -> None
 
 
 def test_http_identify_logs_short_audio_rejection(caplog) -> None:
-    config = VoicePrintConfig(api_token="test-token")
+    config = VoicePrintConfig(api_token="test-token", backend="deterministic")
     app = create_app(config, service=make_service())
     headers = {"Authorization": "Bearer test-token"}
 

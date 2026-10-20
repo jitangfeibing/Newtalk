@@ -2,7 +2,7 @@
 
 WebSocket Endpoint 为 `GET /ws`，协议版本 `0.10`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
-WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID，并分别恢复 Family 和 Guest 的最近窗口。
+WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID。服务端读取 Family/Guest 兼容 lane 后按时间合并为设备级短期 Dialogue。
 
 ## Device 与成员 HTTP API
 
@@ -157,7 +157,7 @@ ASR 和 VoicePrint 使用相同 `utterance_id`。非空 `asr_final` 会先发给
 }
 ```
 
-Member Turn 使用家庭共享 Dialogue，历史用户消息带说话人姓名和家庭关系；Guest Turn 使用独立 Guest Dialogue。说话人字段在 Turn 创建后固定，迟到声纹结果不能修改当前回复归属。
+Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息带说话人姓名和家庭关系。说话人字段在 Turn 创建后固定，迟到声纹结果不能修改当前回复归属；Guest 仍不能读取成员 Profile 或长期 Memory。
 
 `profile.enabled` 表示服务端是否配置 Profile Provider；`ready` 表示当前成员的 Snapshot 在本 Turn 创建时已经就绪；`fields` 是本次 Snapshot 的非空字段数。`ready=false` 不属于聊天错误，当前 Turn 会在不等待 MemOS 的情况下继续。Guest 的 `ready` 始终为 `false`。
 
@@ -227,8 +227,8 @@ Browser getUserMedia
        |-> SpeechRecognizer.stream -> ASR partial/final
        `-> WAV -> VoicePrint /v1/identify
 -> utterance_id join with bounded wait
-   |-> matched active member -> Member Turn -> Family Dialogue
-   `-> timeout/no-match/failure -> Guest Turn -> Guest Dialogue
+   |-> matched active member -> Member Turn --+
+   `-> timeout/no-match/failure -> Guest Turn -+-> device Dialogue
 -> ConnectionRuntime.start_turn with immutable device/speaker
 -> DialogueSession.messages_for -> speaker-labelled immutable Turn.messages
 -> ChatService.stream_turn
@@ -314,12 +314,12 @@ WebSocket 握手携带 HttpOnly Device Cookie
    `-> 再次连接：读取 Family/Guest 最近窗口，resumed=true
 -> hello(session_id, dialogue snapshot)
 -> 浏览器重建消息列表
--> ConnectionRuntime 恢复两个内存 DialogueSession
+-> ConnectionRuntime 按时间合并并恢复一个设备 DialogueSession
 
 当前 Turn 成功完成
 -> 内存 Dialogue commit
 -> PostgreSQL append(turn_id unique, lane)
--> 分 lane 裁剪最近 max_turns
+-> 数据库按兼容 lane 裁剪；Runtime 使用合并后的最近 max_turns
 ```
 
-同一家庭多个页面共享持久化 Session，但第一版不推送跨页面实时更新。每个页面建立连接时获得当时的快照，后续在刷新或重连时再次同步。
+同一家庭多个页面共享持久化 Session。同进程内一个页面完成 Turn 后，其他活动连接的内存上下文会同步提交该 Turn，但页面消息列表不做实时广播；每个页面仍在建立连接时从 `hello.dialogue` 获得可见快照。

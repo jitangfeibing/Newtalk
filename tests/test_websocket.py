@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 from newtalk.app import create_app
 from newtalk.asr import AsrFinal, FakeASR
 from newtalk.audio import INPUT_AUDIO_FORMAT, VadEvent
-from newtalk.chat import ChatMessage, ChatService, FakeLLM, format_user_message
+from newtalk.chat import (
+    ChatMessage,
+    ChatService,
+    FakeLLM,
+    InMemoryDialogueStore,
+    format_user_message,
+)
 from newtalk.config import AppConfig
 from newtalk.identity import IdentityService, InMemoryIdentityStore
 from newtalk.profile import ProfileField, ProfileScope, ProfileSnapshot
@@ -25,6 +31,7 @@ def make_client(**app_options) -> TestClient:
         create_app(
             config,
             identity_service=identity_service,
+            persistence_backend="memory",
             **app_options,
         )
     )
@@ -345,6 +352,26 @@ class RecordingMemoryWriter:
         return None
 
 
+class FailingDialogueStore(InMemoryDialogueStore):
+    async def append(self, **kwargs) -> bool:
+        del kwargs
+        raise RuntimeError("temporary dialogue database failure")
+
+
+class FailingIdentityLookupService(IdentityService):
+    def __init__(self) -> None:
+        super().__init__(InMemoryIdentityStore())
+        self.fail_lookup = False
+
+    async def get_identity(self, *, device_id: str, identity_id: str):
+        if self.fail_lookup:
+            raise RuntimeError("temporary identity database failure")
+        return await super().get_identity(
+            device_id=device_id,
+            identity_id=identity_id,
+        )
+
+
 def test_completed_turns_are_sent_as_dialogue_context() -> None:
     model = RecordingModel()
     context_client = make_client(chat_service=ChatService(model))
@@ -368,7 +395,7 @@ def test_completed_turns_are_sent_as_dialogue_context() -> None:
     ]
 
 
-def test_member_text_and_guest_use_separate_dialogue_windows() -> None:
+def test_member_text_and_guest_share_device_dialogue_window() -> None:
     model = RecordingModel()
     identity_client = make_client(chat_service=ChatService(model))
     member = identity_client.post(
@@ -405,7 +432,52 @@ def test_member_text_and_guest_use_separate_dialogue_windows() -> None:
         assert guest_started["speaker"]["guest"] is True
 
     assert model.requests[0][-1].content == "[说话人：小明；家庭关系：儿子]\n这是成员内容"
-    assert model.requests[1] == (ChatMessage("user", guest("这是访客内容")),)
+    assert model.requests[1] == (
+        ChatMessage("user", "[说话人：小明；家庭关系：儿子]\n这是成员内容"),
+        ChatMessage(
+            "assistant",
+            "回复：[说话人：小明；家庭关系：儿子]\n这是成员内容",
+        ),
+        ChatMessage("user", guest("这是访客内容")),
+    )
+
+
+def test_voiceprint_fallback_to_guest_keeps_recent_device_context() -> None:
+    model = RecordingModel()
+    provider = IdentifyingVoicePrintClient()
+    voice_client = make_client(
+        chat_service=ChatService(model),
+        voiceprint_client=provider,
+    )
+    member = voice_client.post(
+        "/api/members",
+        json={"display_name": "小明", "relationship": "儿子"},
+    ).json()
+
+    with voice_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "voiceprint-matched",
+                "text": "我想学英文",
+                "identity_id": member["identity_id"],
+            }
+        )
+        receive_turn(websocket)
+
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "voiceprint-no-match",
+                "text": "一段一段带我学",
+                "identity_id": None,
+            }
+        )
+        receive_turn(websocket)
+
+    assert model.requests[1][0].content == "[说话人：小明；家庭关系：儿子]\n我想学英文"
+    assert model.requests[1][-1].content == guest("一段一段带我学")
 
 
 def test_two_members_share_family_dialogue_with_speaker_labels() -> None:
@@ -443,7 +515,7 @@ def test_member_profiles_are_prefetched_and_scoped_per_turn() -> None:
     provider = RecordingProfileProvider(expected=2)
     profile_client = make_client(
         chat_service=ChatService(model),
-        profile_provider=provider,
+        memory_provider=provider,
     )
     first = profile_client.post(
         "/api/members", json={"display_name": "小明", "relationship": "儿子"}
@@ -508,7 +580,7 @@ def test_profile_failure_does_not_block_member_chat() -> None:
     model = RecordingModel()
     profile_client = make_client(
         chat_service=ChatService(model),
-        profile_provider=FailingProfileProvider(),
+        memory_provider=FailingProfileProvider(),
     )
     member = profile_client.post(
         "/api/members", json={"display_name": "小明", "relationship": "儿子"}
@@ -568,6 +640,32 @@ def test_only_completed_member_turn_is_enqueued_for_long_term_memory() -> None:
     assert turn.speaker_identity_id == member["identity_id"]
     assert turn.user_text == "记住这件事"
     assert assistant_text == "我收到了：记住这件事"
+
+
+def test_dialogue_persistence_failure_skips_long_term_memory_write() -> None:
+    writer = RecordingMemoryWriter()
+    memory_client = make_client(
+        memory_writer=writer,
+        dialogue_store=FailingDialogueStore(),
+    )
+    member = memory_client.post(
+        "/api/members", json={"display_name": "小明", "relationship": "家人"}
+    ).json()
+
+    with memory_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "dialogue-persist-failure",
+                "text": "数据库失败时不要写长期记忆",
+                "identity_id": member["identity_id"],
+            }
+        )
+        _, _, completed, _, _ = receive_turn(websocket)
+
+    assert completed["type"] == "turn_completed"
+    assert writer.calls == []
 
 
 def test_unknown_text_member_is_rejected_without_starting_turn() -> None:
@@ -632,6 +730,33 @@ def test_websocket_reconnect_restores_dialogue_context_for_same_device() -> None
         ChatMessage("user", guest("甲的问题")),
         ChatMessage("assistant", f"回复：{guest('甲的问题')}"),
         ChatMessage("user", guest("乙的问题")),
+    )
+
+
+def test_two_active_connections_share_completed_device_dialogue() -> None:
+    model = RecordingModel()
+    isolated_client = make_client(chat_service=ChatService(model))
+
+    with (
+        isolated_client.websocket_connect("/ws") as first,
+        isolated_client.websocket_connect("/ws") as second,
+    ):
+        first.receive_json()
+        second.receive_json()
+        first.send_json(
+            {"type": "text_input", "event_id": "tab-a", "text": "甲标签页内容"}
+        )
+        receive_turn(first)
+
+        second.send_json(
+            {"type": "text_input", "event_id": "tab-b", "text": "你接着说"}
+        )
+        receive_turn(second)
+
+    assert model.requests[1] == (
+        ChatMessage("user", guest("甲标签页内容")),
+        ChatMessage("assistant", f"回复：{guest('甲标签页内容')}"),
+        ChatMessage("user", guest("你接着说")),
     )
 
 
@@ -743,6 +868,52 @@ def test_member_deleted_during_turn_is_not_restored() -> None:
         restored = websocket.receive_json()
         assert restored["dialogue"]["family_turns"] == 0
         assert restored["dialogue"]["items"] == []
+
+
+def test_identity_lookup_failure_skips_private_persistence_but_completes_turn() -> None:
+    identity_service = FailingIdentityLookupService()
+    writer = RecordingMemoryWriter()
+    isolated_client = make_client(
+        identity_service=identity_service,
+        memory_writer=writer,
+        chat_service=ChatService(RecordingModel(delay_seconds=0.05)),
+    )
+    member = isolated_client.post(
+        "/api/members",
+        json={"display_name": "小明", "relationship": "家人"},
+    ).json()
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "text_input",
+                "event_id": "identity-check-failure",
+                "text": "回复可以完成，但不要持久化",
+                "identity_id": member["identity_id"],
+            }
+        )
+        assert websocket.receive_json()["type"] == "turn_started"
+        identity_service.fail_lookup = True
+
+        completed = None
+        while completed is None:
+            frame = websocket.receive()
+            if frame.get("bytes") is not None:
+                continue
+            event = json.loads(frame["text"])
+            if event["type"] == "turn_completed":
+                completed = event
+
+    assert completed["text"]
+    assert writer.calls == []
+
+    identity_service.fail_lookup = False
+    with isolated_client.websocket_connect("/ws") as websocket:
+        restored = websocket.receive_json()
+
+    assert restored["dialogue"]["family_turns"] == 0
+    assert restored["dialogue"]["items"] == []
 
 
 def test_duplicate_event_id_does_not_create_another_turn() -> None:

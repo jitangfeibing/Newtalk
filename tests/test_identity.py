@@ -20,6 +20,7 @@ def make_app(config: AppConfig | None = None):
     return create_app(
         config or AppConfig(),
         identity_service=IdentityService(InMemoryIdentityStore()),
+        persistence_backend="memory",
     )
 
 

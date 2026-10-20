@@ -46,7 +46,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            services/voiceprint/pyproject.toml
 
       - name: Install project
         run: |
@@ -59,7 +61,13 @@ jobs:
       - name: Apply database migrations
         run: alembic upgrade head
 
+      - name: Run high-confidence static checks
+        run: >-
+          python -m ruff check
+          --select E9,F63,F7,F82
+          src tests services/voiceprint/src services/voiceprint/tests
+
       - name: Run tests
         run: |
-          python -m pytest
+          python -m pytest --cov=newtalk --cov-report=term-missing
           python -m pytest services/voiceprint/tests

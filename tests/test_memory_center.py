@@ -4,7 +4,12 @@ from newtalk.app import create_app
 from newtalk.config import AppConfig
 from newtalk.identity import IdentityService, InMemoryIdentityStore
 from newtalk.memory import MemoryItem, MemoryPage, MemoryRecord, MemorySearchResult
-from newtalk.profile import ProfileField, ProfileScope, ProfileSnapshot
+from newtalk.profile import (
+    ProfileField,
+    ProfileProviderError,
+    ProfileScope,
+    ProfileSnapshot,
+)
 
 
 class MemoryCenterProvider:
@@ -112,6 +117,12 @@ class MemoryCenterProvider:
         return None
 
 
+class FailingMemoryCenterProvider(MemoryCenterProvider):
+    async def prepare_profile(self, scope: ProfileScope) -> ProfileSnapshot:
+        del scope
+        raise ProfileProviderError("upstream response contained a private detail")
+
+
 def _member(client: TestClient, name: str = "小明") -> dict:
     assert client.post("/api/device").status_code == 201
     response = client.post("/api/members", json={"display_name": name})
@@ -124,7 +135,8 @@ def test_memory_center_profile_and_memory_crud_is_scoped_to_device() -> None:
     app = create_app(
         AppConfig(),
         identity_service=IdentityService(InMemoryIdentityStore()),
-        profile_provider=provider,
+        memory_provider=provider,
+        persistence_backend="memory",
     )
     with TestClient(app) as owner, TestClient(app) as stranger:
         member = _member(owner)
@@ -179,6 +191,7 @@ def test_memory_center_returns_503_when_memory_is_disabled() -> None:
     app = create_app(
         AppConfig(),
         identity_service=IdentityService(InMemoryIdentityStore()),
+        persistence_backend="memory",
     )
     with TestClient(app) as client:
         member = _member(client)
@@ -186,3 +199,19 @@ def test_memory_center_returns_503_when_memory_is_disabled() -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Memory is disabled"
+
+
+def test_memory_center_does_not_expose_provider_error_details() -> None:
+    app = create_app(
+        AppConfig(),
+        identity_service=IdentityService(InMemoryIdentityStore()),
+        memory_provider=FailingMemoryCenterProvider(),
+        persistence_backend="memory",
+    )
+    with TestClient(app) as client:
+        member = _member(client)
+        response = client.get(f"/api/members/{member['identity_id']}/profile")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Memory provider failed"
+    assert "private detail" not in response.text

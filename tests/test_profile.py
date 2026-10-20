@@ -2,11 +2,12 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from newtalk.identity import IdentityService, InMemoryIdentityStore
-from newtalk.memory import MemoryWriteReceipt
+from newtalk.memory import MemoryNotFoundError, MemoryWriteReceipt
 from newtalk.profile import (
-    MemosProfileProvider,
+    MemosMemoryProvider,
     ProfileCacheCoordinator,
     ProfileField,
     ProfileScope,
@@ -69,7 +70,7 @@ def test_memos_provider_loads_existing_profile_with_token_auth() -> None:
             base_url="https://memos.test/v1",
             transport=httpx.MockTransport(handler),
         )
-        provider = MemosProfileProvider(
+        provider = MemosMemoryProvider(
             base_url="https://memos.test/v1",
             api_key="secret",
             profile_template_id="template-1",
@@ -125,7 +126,7 @@ def test_memos_provider_binds_missing_profile_then_loads_it() -> None:
             base_url="https://memos.test/v1",
             transport=httpx.MockTransport(handler),
         )
-        provider = MemosProfileProvider(
+        provider = MemosMemoryProvider(
             base_url="https://memos.test/v1",
             api_key="secret",
             profile_template_id="template-1",
@@ -186,7 +187,7 @@ def test_memos_provider_searches_scoped_memory_and_sorts_results() -> None:
             base_url="https://memos.test/v1",
             transport=httpx.MockTransport(handler),
         )
-        provider = MemosProfileProvider(
+        provider = MemosMemoryProvider(
             base_url="https://memos.test/v1",
             api_key="secret",
             profile_template_id="template-1",
@@ -254,7 +255,7 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
             base_url="https://memos.test/v1",
             transport=httpx.MockTransport(handler),
         )
-        provider = MemosProfileProvider(
+        provider = MemosMemoryProvider(
             base_url="https://memos.test/v1",
             api_key="secret",
             profile_template_id="template-1",
@@ -307,10 +308,22 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
 
 def test_memos_provider_lists_and_mutates_only_owned_memories() -> None:
     calls: list[tuple[str, dict]] = []
+    memos_user_id = ProfileScope(
+        "02:00:00:00:00:01", "member-1"
+    ).memos_user_id
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
+        body = json.loads(request.content) if request.content else {}
         calls.append((request.url.path, body))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "message": "ok",
+                    "data": {"id": "fact-1", "user_id": memos_user_id},
+                },
+            )
         if request.url.path.endswith("/get/memory"):
             return httpx.Response(
                 200,
@@ -346,7 +359,7 @@ def test_memos_provider_lists_and_mutates_only_owned_memories() -> None:
             base_url="https://memos.test/v1",
             transport=httpx.MockTransport(handler),
         )
-        provider = MemosProfileProvider(
+        provider = MemosMemoryProvider(
             base_url="https://memos.test/v1",
             api_key="secret",
             profile_template_id="template-1",
@@ -376,9 +389,9 @@ def test_memos_provider_lists_and_mutates_only_owned_memories() -> None:
     assert page.total == 1
     assert [path for path, _ in calls] == [
         "/v1/get/memory",
-        "/v1/get/memory",
+        "/v1/get/memory/fact-1",
         "/v1/update/memory",
-        "/v1/get/memory",
+        "/v1/get/memory/fact-1",
         "/v1/delete/memory",
     ]
     assert calls[2][1] == {
@@ -387,6 +400,49 @@ def test_memos_provider_lists_and_mutates_only_owned_memories() -> None:
         "content": "Newtalk P7",
     }
     assert calls[4][1] == {"memory_ids": ["fact-1"]}
+
+
+def test_memos_provider_rejects_memory_owned_by_another_member() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "id": "foreign-memory",
+                    "user_id": "another-member",
+                },
+            },
+        )
+
+    async def exercise() -> None:
+        client = httpx.AsyncClient(
+            base_url="https://memos.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        provider = MemosMemoryProvider(
+            base_url="https://memos.test/v1",
+            api_key="secret",
+            profile_template_id="template-1",
+            timeout_seconds=1,
+            client=client,
+        )
+        with pytest.raises(MemoryNotFoundError):
+            await provider.delete_memory(
+                ProfileScope("02:00:00:00:00:01", "member-1"),
+                memory_id="foreign-memory",
+            )
+        await client.aclose()
+
+    asyncio.run(exercise())
+
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/v1/get/memory/foreign-memory"
 
 
 def test_memos_provider_updates_profile_and_deletes_member_data() -> None:
@@ -429,7 +485,7 @@ def test_memos_provider_updates_profile_and_deletes_member_data() -> None:
             base_url="https://memos.test/v1",
             transport=httpx.MockTransport(handler),
         )
-        provider = MemosProfileProvider(
+        provider = MemosMemoryProvider(
             base_url="https://memos.test/v1",
             api_key="secret",
             profile_template_id="template-1",
@@ -495,6 +551,26 @@ class BlockingProfileProvider:
         return None
 
 
+class FlakyProfileProvider:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def prepare_profile(self, scope: ProfileScope) -> ProfileSnapshot:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary MemOS failure")
+        return ProfileSnapshot(
+            identity_id=scope.identity_id,
+            profile_template_id="template-1",
+            fields=(ProfileField("姓名", "小明"),),
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
 def test_session_profile_prefetch_is_non_blocking_and_scoped_by_identity() -> None:
     async def exercise() -> None:
         identity_service = IdentityService(InMemoryIdentityStore())
@@ -522,6 +598,31 @@ def test_session_profile_prefetch_is_non_blocking_and_scoped_by_identity() -> No
 
         await cache.close()
         await identity_service.close()
+
+    asyncio.run(exercise())
+
+
+def test_session_profile_cache_retries_after_temporary_failure() -> None:
+    async def exercise() -> None:
+        identity_service = IdentityService(InMemoryIdentityStore())
+        provider = FlakyProfileProvider()
+        cache = SessionProfileCache(
+            device_id="02:00:00:00:00:01",
+            identity_service=identity_service,
+            provider=provider,
+            retry_delay_seconds=0,
+        )
+
+        assert cache.snapshot_for("member-1") is None
+        await cache.wait_until_idle()
+        assert cache.snapshot_for("member-1") is None
+        await cache.wait_until_idle()
+
+        snapshot = cache.snapshot_for("member-1")
+        assert snapshot is not None
+        assert snapshot.fields == (ProfileField("姓名", "小明"),)
+        assert provider.calls == 2
+        await cache.close()
 
     asyncio.run(exercise())
 

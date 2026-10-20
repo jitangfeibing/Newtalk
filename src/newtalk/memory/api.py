@@ -1,3 +1,4 @@
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -19,6 +20,7 @@ from newtalk.profile.session import ProfileCacheCoordinator
 
 router = APIRouter(prefix="/api/members", tags=["memory"])
 MemoryKindFilter = Literal["all", "fact", "preference", "event"]
+logger = logging.getLogger(__name__)
 
 
 class ProfileFieldResponse(BaseModel):
@@ -97,7 +99,7 @@ def _identity_service(request: Request) -> IdentityService:
 
 
 def _provider(request: Request) -> MemoryProvider:
-    return request.app.state.profile_provider
+    return request.app.state.memory_provider
 
 
 def _coordinator(request: Request) -> ProfileCacheCoordinator:
@@ -126,12 +128,26 @@ def _ensure_enabled(provider: MemoryProvider) -> None:
         raise HTTPException(status_code=503, detail="Memory is disabled")
 
 
-def _provider_error(exc: Exception) -> HTTPException:
+def _provider_error(
+    exc: Exception,
+    *,
+    operation: str,
+    scope: ProfileScope,
+) -> HTTPException:
     if isinstance(exc, MemoryNotFoundError):
         return HTTPException(status_code=404, detail="Memory not found")
+    logger.warning(
+        "memory_provider_request_failed operation=%s device_id=%s "
+        "identity_id=%s error_type=%s",
+        operation,
+        scope.device_id,
+        scope.identity_id,
+        type(exc).__name__,
+        exc_info=True,
+    )
     if isinstance(exc, ProfileProviderUnavailableError):
         return HTTPException(status_code=503, detail="Memory provider is unavailable")
-    return HTTPException(status_code=502, detail=str(exc) or "Memory provider failed")
+    return HTTPException(status_code=502, detail="Memory provider failed")
 
 
 def _profile_response(snapshot: ProfileSnapshot) -> ProfileResponse:
@@ -182,7 +198,7 @@ async def get_profile(
     try:
         return _profile_response(await provider.prepare_profile(scope))
     except (ProfileProviderError, MemoryNotFoundError) as exc:
-        raise _provider_error(exc) from exc
+        raise _provider_error(exc, operation="get_profile", scope=scope) from exc
 
 
 @router.patch("/{identity_id}/profile", response_model=ProfileResponse)
@@ -205,7 +221,7 @@ async def update_profile(
             remove=payload.remove,
         )
     except (ProfileProviderError, ValueError) as exc:
-        raise _provider_error(exc) from exc
+        raise _provider_error(exc, operation="update_profile", scope=scope) from exc
     coordinator.update(device.device_id, snapshot)
     return _profile_response(snapshot)
 
@@ -262,7 +278,7 @@ async def list_memories(
     except HTTPException:
         raise
     except (ProfileProviderError, MemoryNotFoundError) as exc:
-        raise _provider_error(exc) from exc
+        raise _provider_error(exc, operation="list_memories", scope=scope) from exc
     return _memory_response(memory_page)
 
 
@@ -285,7 +301,7 @@ async def update_memory(
             content=payload.content,
         )
     except (ProfileProviderError, MemoryNotFoundError) as exc:
-        raise _provider_error(exc) from exc
+        raise _provider_error(exc, operation="update_memory", scope=scope) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -302,5 +318,5 @@ async def delete_memory(
     try:
         await provider.delete_memory(scope, memory_id=memory_id)
     except (ProfileProviderError, MemoryNotFoundError) as exc:
-        raise _provider_error(exc) from exc
+        raise _provider_error(exc, operation="delete_memory", scope=scope) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

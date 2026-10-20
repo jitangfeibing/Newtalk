@@ -131,3 +131,52 @@ def test_audio_session_reports_recognizer_failure() -> None:
         assert failures[0][1] == "test ASR failure"
 
     asyncio.run(run())
+
+
+def test_audio_session_abort_cancels_hanging_recognition() -> None:
+    class OpenEndedVadStream(BoundaryVadStream):
+        def process(self, pcm: bytes) -> list[VadEvent]:
+            del pcm
+            self.calls += 1
+            return [VadEvent("speech_start", 0.8, 20.0)] if self.calls == 1 else []
+
+    class HangingASR(FakeASR):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.cancelled = False
+
+        async def stream(self, audio_chunks, *, utterance_id: str):
+            del utterance_id
+            async for _ in audio_chunks:
+                self.started.set()
+                break
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            if False:
+                yield AsrFinal("")
+
+    async def run() -> None:
+        recognizer = HangingASR()
+
+        async def ignore(*args) -> None:
+            del args
+
+        session = AudioInputSession(
+            vad_stream=OpenEndedVadStream(),
+            recognizer=recognizer,
+            on_boundary=ignore,
+            on_asr_event=ignore,
+            pre_roll_ms=20,
+        )
+        await session.push(bytes(640))
+        await asyncio.wait_for(recognizer.started.wait(), timeout=1)
+
+        await asyncio.wait_for(session.abort(), timeout=0.1)
+
+        assert recognizer.cancelled is True
+
+    asyncio.run(run())

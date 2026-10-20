@@ -165,10 +165,15 @@ function renderProfile(profile) {
 }
 
 function memoryCard(memory) {
-    const card = document.createElement('form');
+    const card = document.createElement('article');
     const meta = document.createElement('div');
     const kind = document.createElement('span');
     const date = document.createElement('time');
+    const summary = document.createElement('div');
+    const heading = document.createElement('strong');
+    const preview = document.createElement('p');
+    const toggle = document.createElement('button');
+    const editor = document.createElement('form');
     const title = document.createElement('input');
     const content = document.createElement('textarea');
     const actions = document.createElement('div');
@@ -180,8 +185,20 @@ function memoryCard(memory) {
     meta.className = 'memory-card-meta';
     kind.textContent = {fact: '事实', preference: '偏好', event: '经历'}[memory.kind] || memory.kind;
     const timestamp = memory.updated_at || memory.created_at;
-    date.textContent = timestamp ? new Date(timestamp).toLocaleString('zh-CN') : '时间未知';
+    date.textContent = timestamp ? new Date(timestamp).toLocaleDateString('zh-CN') : '时间未知';
     meta.append(kind, date);
+    summary.className = 'memory-card-summary';
+    heading.className = 'memory-card-title';
+    heading.textContent = memory.title || '未命名记忆';
+    preview.className = 'memory-card-preview';
+    preview.textContent = memory.content || '暂无内容';
+    toggle.type = 'button';
+    toggle.className = 'memory-card-toggle';
+    toggle.textContent = '查看与编辑';
+    toggle.setAttribute('aria-expanded', 'false');
+    summary.append(heading, preview, toggle);
+    editor.className = 'memory-card-editor';
+    editor.hidden = true;
     title.value = memory.title;
     title.maxLength = 500;
     title.placeholder = '记忆标题';
@@ -196,9 +213,18 @@ function memoryCard(memory) {
     remove.className = 'text-button danger';
     remove.textContent = '删除记忆';
     actions.append(save, remove);
-    card.append(meta, title, content, actions);
+    editor.append(title, content, actions);
+    card.append(meta, summary, editor);
 
-    card.addEventListener('submit', async (event) => {
+    toggle.addEventListener('click', () => {
+        const willOpen = editor.hidden;
+        editor.hidden = !willOpen;
+        toggle.setAttribute('aria-expanded', String(willOpen));
+        toggle.textContent = willOpen ? '收起' : '查看与编辑';
+        if (willOpen) title.focus();
+    });
+
+    editor.addEventListener('submit', async (event) => {
         event.preventDefault();
         save.disabled = true;
         try {
@@ -233,8 +259,8 @@ function renderMemories(result) {
     else memoryList.replaceChildren(...result.items.map(memoryCard));
     pages = result.pages;
     page = result.page;
-    pagination.hidden = pages <= 1;
-    pageLabel.textContent = `${page} / ${Math.max(pages, 1)}`;
+    pagination.hidden = false;
+    pageLabel.textContent = `第 ${page} / ${Math.max(pages, 1)} 页`;
     previousButton.disabled = page <= 1;
     nextButton.disabled = page >= pages;
 }
@@ -253,7 +279,7 @@ async function loadProfile() {
 }
 
 async function loadMemories() {
-    const params = new URLSearchParams({page: String(page), size: '20', kind: memoryKindSelect.value});
+    const params = new URLSearchParams({page: String(page), size: '8', kind: memoryKindSelect.value});
     const query = memorySearchInput.value.trim();
     if (query) params.set('query', query);
     const result = await api(`/api/members/${selectedIdentityId()}/memories?${params}`);
@@ -280,7 +306,10 @@ async function loadSelectedMember() {
         emptyState(profileList, '当前无法读取稳定画像。');
         emptyState(memoryList, '当前无法读取历史记忆。');
         memoryCount.textContent = '0 条';
-        pagination.hidden = true;
+        pagination.hidden = false;
+        pageLabel.textContent = '第 1 / 1 页';
+        previousButton.disabled = true;
+        nextButton.disabled = true;
         setFeedback('');
     } finally {
         profileList.removeAttribute('aria-busy');
@@ -306,7 +335,10 @@ function updateMembers(nextMembers) {
         emptyState(profileList, '添加家庭成员后，这里会显示稳定画像。');
         emptyState(memoryList, '添加家庭成员后，这里会显示长期记忆。');
         memoryCount.textContent = '0 条';
-        pagination.hidden = true;
+        pagination.hidden = false;
+        pageLabel.textContent = '第 1 / 1 页';
+        previousButton.disabled = true;
+        nextButton.disabled = true;
         return;
     }
     memberSelect.value = members.some((member) => member.identity_id === selected)
