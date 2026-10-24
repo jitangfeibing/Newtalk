@@ -2,7 +2,7 @@ const SAMPLE_RATE = 16000;
 const SAMPLE_SECONDS = 4;
 
 
-function pcmToWav(frames) {
+export function pcmToWav(frames) {
     const sampleCount = frames.reduce((total, frame) => total + frame.length, 0);
     const buffer = new ArrayBuffer(44 + sampleCount * 2);
     const view = new DataView(buffer);

@@ -1106,13 +1106,14 @@ def test_microphone_voiceprint_match_becomes_member_turn() -> None:
         websocket.receive_json()
         websocket.send_bytes(bytes(640))
         events = []
-        while not any(event["type"] == "turn_started" for event in events):
+        while not any(event["type"] == "speaker_resolved" for event in events):
             frame = websocket.receive()
             if frame.get("bytes") is None:
                 events.append(json.loads(frame["text"]))
+        started, _, completed, _, _ = receive_turn(websocket)
+        assert completed["type"] == "turn_completed"
 
     resolved = next(event for event in events if event["type"] == "speaker_resolved")
-    started = next(event for event in events if event["type"] == "turn_started")
     assert resolved["identity_id"] == member["identity_id"]
     assert resolved["reason"] == "matched"
     assert started["speaker"]["display_name"] == "小明"
@@ -1121,7 +1122,20 @@ def test_microphone_voiceprint_match_becomes_member_turn() -> None:
 
 
 def test_voiceprint_timeout_degrades_to_guest_turn() -> None:
-    provider = IdentifyingVoicePrintClient(delay_seconds=0.1)
+    class WaitingVoicePrintClient(IdentifyingVoicePrintClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = threading.Event()
+
+        async def identify(self, *, device_id, sample):
+            del device_id
+            self.samples.append(sample)
+            try:
+                await asyncio.Future()
+            finally:
+                self.cancelled.set()
+
+    provider = WaitingVoicePrintClient()
     voice_client = make_client(
         config=AppConfig(voiceprint_join_timeout_seconds=0.01),
         vad=ScriptedVad(),
@@ -1136,16 +1150,21 @@ def test_voiceprint_timeout_degrades_to_guest_turn() -> None:
         websocket.receive_json()
         websocket.send_bytes(bytes(640))
         events = []
-        while not any(event["type"] == "turn_started" for event in events):
+        while not any(event["type"] == "speaker_resolved" for event in events):
             frame = websocket.receive()
             if frame.get("bytes") is None:
                 events.append(json.loads(frame["text"]))
+        # 本测试验证超时后仍能完成聊天；不能在识别 Task 刚启动 Turn 时
+        # 关闭 TestClient，把作用域取消与业务降级混成一次调度竞态。
+        started, _, completed, _, _ = receive_turn(websocket)
+        assert completed["type"] == "turn_completed"
+        assert completed["text"] == "我收到了：超时也继续聊天"
 
     resolved = next(event for event in events if event["type"] == "speaker_resolved")
-    started = next(event for event in events if event["type"] == "turn_started")
     assert resolved["reason"] == "timeout"
     assert resolved["matched"] is False
     assert started["speaker"]["guest"] is True
+    assert provider.cancelled.is_set()
 
 
 def test_vad_speech_start_cancels_the_active_turn() -> None:

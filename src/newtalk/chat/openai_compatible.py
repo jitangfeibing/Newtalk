@@ -4,6 +4,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from newtalk.chat.models import ChatMessage, ModelToolCall
+from newtalk.context_debug import record_model_request
 
 
 class OpenAICompatibleChatModel:
@@ -44,6 +45,7 @@ class OpenAICompatibleChatModel:
             request["tools"] = list(tools)
             request["tool_choice"] = "auto"
 
+        record_model_request(request)
         async with self._client.chat.completions.stream(
             **request,
         ) as stream:

@@ -14,7 +14,8 @@ DATABASE_URL = os.getenv("NEWTALK_TEST_DATABASE_URL")
 @pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration URL is not configured")
 def test_postgres_identity_deletion_job_survives_schedule_and_completes() -> None:
     async def scenario() -> None:
-        identities = IdentityService(SqlAlchemyIdentityStore(DATABASE_URL))
+        identity_store = SqlAlchemyIdentityStore(DATABASE_URL)
+        identities = IdentityService(identity_store)
         jobs = SqlAlchemyIdentityDeletionStore(DATABASE_URL, lease_seconds=0)
         await identities.start()
         await jobs.start()
@@ -40,9 +41,20 @@ def test_postgres_identity_deletion_job_survives_schedule_and_completes() -> Non
             assert claimed is not None
             assert claimed.identity_id == member.identity_id
             assert claimed.attempts == 1
-            await jobs.complete(claimed.job_id)
+            await jobs.fail(claimed.job_id, error="old failed deletion", retry_at=None)
+            await jobs.close()
+            jobs = SqlAlchemyIdentityDeletionStore(DATABASE_URL, lease_seconds=0)
+            await jobs.start()
+            recovered = await jobs.claim()
+            assert recovered is not None
+            assert recovered.job_id == claimed.job_id
+            assert recovered.attempts == 2
+            await jobs.complete(recovered.job_id)
 
             assert await jobs.claim() is None
+            assert await identity_store.get_identity(
+                device_id=member.device_id, identity_id=member.identity_id
+            ) is None
         finally:
             await jobs.close()
             await identities.close()

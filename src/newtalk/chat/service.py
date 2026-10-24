@@ -24,6 +24,7 @@ from newtalk.chat.models import (
 )
 from newtalk.memory import DisabledMemoryProvider, MemoryProvider
 from newtalk.profile import ProfileScope
+from newtalk.context_debug import ContextDebugger, record_context
 from newtalk.tts import AudioFormat, FakeTTS, StreamingTextSegmenter, TextToSpeech
 
 
@@ -66,6 +67,7 @@ class ChatService:
         memory_search_relativity: float = 0.55,
         memory_result_max_chars: int = 4000,
         memory_query_max_chars: int = 500,
+        context_debug: ContextDebugger | None = None,
     ) -> None:
         self._model = model or FakeLLM()
         self._synthesizer = synthesizer or FakeTTS()
@@ -74,6 +76,7 @@ class ChatService:
         self._memory_search_relativity = memory_search_relativity
         self._memory_result_max_chars = memory_result_max_chars
         self._memory_query_max_chars = memory_query_max_chars
+        self.context_debug = context_debug or ContextDebugger()
 
     @property
     def audio_format(self) -> AudioFormat:
@@ -126,6 +129,8 @@ class ChatService:
             else ()
         )
         tool_used = False
+        memory_tool_offered = bool(tools)
+        trace_token = self.context_debug.activate(turn)
         try:
             while True:
                 round_chunks = 0
@@ -165,6 +170,10 @@ class ChatService:
                     raise ValueError("Model exceeded the memory tool call limit")
                 tool_used = True
                 result = await self._execute_memory_search(turn, tool_call)
+                record_context(
+                    "memory_search_result", call_id=tool_call.call_id,
+                    tool=tool_call.name, arguments=tool_call.arguments, result=result,
+                )
                 messages = (
                     *messages,
                     ChatMessage(
@@ -187,6 +196,9 @@ class ChatService:
                 (perf_counter() - started_at) * 1000,
             )
             raise
+        finally:
+            record_context("memory_search_usage", offered=memory_tool_offered, used=tool_used)
+            self.context_debug.reset(trace_token)
         logger.info(
             "llm_stream_completed turn_id=%s model=%s chunks=%s elapsed_ms=%.1f",
             turn.turn_id,
@@ -215,6 +227,7 @@ class ChatService:
             return _tool_error("invalid_arguments", "记忆查询超过长度限制。")
         if turn.speaker_identity_id is None:
             return _tool_error("guest_forbidden", "Guest 不能读取长期记忆。")
+        record_context("memory_search_started", call_id=tool_call.call_id, query=query)
         try:
             result = await self._memory_provider.search(
                 ProfileScope(
@@ -369,10 +382,13 @@ class ChatService:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def aclose(self) -> None:
-        await asyncio.gather(
-            self._model.aclose(),
-            self._synthesizer.aclose(),
-        )
+        try:
+            await asyncio.gather(
+                self._model.aclose(),
+                self._synthesizer.aclose(),
+            )
+        finally:
+            self.context_debug.close()
 
 
 def _tool_error(code: str, message: str) -> str:

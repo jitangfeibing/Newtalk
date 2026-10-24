@@ -67,6 +67,16 @@ jobs:
           --select E9,F63,F7,F82
           src tests services/voiceprint/src services/voiceprint/tests
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Check frontend scripts and audio diagnostics
+        run: |
+          for script in web/*.js; do node --check "$script"; done
+          node --test tests/frontend/test_audio_diagnostics.mjs
+
       - name: Run tests
         run: |
           python -m pytest --cov=newtalk --cov-report=term-missing

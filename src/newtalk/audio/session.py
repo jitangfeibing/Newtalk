@@ -14,6 +14,8 @@ from newtalk.audio.model import (
 
 
 _AUDIO_END = object()
+# 为 ASR 建连预留约 10 秒的 20ms 音频帧，避免短暂握手延迟导致整句失败。
+_ASR_QUEUE_MAX_FRAMES = 500
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,7 @@ class AudioInputSession:
         self._active_queue: asyncio.Queue[bytes | object] | None = None
         self._active_utterance_id: str | None = None
         self._active_audio_chunks: list[bytes] | None = None
+        self._active_task: asyncio.Task[None] | None = None
         self._recognition_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
 
@@ -54,11 +57,8 @@ class AudioInputSession:
         if len(pcm) % 2 != 0:
             raise ValueError("PCM S16LE frames must contain an even number of bytes")
 
-        queue_at_start = self._active_queue
-        if queue_at_start is not None:
-            await queue_at_start.put(pcm)
-            if self._active_audio_chunks is not None:
-                self._active_audio_chunks.append(pcm)
+        if await self._queue_chunk(pcm) and self._active_audio_chunks is not None:
+            self._active_audio_chunks.append(pcm)
         self._append_pre_roll(pcm)
 
         for event in self._vad_stream.process(pcm):
@@ -73,16 +73,8 @@ class AudioInputSession:
         for event in self._vad_stream.flush():
             if event.kind == "speech_end":
                 await self._finish_utterance(event.probability, event.audio_ms)
-        if self._active_queue is not None and self._active_utterance_id is not None:
-            queue = self._active_queue
-            utterance_id = self._active_utterance_id
-            audio_chunks = self._active_audio_chunks or []
-            self._active_queue = None
-            self._active_utterance_id = None
-            self._active_audio_chunks = None
-            await queue.put(_AUDIO_END)
-            if self._on_utterance_audio is not None and audio_chunks:
-                await self._on_utterance_audio(utterance_id, b"".join(audio_chunks))
+        if self._active_utterance_id is not None:
+            await self._finish_active_utterance()
 
     async def close(self) -> None:
         """Gracefully finish the active utterance and wait for its ASR result."""
@@ -102,6 +94,7 @@ class AudioInputSession:
         self._active_queue = None
         self._active_utterance_id = None
         self._active_audio_chunks = None
+        self._active_task = None
         self._pre_roll.clear()
         self._pre_roll_bytes = 0
 
@@ -116,14 +109,17 @@ class AudioInputSession:
         self._vad_stream.reset()
 
     async def _start_utterance(self, probability: float, audio_ms: float) -> None:
-        if self._active_queue is not None:
+        if self._active_utterance_id is not None:
             return
         utterance_id = str(uuid4())
-        queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=128)
+        queue: asyncio.Queue[bytes | object] = asyncio.Queue(
+            maxsize=_ASR_QUEUE_MAX_FRAMES
+        )
         self._active_queue = queue
         self._active_utterance_id = utterance_id
         self._active_audio_chunks = list(self._pre_roll)
         task = asyncio.create_task(self._recognize(utterance_id, queue))
+        self._active_task = task
         self._recognition_tasks.add(task)
         task.add_done_callback(self._recognition_finished)
 
@@ -136,17 +132,15 @@ class AudioInputSession:
             )
         )
         for chunk in self._pre_roll:
-            await queue.put(chunk)
+            if self._active_utterance_id != utterance_id:
+                break
+            if not await self._queue_chunk(chunk):
+                break
 
     async def _finish_utterance(self, probability: float, audio_ms: float) -> None:
-        if self._active_queue is None or self._active_utterance_id is None:
+        if self._active_utterance_id is None:
             return
-        queue = self._active_queue
         utterance_id = self._active_utterance_id
-        audio_chunks = self._active_audio_chunks or []
-        self._active_queue = None
-        self._active_utterance_id = None
-        self._active_audio_chunks = None
         await self._on_boundary(
             SpeechBoundary(
                 kind="speech_end",
@@ -155,9 +149,47 @@ class AudioInputSession:
                 audio_ms=audio_ms,
             )
         )
-        await queue.put(_AUDIO_END)
-        if self._on_utterance_audio is not None and audio_chunks:
+        if self._active_utterance_id == utterance_id:
+            await self._finish_active_utterance()
+
+    async def _finish_active_utterance(self) -> None:
+        utterance_id = self._active_utterance_id
+        if utterance_id is None:
+            return
+        audio_chunks = self._active_audio_chunks or []
+        queued = await self._queue_chunk(_AUDIO_END)
+        self._detach_recognition(utterance_id)
+        self._active_utterance_id = None
+        if queued and self._on_utterance_audio is not None and audio_chunks:
             await self._on_utterance_audio(utterance_id, b"".join(audio_chunks))
+
+    async def _queue_chunk(self, chunk: bytes | object) -> bool:
+        queue = self._active_queue
+        task = self._active_task
+        utterance_id = self._active_utterance_id
+        if queue is None or task is None or utterance_id is None:
+            return False
+        if task.done() or task.cancelling():
+            self._detach_recognition(utterance_id)
+            return False
+        try:
+            queue.put_nowait(chunk)
+            return True
+        except asyncio.QueueFull:
+            # 接收循环不能等待外部 ASR 消费；先摘除队列，保证同一句只报错一次。
+            self._detach_recognition(utterance_id)
+            task.cancel()
+            await self._report_asr_error(
+                utterance_id, RuntimeError("ASR audio queue is full")
+            )
+            return False
+
+    def _detach_recognition(self, utterance_id: str | None) -> None:
+        if self._active_utterance_id == utterance_id:
+            # 识别结束不代表用户说完，保留编号供 VAD 发送 speech_end。
+            self._active_queue = None
+            self._active_audio_chunks = None
+            self._active_task = None
 
     async def _recognize(
         self,
@@ -181,14 +213,20 @@ class AudioInputSession:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error(
-                "asr_stream_failed recognizer=%s utterance_id=%s",
-                type(self._recognizer).__name__,
-                utterance_id,
-                exc_info=True,
-            )
-            if self._on_asr_error is not None:
-                await self._on_asr_error(utterance_id, exc)
+            self._detach_recognition(utterance_id)
+            await self._report_asr_error(utterance_id, exc)
+        finally:
+            self._detach_recognition(utterance_id)
+
+    async def _report_asr_error(self, utterance_id: str, error: Exception) -> None:
+        logger.error(
+            "asr_stream_failed recognizer=%s utterance_id=%s",
+            type(self._recognizer).__name__,
+            utterance_id,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        if self._on_asr_error is not None:
+            await self._on_asr_error(utterance_id, error)
 
     def _append_pre_roll(self, pcm: bytes) -> None:
         self._pre_roll.append(pcm)
@@ -199,6 +237,8 @@ class AudioInputSession:
 
     def _recognition_finished(self, task: asyncio.Task[None]) -> None:
         self._recognition_tasks.discard(task)
+        if task is self._active_task:
+            self._detach_recognition(self._active_utterance_id)
         if task.cancelled():
             return
         error = task.exception()
