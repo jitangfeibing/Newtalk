@@ -7,7 +7,7 @@
 - 一个 Part 聚焦一个可以运行、测试和审阅的纵向闭环。
 - 优先完成当前功能，不提前设计尚未使用的完整 Provider 或 Manager 体系。
 - Legacy 小智项目保持只读，只用于核对协议、参数和历史行为。
-- 实际完成情况记录在 `docs/PROGRESS.md`，规划不能代替代码证据。
+- 实际完成情况以 Git / PR 和测试证据为准；未完成事项集中维护在 [roadmap.md](roadmap.md)。
 - CD 暂不启用；当前尚未确定云服务器、容器仓库、域名、Secret 和回滚策略，自动化只负责 CI 测试，不负责部署。
 
 ## 默认流程
@@ -19,7 +19,7 @@
 -> 实现最小完整链路
 -> 增加或更新测试
 -> 本地运行完整测试
--> 更新 PROGRESS 和相关文档
+-> 更新受影响的架构/协议和路线图
 -> Git commit
 -> Push 到 GitHub
 -> 创建 Pull Request 到 main
@@ -37,9 +37,9 @@
 功能开发默认从最新 `main` 创建独立分支：
 
 ```text
-codex/p1-bootstrap
-codex/p2-text-chat
-codex/p3-llm-stream
+codex/fix-asr-queue
+codex/memory-retries
+codex/frontend-diagnostics
 ```
 
 分支名表达当前 Part 即可，不要求建立复杂编号制度。
@@ -57,20 +57,12 @@ codex/p3-llm-stream
 
 ```powershell
 python -m pip check
-python -m pytest
+.\.venv\Scripts\python -m pytest tests services/voiceprint/tests -q
 ```
 
 ### 4. 同步进度
 
-每个 Part 完成后更新 `docs/PROGRESS.md`，至少写明：
-
-- 实际完成的能力。
-- 主要调用链和代码入口。
-- 测试结果。
-- 仍未实现的边界。
-- 下一阶段可能处理的内容。
-
-架构或协议发生变化时，同时更新对应文档。README 只保留项目入口和当前能力摘要。
+每个 Part 在 PR 中记录完成能力、验证结果与未处理项；完成的待办从 `docs/roadmap.md` 移除或缩小范围。架构决策和已知边界只维护 `docs/architecture.md`，接口契约只维护 `docs/protocol.md`，不再单独复制一份进度文档。README 只保留项目入口和能力摘要。
 
 ### 5. 提交和 PR
 
@@ -82,7 +74,7 @@ python -m pytest
 - 本地完整测试通过。
 - GitHub Actions CI 通过。
 - 没有提交 `.env`、API Key、虚拟环境、日志或 Legacy 源码。
-- `PROGRESS.md` 与代码状态一致。
+- 受影响的架构、协议和路线图与代码一致。
 
 是否立即合并由当前审阅结果决定，不为了保持流程而强行合并。
 
@@ -101,6 +93,7 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 -> pip check
 -> Alembic migration
 -> Ruff 高置信静态检查
+-> Node.js 24 前端脚本语法检查与录音诊断测试
 -> 主项目 pytest + coverage 报告
 -> VoicePrint pytest
 ```
@@ -125,4 +118,4 @@ Coverage 当前只生成趋势报告，不设置阻断阈值；Ruff 也只启用
 
 ## 当前应用
 
-P1-P7.8 均按“功能分支 -> 本地测试 -> PR -> GitHub Actions CI -> 合并 main”交付。下一阶段需求需要先完成设计确认再创建分支；除非部署目标已经明确，否则合并只触发 CI，不触发生产部署。
+功能交付采用“功能分支 -> 本地测试 -> PR -> GitHub Actions CI -> 合并 main”。下一阶段需求先完成设计确认再创建分支；除非部署目标已经明确，否则合并只触发 CI，不触发生产部署。

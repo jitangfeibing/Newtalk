@@ -15,6 +15,7 @@ def test_config_uses_p1_defaults() -> None:
         log_level="INFO",
         web_root=DEFAULT_WEB_ROOT,
     )
+    assert config.memory_job_max_attempts == 8
 
 
 def test_config_reads_environment_values(tmp_path) -> None:

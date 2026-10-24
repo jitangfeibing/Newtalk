@@ -50,7 +50,7 @@ DEFAULT_MEMORY_SEARCH_LIMIT = 5
 DEFAULT_MEMORY_SEARCH_RELATIVITY = 0.55
 DEFAULT_MEMORY_RESULT_MAX_CHARS = 4000
 DEFAULT_MEMORY_JOB_POLL_SECONDS = 1.0
-DEFAULT_MEMORY_JOB_MAX_ATTEMPTS = 3
+DEFAULT_MEMORY_JOB_MAX_ATTEMPTS = 8
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
@@ -68,6 +68,7 @@ class AppConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     log_level: str = DEFAULT_LOG_LEVEL
+    context_debug: bool = False
     web_root: Path = DEFAULT_WEB_ROOT
     dialogue_max_turns: int = DEFAULT_DIALOGUE_MAX_TURNS
     dialogue_max_chars: int = DEFAULT_DIALOGUE_MAX_CHARS
@@ -236,6 +237,10 @@ class AppConfig:
             host=host,
             port=port,
             log_level=log_level,
+            context_debug=_boolean_value(
+                values.get("NEWTALK_CONTEXT_DEBUG"), default=False,
+                name="NEWTALK_CONTEXT_DEBUG",
+            ),
             web_root=web_root,
             dialogue_max_turns=dialogue_max_turns,
             dialogue_max_chars=dialogue_max_chars,

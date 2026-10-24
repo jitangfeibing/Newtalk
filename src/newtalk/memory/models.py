@@ -28,7 +28,7 @@ class MemorySearchResult:
         if max_chars <= 0:
             raise ValueError("Memory result budget must be positive")
         payload = {
-            "status": "ok",
+            "status": "ok" if self.items else "no_match",
             "memories": [
                 {
                     "type": item.kind,

@@ -23,6 +23,7 @@ dist/
 logs/
 tmp/
 audio_output/
+diagrams/*.html
 services/voiceprint/models/
 *.log
 

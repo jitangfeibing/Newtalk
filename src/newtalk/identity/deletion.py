@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import logging
@@ -30,12 +31,21 @@ from newtalk.identity.models import IdentityStatus
 from newtalk.identity.service import IdentityNotFoundError, IdentityService
 from newtalk.identity.sqlalchemy_store import Base, IdentityRow
 from newtalk.memory.provider import MemoryProvider
+from newtalk.memory.jobs import InMemoryMemoryJobStore, MemoryJobRow
 from newtalk.profile.models import ProfileScope
 from newtalk.profile.session import ProfileCacheCoordinator
 from newtalk.voiceprint.client import VoicePrintClient
 
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_backoff(attempts: int) -> float:
+    return min(2 ** min(attempts, 9), 300)
+
+
+class PendingMemoryWritesError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +62,8 @@ class IdentityDeletionStore(Protocol):
     async def schedule(self, *, device_id: str, identity_id: str) -> bool: ...
 
     async def claim(self) -> IdentityDeletionJob | None: ...
+
+    async def has_submitted_memory_jobs(self, *, device_id: str, identity_id: str) -> bool: ...
 
     async def complete(self, job_id: str) -> None: ...
 
@@ -124,8 +136,13 @@ class SqlAlchemyIdentityDeletionStore:
         self._lease_seconds = lease_seconds
 
     async def start(self) -> None:
-        async with self._sessions() as session:
-            await session.execute(select(IdentityDeletionJobRow.job_id).limit(1))
+        async with self._sessions.begin() as session:
+            # 旧重试策略遗留的 failed 任务也必须恢复，避免成员隐藏后永远无法清理。
+            await session.execute(
+                update(IdentityDeletionJobRow)
+                .where(IdentityDeletionJobRow.status == "failed")
+                .values(status="pending", available_at=func.now(), updated_at=func.now())
+            )
 
     async def schedule(self, *, device_id: str, identity_id: str) -> bool:
         try:
@@ -147,6 +164,23 @@ class SqlAlchemyIdentityDeletionStore:
                     return False
                 identity.status = IdentityStatus.DELETION_PENDING.value
                 identity.updated_at = func.now()
+                memory_scope = (
+                    MemoryJobRow.device_id == device_id,
+                    MemoryJobRow.identity_id == parsed_id,
+                )
+                # 兼容旧 worker 把远端查询暂记为 processing 的记录，保留其回执以等待终态。
+                await session.execute(
+                    update(MemoryJobRow).where(
+                        *memory_scope,
+                        MemoryJobRow.status == "processing",
+                        MemoryJobRow.provider_task_id.is_not(None),
+                    ).values(status="submitted", updated_at=func.now())
+                )
+                await session.execute(
+                    update(MemoryJobRow).where(
+                        *memory_scope, MemoryJobRow.status.in_(("pending", "processing")),
+                    ).values(status="failed", last_error="identity_deleted", updated_at=func.now())
+                )
                 session.add(
                     IdentityDeletionJobRow(
                         device_id=device_id,
@@ -157,6 +191,17 @@ class SqlAlchemyIdentityDeletionStore:
                 return True
         except IntegrityError:
             return False
+
+    async def has_submitted_memory_jobs(self, *, device_id: str, identity_id: str) -> bool:
+        async with self._sessions() as session:
+            return await session.scalar(
+                select(MemoryJobRow.job_id).where(
+                    MemoryJobRow.device_id == device_id,
+                    MemoryJobRow.identity_id == UUID(identity_id),
+                    MemoryJobRow.status.in_(("submitted", "processing")),
+                    MemoryJobRow.provider_task_id.is_not(None),
+                ).limit(1)
+            ) is not None
 
     async def claim(self) -> IdentityDeletionJob | None:
         now = datetime.now(timezone.utc)
@@ -233,29 +278,41 @@ class SqlAlchemyIdentityDeletionStore:
 
 
 class InMemoryIdentityDeletionStore:
-    def __init__(self, identity_service: IdentityService) -> None:
+    def __init__(
+        self, identity_service: IdentityService, *, memory_jobs: InMemoryMemoryJobStore | None = None
+    ) -> None:
         self._identity_service = identity_service
+        self._memory_jobs = memory_jobs or InMemoryMemoryJobStore(identity_service)
+        self._memory_jobs.bind_identity_service(identity_service)
         self.jobs: dict[str, IdentityDeletionJob] = {}
         self.statuses: dict[str, str] = {}
         self.retry_at: dict[str, datetime] = {}
         self.errors: dict[str, str] = {}
 
     async def start(self) -> None:
-        return None
+        for job_id, status in tuple(self.statuses.items()):
+            if status == "failed":
+                self.statuses[job_id] = "pending"
+                self.retry_at[job_id] = datetime.now(timezone.utc)
 
     async def schedule(self, *, device_id: str, identity_id: str) -> bool:
-        try:
-            await self._identity_service.mark_identity_deletion_pending(
-                device_id=device_id,
-                identity_id=identity_id,
-            )
-        except IdentityNotFoundError:
-            return False
-        job = IdentityDeletionJob(str(uuid4()), device_id, identity_id)
-        self.jobs[job.job_id] = job
-        self.statuses[job.job_id] = "pending"
-        self.retry_at[job.job_id] = datetime.now(timezone.utc)
-        return True
+        async with self._memory_jobs.identity_lock(device_id, identity_id):
+            try:
+                await self._identity_service.mark_identity_deletion_pending(
+                    device_id=device_id,
+                    identity_id=identity_id,
+                )
+            except IdentityNotFoundError:
+                return False
+            await self._memory_jobs.cancel_identity_jobs(device_id, identity_id)
+            job = IdentityDeletionJob(str(uuid4()), device_id, identity_id)
+            self.jobs[job.job_id] = job
+            self.statuses[job.job_id] = "pending"
+            self.retry_at[job.job_id] = datetime.now(timezone.utc)
+            return True
+
+    async def has_submitted_memory_jobs(self, *, device_id: str, identity_id: str) -> bool:
+        return await self._memory_jobs.has_submitted_jobs(device_id, identity_id)
 
     async def claim(self) -> IdentityDeletionJob | None:
         now = datetime.now(timezone.utc)
@@ -303,7 +360,7 @@ class IdentityDeletionService:
         dialogue_store: DialogueStore | None = None,
         dialogue_coordinator: DialogueCacheCoordinator | None = None,
         poll_seconds: float = 1.0,
-        max_attempts: int = 3,
+        backoff: Callable[[int], float] = _retry_backoff,
     ) -> None:
         self._store = store
         self._voiceprint = voiceprint
@@ -312,7 +369,7 @@ class IdentityDeletionService:
         self._dialogue_store = dialogue_store
         self._dialogue_coordinator = dialogue_coordinator
         self._poll_seconds = poll_seconds
-        self._max_attempts = max_attempts
+        self._backoff = backoff
         self._worker: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -360,6 +417,10 @@ class IdentityDeletionService:
                     identity_id=job.identity_id,
                 )
             if self._memory.enabled:
+                if await self._store.has_submitted_memory_jobs(
+                    device_id=job.device_id, identity_id=job.identity_id
+                ):
+                    raise PendingMemoryWritesError("Waiting for submitted memory tasks")
                 await self._memory.delete_all_memories(scope)
                 await self._memory.delete_profile(scope)
             if self._dialogue_store is not None:
@@ -370,17 +431,16 @@ class IdentityDeletionService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            retry_at = None
-            if job.attempts < self._max_attempts:
-                retry_at = datetime.now(timezone.utc) + timedelta(
-                    seconds=min(2 ** job.attempts, 60)
-                )
+            retry_at = datetime.now(timezone.utc) + timedelta(
+                seconds=self._backoff(job.attempts)
+            )
             await self._store.fail(
                 job.job_id,
                 error=f"{type(exc).__name__}: {exc}",
                 retry_at=retry_at,
             )
-            logger.warning(
+            logger.log(
+                logging.ERROR if job.attempts > 5 else logging.WARNING,
                 "identity_deletion_failed job_id=%s identity_id=%s attempts=%s retry=%s error_type=%s",
                 job.job_id,
                 job.identity_id,

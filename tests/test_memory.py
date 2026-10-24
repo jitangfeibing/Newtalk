@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
+import pytest
+
 from newtalk.chat import ChatMessage, ChatService, ModelToolCall
 from newtalk.memory import (
     InMemoryMemoryJobStore,
@@ -89,6 +91,21 @@ class FlakyClaimMemoryJobStore(InMemoryMemoryJobStore):
         if self.claim_calls == 1:
             raise RuntimeError("temporary database failure")
         return await super().claim()
+
+
+class TerminalMemoryJobStore(InMemoryMemoryJobStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.terminal = asyncio.Event()
+
+    async def complete(self, job_id: str, provider_task_id: str | None) -> None:
+        await super().complete(job_id, provider_task_id)
+        self.terminal.set()
+
+    async def fail(self, job_id: str, *, error: str, retry_at: datetime | None) -> None:
+        await super().fail(job_id, error=error, retry_at=retry_at)
+        if retry_at is None:
+            self.terminal.set()
 
 
 class MemoryToolModel:
@@ -353,12 +370,13 @@ def test_memory_write_worker_marks_final_failure_without_affecting_turn() -> Non
 def test_memory_write_worker_retries_remote_failed_task_with_new_submission() -> None:
     async def scenario() -> None:
         provider = RecordingMemoryProvider(statuses=["failed"])
-        store = InMemoryMemoryJobStore()
+        store = TerminalMemoryJobStore()
         service = MemoryWriteService(
             store,
             provider,
             poll_seconds=0.001,
             max_attempts=2,
+            backoff=lambda attempt: 0,
         )
         await service.start()
         turn = ChatService().create_turn(
@@ -369,7 +387,8 @@ def test_memory_write_worker_retries_remote_failed_task_with_new_submission() ->
         )
         try:
             assert await service.enqueue_completed_turn(turn, "最多提交两次")
-            await _wait_for_status(store, "failed", timeout=5)
+            await asyncio.wait_for(store.terminal.wait(), timeout=1)
+            assert list(store.statuses.values()) == ["failed"]
         finally:
             await service.close()
 
@@ -377,5 +396,123 @@ def test_memory_write_worker_retries_remote_failed_task_with_new_submission() ->
         assert provider.status_checks == ["provider-task-1", "provider-task-1"]
         job_id = next(iter(store.jobs))
         assert store.jobs[job_id].attempts == 2
+
+    asyncio.run(scenario())
+
+
+def test_memory_write_worker_recovers_after_five_submission_failures() -> None:
+    class FlakyProvider(RecordingMemoryProvider):
+        async def add_completed_turn(self, scope: ProfileScope, **values) -> MemoryWriteReceipt:
+            self.writes.append({"scope": scope, **values})
+            if len(self.writes) <= 5:
+                raise RuntimeError("temporary MemOS outage")
+            return MemoryWriteReceipt("recovered-task", "completed")
+
+    async def scenario() -> None:
+        provider = FlakyProvider()
+        store = TerminalMemoryJobStore()
+        delays: list[int] = []
+
+        def backoff(attempt: int) -> float:
+            delays.append(attempt)
+            return 0
+
+        service = MemoryWriteService(store, provider, backoff=backoff)
+        turn = ChatService().create_turn(
+            session_id="session-1", user_text="retry memory",
+            device_id="02:00:00:00:00:01",
+            speaker_identity_id="11111111-1111-1111-1111-111111111111",
+        )
+        try:
+            assert await service.enqueue_completed_turn(turn, "completed reply")
+            await service.start()
+            await asyncio.wait_for(store.terminal.wait(), timeout=1)
+            assert list(store.statuses.values()) == ["completed"]
+            assert len(provider.writes) == 6
+            assert delays == [1, 2, 3, 4, 5]
+            assert next(iter(store.jobs.values())).attempts == 6
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status_errors", [False, True])
+def test_memory_poll_limit_bounds_running_tasks_and_status_errors(status_errors: bool) -> None:
+    async def scenario() -> None:
+        provider = RecordingMemoryProvider(
+            statuses=["running"], status_failures=100 if status_errors else 0
+        )
+        store = InMemoryMemoryJobStore()
+        service = MemoryWriteService(
+            store, provider, poll_seconds=0, max_attempts=2,
+            max_polls=2, backoff=lambda attempt: 0,
+        )
+        turn = ChatService().create_turn(
+            session_id="session-1", user_text="bounded polling",
+            device_id="02:00:00:00:00:01",
+            speaker_identity_id="11111111-1111-1111-1111-111111111111",
+        )
+        assert await service.enqueue_completed_turn(turn, "completed reply")
+        job_id = next(iter(store.jobs))
+        try:
+            for submission in range(1, 3):
+                claimed = await store.claim()
+                assert claimed is not None
+                assert claimed.attempts == submission
+                assert claimed.poll_count == 0
+                await service._process(claimed)
+                for count in range(1, 4):
+                    claimed = await store.claim()
+                    assert claimed is not None
+                    assert claimed.poll_count == count
+                    await service._process(claimed)
+                assert store.statuses[job_id] == ("pending" if submission == 1 else "failed")
+            assert len(provider.writes) == 2
+            assert len(provider.status_checks) == 4
+            assert "poll limit" in store.errors[job_id]
+            assert await store.claim() is None
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_memory_poll_count_survives_recovery_and_resets_for_new_task() -> None:
+    async def scenario() -> None:
+        store = InMemoryMemoryJobStore()
+        job = MemoryWriteJob(
+            job_id=str(uuid4()), turn_id=str(uuid4()),
+            device_id="02:00:00:00:00:01",
+            identity_id="11111111-1111-1111-1111-111111111111",
+            session_id=str(uuid4()), speaker_name="Member",
+            user_text="message", assistant_text="reply",
+        )
+        assert await store.enqueue(job)
+        claimed = await store.claim()
+        assert claimed is not None
+        await store.submit(job.job_id, "task-1", check_at=datetime.now(timezone.utc))
+        claimed = await store.claim()
+        assert claimed is not None
+        assert claimed.poll_count == 1
+        await store.start()
+        reclaimed = await store.claim()
+        assert reclaimed is not None
+        assert reclaimed.poll_count == 2
+        assert reclaimed.attempts == 1
+        await store.submit(job.job_id, "task-1", check_at=datetime.now(timezone.utc))
+        reclaimed = await store.claim()
+        assert reclaimed is not None
+        assert reclaimed.poll_count == 3
+        await store.submit(job.job_id, "task-2", check_at=datetime.now(timezone.utc))
+        reclaimed = await store.claim()
+        assert reclaimed is not None
+        assert reclaimed.poll_count == 1
+        await store.fail(job.job_id, error="retry", retry_at=datetime.now(timezone.utc))
+        reclaimed = await store.claim()
+        assert reclaimed is not None
+        assert reclaimed.provider_task_id is None
+        assert reclaimed.poll_count == 0
+        assert reclaimed.attempts == 2
 
     asyncio.run(scenario())

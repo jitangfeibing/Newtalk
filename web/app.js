@@ -1,6 +1,8 @@
 import {initializeIdentity, selectedTextSpeaker} from './identity.js?v=20261019.1';
 import {initializeMemoryCenter} from './memory-center.js?v=20261019.3';
 import {initializeCustomSelects} from './custom-select.js?v=20261019.2';
+import {initializeContextDashboard} from './context-dashboard.js?v=20261023.1';
+import {initializeAudioDiagnostics} from './audio-diagnostics.js?v=20261023.2';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
@@ -17,6 +19,12 @@ const audioStatus = document.querySelector('#audioStatus');
 const stopAudioButton = document.querySelector('#stopAudioButton');
 const micStatus = document.querySelector('#micStatus');
 const micButton = document.querySelector('#micButton');
+const voiceProcessingStatus = document.querySelector('#voiceProcessingStatus');
+const voiceLevelMeter = document.querySelector('#voiceLevelMeter');
+const voiceLevelBar = document.querySelector('#voiceLevelBar');
+const voiceLevelText = document.querySelector('#voiceLevelText');
+const voiceVadStatus = document.querySelector('#voiceVadStatus');
+const voiceRecognitionStatus = document.querySelector('#voiceRecognitionStatus');
 const greetingTitle = document.querySelector('#greetingTitle');
 const navigationItems = document.querySelectorAll('.nav-item');
 const viewTriggers = document.querySelectorAll('[data-view-target]');
@@ -43,6 +51,7 @@ function showView(viewName, {updateHash = true, moveFocus = true} = {}) {
         history.replaceState(null, '', hash);
     }
     window.scrollTo({top: 0, behavior: 'smooth'});
+    window.dispatchEvent(new CustomEvent('newtalk:view-changed', {detail: {view: viewName}}));
     if (!moveFocus) return;
     if (viewName === 'conversation') {
         requestAnimationFrame(() => messageInput.focus());
@@ -73,7 +82,9 @@ function initializeHomeShell() {
         });
     }
 
-    const initialView = location.hash === '#conversation'
+    const initialView = location.hash === '#context'
+        ? 'context'
+        : location.hash === '#conversation'
         ? 'conversation'
         : location.hash === '#family'
             ? 'family'
@@ -92,6 +103,96 @@ let pendingDialogueClear = null;
 const messagesByTurn = new Map();
 const turnStartedAt = new Map();
 const voiceMessagesByUtterance = new Map();
+const turnTelemetry = new Map();
+const voiceTimings = new Map();
+
+const TURN_METRIC_LABELS = [
+    ['speechMs', '有效语音'],
+    ['asrMs', 'ASR 完成'],
+    ['speakerMs', '声纹识别'],
+    ['llmFirstMs', 'LLM 首字'],
+    ['ttsFirstMs', 'TTS 首帧'],
+    ['playbackMs', '开始播放'],
+];
+
+function formatDuration(milliseconds) {
+    const value = Number(milliseconds);
+    if (!Number.isFinite(value) || value < 0) return '—';
+    if (value < 1000) return `${Math.round(value)} ms`;
+    return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)} s`;
+}
+
+function renderTurnMetrics(turnId) {
+    const message = messagesByTurn.get(turnId);
+    const telemetry = turnTelemetry.get(turnId);
+    const details = message?.querySelector('.turn-metrics');
+    const list = details?.querySelector('dl');
+    if (!details || !list || !telemetry) return;
+
+    const available = TURN_METRIC_LABELS.filter(([key]) => Number.isFinite(telemetry[key]));
+    details.hidden = available.length === 0;
+    list.replaceChildren();
+    for (const [key, label] of available) {
+        const term = document.createElement('dt');
+        const description = document.createElement('dd');
+        term.textContent = label;
+        description.textContent = formatDuration(telemetry[key]);
+        list.append(term, description);
+    }
+}
+
+function recordTurnMetric(turnId, key, value) {
+    const telemetry = turnTelemetry.get(turnId);
+    const numericValue = Number(value);
+    if (!telemetry || telemetry[key] !== undefined || !Number.isFinite(numericValue) || numericValue < 0) return;
+    telemetry[key] = numericValue;
+    renderTurnMetrics(turnId);
+}
+
+function ensureVoiceTiming(utteranceId) {
+    if (!voiceTimings.has(utteranceId)) voiceTimings.set(utteranceId, {});
+    return voiceTimings.get(utteranceId);
+}
+
+function updateVoiceProcessing(settings = null) {
+    if (!settings) {
+        voiceProcessingStatus.textContent = '麦克风未开启';
+        return;
+    }
+    const describe = (key, label) => settings[key] === true
+        ? `${label} 开`
+        : settings[key] === false
+            ? `${label} 关`
+            : `${label} 未知`;
+    voiceProcessingStatus.textContent = [
+        describe('echoCancellation', 'AEC'),
+        describe('noiseSuppression', '降噪'),
+        describe('autoGainControl', '增益'),
+    ].join(' · ');
+}
+
+function updateVoiceLevel(buffer) {
+    const samples = new Int16Array(buffer);
+    if (!samples.length) return;
+    let squareSum = 0;
+    for (const sample of samples) {
+        const normalized = sample / 32768;
+        squareSum += normalized * normalized;
+    }
+    const rms = Math.sqrt(squareSum / samples.length);
+    const decibels = rms > 0 ? 20 * Math.log10(rms) : -60;
+    const percentage = Math.max(0, Math.min(100, ((decibels + 60) / 60) * 100));
+    voiceLevelBar.style.width = `${percentage.toFixed(1)}%`;
+    voiceLevelMeter.setAttribute('aria-valuenow', String(Math.round(percentage)));
+    voiceLevelText.textContent = rms > 0.0001 ? `${Math.round(decibels)} dBFS` : '静音';
+}
+
+function resetVoiceActivityDiagnostics() {
+    voiceLevelBar.style.width = '0%';
+    voiceLevelMeter.setAttribute('aria-valuenow', '0');
+    voiceLevelText.textContent = '待命';
+    voiceVadStatus.textContent = '等待麦克风';
+}
 
 class PcmPlayer {
     constructor() {
@@ -148,6 +249,7 @@ class PcmPlayer {
             streamId: metadata.stream_id,
             turnId: metadata.turn_id,
             stopped: false,
+            firstFrameSeen: false,
         };
         this.queuedBytes = 0;
         this.playRequested = false;
@@ -160,6 +262,11 @@ class PcmPlayer {
         if (buffer.byteLength % 2 !== 0) {
             this.stop('PCM 帧长度错误');
             return;
+        }
+        if (!this.active.firstFrameSeen) {
+            this.active.firstFrameSeen = true;
+            const startedAt = turnStartedAt.get(this.active.turnId);
+            if (startedAt) recordTurnMetric(this.active.turnId, 'ttsFirstMs', performance.now() - startedAt);
         }
         this.queuedBytes += buffer.byteLength;
         this.node.port.postMessage({type: 'audio', buffer}, [buffer]);
@@ -214,6 +321,7 @@ class PcmPlayer {
             this.setStatus('playing', '正在播放');
             const startedAt = turnStartedAt.get(this.active.turnId);
             const elapsedMs = startedAt ? performance.now() - startedAt : 0;
+            if (startedAt) recordTurnMetric(this.active.turnId, 'playbackMs', elapsedMs);
             turnStartedAt.delete(this.active.turnId);
             const metric = {
                 type: 'playback_started',
@@ -258,6 +366,7 @@ class MicrophoneRecorder {
         this.node = null;
         this.captureId = null;
         this.active = false;
+        this.lastLevelUpdate = 0;
     }
 
     async start(format) {
@@ -277,6 +386,8 @@ class MicrophoneRecorder {
                 autoGainControl: true,
             },
         });
+        const audioTrack = this.stream.getAudioTracks()[0];
+        updateVoiceProcessing(audioTrack?.getSettings?.() ?? {});
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         this.context = new AudioContextClass({latencyHint: 'interactive'});
         await this.context.audioWorklet.addModule('/mic-recorder-worklet.js');
@@ -290,7 +401,15 @@ class MicrophoneRecorder {
         this.active = true;
         this.node.port.onmessage = (event) => {
             if (!this.active || event.data?.type !== 'audio_frame') return;
-            if (socket?.readyState === WebSocket.OPEN) socket.send(event.data.buffer);
+            const now = performance.now();
+            if (now - this.lastLevelUpdate >= 120) {
+                this.lastLevelUpdate = now;
+                updateVoiceLevel(event.data.buffer);
+            }
+            if (socket?.readyState === WebSocket.OPEN) {
+                socket.send(event.data.buffer);
+                audioDiagnostics.push(event.data.buffer);
+            }
         };
         const payload = {
             type: 'audio_input_start',
@@ -301,6 +420,8 @@ class MicrophoneRecorder {
         socket.send(JSON.stringify(payload));
         appendProtocolEvent('outgoing', payload);
         this.setStatus('listening', `监听中 ${this.context.sampleRate / 1000}k→16k`);
+        voiceVadStatus.textContent = '等待说话';
+        voiceRecognitionStatus.textContent = '等待语音';
         micButton.textContent = '关闭麦克风';
     }
 
@@ -308,6 +429,7 @@ class MicrophoneRecorder {
         if (!this.active && !this.stream) return;
         const captureId = this.captureId;
         this.active = false;
+        audioDiagnostics.finish();
         this.node?.disconnect();
         this.source?.disconnect();
         this.stream?.getTracks().forEach((track) => track.stop());
@@ -317,6 +439,7 @@ class MicrophoneRecorder {
         this.source = null;
         this.node = null;
         this.captureId = null;
+        this.lastLevelUpdate = 0;
         if (sendEvent && captureId && socket?.readyState === WebSocket.OPEN) {
             const payload = {
                 type: 'audio_input_stop',
@@ -327,6 +450,8 @@ class MicrophoneRecorder {
             appendProtocolEvent('outgoing', payload);
         }
         this.setStatus('idle', '麦克风待命');
+        updateVoiceProcessing();
+        resetVoiceActivityDiagnostics();
         micButton.textContent = '开启麦克风';
     }
 
@@ -337,6 +462,13 @@ class MicrophoneRecorder {
 }
 
 const microphone = new MicrophoneRecorder();
+const audioDiagnostics = initializeAudioDiagnostics({
+    isMicrophoneActive: () => microphone.active && socket?.readyState === WebSocket.OPEN,
+    beforePlayback: async () => {
+        audioPlayer.stop();
+        await microphone.stop();
+    },
+});
 
 function websocketUrl() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -396,6 +528,22 @@ function appendMessage(role, text, meta, lane = null) {
     content.textContent = text;
     heading.append(roleLabel, stateLabel, metaLabel);
     item.append(heading, content);
+    if (role === 'assistant') {
+        const contextButton = document.createElement('button');
+        contextButton.type = 'button';
+        contextButton.className = 'context-open-button';
+        contextButton.textContent = '查看上下文';
+        heading.append(contextButton);
+        const metrics = document.createElement('details');
+        const summary = document.createElement('summary');
+        const list = document.createElement('dl');
+        metrics.className = 'turn-metrics';
+        metrics.hidden = true;
+        summary.textContent = '本轮耗时';
+        summary.title = '浏览器根据本轮事件计算的观测值';
+        metrics.append(summary, list);
+        item.append(metrics);
+    }
     messageList.append(item);
     item.scrollIntoView({block: 'nearest'});
     return item;
@@ -433,17 +581,28 @@ function handleIncoming(payload) {
 
     if (payload.type === 'audio_input_ready') {
         microphone.setStatus('listening', '麦克风监听中');
+        voiceVadStatus.textContent = '等待说话';
+        voiceRecognitionStatus.textContent = '等待语音';
         return;
     }
 
     if (payload.type === 'vad_speech_start') {
+        const timing = ensureVoiceTiming(payload.utterance_id);
+        timing.speechStartedAt = performance.now();
         audioPlayer.stop('检测到说话，已停止播放');
         microphone.setStatus('speech', '检测到说话');
+        voiceVadStatus.textContent = '正在说话';
+        voiceRecognitionStatus.textContent = '录音中';
         return;
     }
 
     if (payload.type === 'vad_speech_end') {
+        const timing = ensureVoiceTiming(payload.utterance_id);
+        timing.speechEndedAt = performance.now();
+        if (Number.isFinite(Number(payload.audio_ms))) timing.speechMs = Number(payload.audio_ms);
         microphone.setStatus('listening', '识别处理中');
+        voiceVadStatus.textContent = `有效语音 ${formatDuration(payload.audio_ms)}`;
+        voiceRecognitionStatus.textContent = '识别中';
         return;
     }
 
@@ -453,15 +612,21 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'asr_final') {
+        const timing = ensureVoiceTiming(payload.utterance_id);
+        if (timing.speechEndedAt) timing.asrMs = performance.now() - timing.speechEndedAt;
         if (payload.text) {
             const message = appendMessage('user', payload.text, payload.utterance_id.slice(0, 8), 'guest');
             voiceMessagesByUtterance.set(payload.utterance_id, message);
         }
         microphone.setStatus('listening', '正在确认说话人');
+        voiceRecognitionStatus.textContent = payload.text ? '文本已识别 · 正在确认说话人' : '未识别到有效文字';
         return;
     }
 
     if (payload.type === 'speaker_resolved') {
+        const timing = ensureVoiceTiming(payload.utterance_id);
+        const speakerElapsed = Number(payload.provider_elapsed_ms ?? payload.elapsed_ms);
+        if (Number.isFinite(speakerElapsed)) timing.speakerMs = speakerElapsed;
         const message = voiceMessagesByUtterance.get(payload.utterance_id);
         if (message) {
             message.querySelector('.message-role').textContent = payload.matched
@@ -474,17 +639,23 @@ function handleIncoming(payload) {
             'listening',
             payload.matched ? `已识别：${payload.display_name}` : '未匹配成员，按 Guest 对话',
         );
+        voiceRecognitionStatus.textContent = payload.matched
+            ? `文本已识别 · ${payload.display_name}`
+            : '文本已识别 · 访客';
         return;
     }
 
     if (payload.type === 'asr_failed') {
         microphone.setStatus('error', '语音识别失败，请查看服务日志');
+        voiceRecognitionStatus.textContent = '识别失败';
         return;
     }
 
     if (payload.type === 'turn_cancelled') {
         const message = messagesByTurn.get(payload.turn_id);
-        setMessageState(message, 'failed', '已中断');
+        setMessageState(message, 'interrupted', '已中断');
+        const content = message?.querySelector('.message-content');
+        if (content && !content.textContent.trim()) content.textContent = '回复已被新输入中断。';
         return;
     }
 
@@ -495,17 +666,34 @@ function handleIncoming(payload) {
 
     if (payload.type === 'turn_started') {
         pendingEvents.delete(payload.event_id);
-        turnStartedAt.set(payload.turn_id, performance.now());
+        const startedAt = performance.now();
+        turnStartedAt.set(payload.turn_id, startedAt);
+        const telemetry = {startedAt};
+        if (typeof payload.event_id === 'string' && payload.event_id.startsWith('voice-')) {
+            const utteranceId = payload.event_id.slice('voice-'.length);
+            const voiceTiming = voiceTimings.get(utteranceId);
+            if (voiceTiming) {
+                for (const key of ['speechMs', 'asrMs', 'speakerMs']) {
+                    if (Number.isFinite(voiceTiming[key])) telemetry[key] = voiceTiming[key];
+                }
+                voiceTimings.delete(utteranceId);
+            }
+        }
+        turnTelemetry.set(payload.turn_id, telemetry);
         const lane = payload.speaker?.guest === false ? 'family' : 'guest';
         const message = appendMessage('assistant', '', payload.turn_id.slice(0, 8), lane);
+        message.dataset.turnId = payload.turn_id;
         setMessageState(message, 'streaming', '正在生成');
         messagesByTurn.set(payload.turn_id, message);
+        renderTurnMetrics(payload.turn_id);
         return;
     }
 
     if (payload.type === 'text_delta') {
         const message = messagesByTurn.get(payload.turn_id);
         if (message) {
+            const startedAt = turnStartedAt.get(payload.turn_id);
+            if (startedAt) recordTurnMetric(payload.turn_id, 'llmFirstMs', performance.now() - startedAt);
             message.querySelector('.message-content').textContent += payload.delta;
             message.scrollIntoView({block: 'nearest'});
         }
@@ -556,6 +744,8 @@ function handleIncoming(payload) {
         messagesByTurn.clear();
         turnStartedAt.clear();
         voiceMessagesByUtterance.clear();
+        turnTelemetry.clear();
+        voiceTimings.clear();
         updateComposer();
         appendProtocolEvent('system', '本轮短期对话已清除，画像和长期记忆未受影响');
         return;
@@ -574,11 +764,15 @@ function handleIncoming(payload) {
 function renderDialogueSnapshot(items) {
     messageList.replaceChildren();
     messagesByTurn.clear();
+    turnStartedAt.clear();
+    turnTelemetry.clear();
+    voiceTimings.clear();
     if (!items.length) return;
     for (const item of items) {
         const user = appendMessage('user', item.user_text, item.turn_id.slice(0, 8), item.lane);
         user.querySelector('.message-role').textContent = item.speaker.display_name;
         const assistant = appendMessage('assistant', item.assistant_text, item.turn_id.slice(0, 8), item.lane);
+        assistant.dataset.turnId = item.turn_id;
         setMessageState(assistant, 'completed');
         messagesByTurn.set(item.turn_id, assistant);
     }
@@ -735,6 +929,7 @@ micButton.addEventListener('click', async () => {
 });
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
+initializeContextDashboard(showView);
 initializeHomeShell();
 initializeCustomSelects();
 initializeMemoryCenter();
