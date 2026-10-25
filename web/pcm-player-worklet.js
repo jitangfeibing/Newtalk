@@ -1,3 +1,6 @@
+// -60 dBFS 只是非静音信号参考，不是语音识别，也不是物理扬声器测量。
+const AUDIBLE_THRESHOLD = 0.001;
+
 class NewtalkPcmPlayer extends AudioWorkletProcessor {
     constructor() {
         super();
@@ -5,6 +8,7 @@ class NewtalkPcmPlayer extends AudioWorkletProcessor {
         this.port.onmessage = (event) => {
             if (event.data.type === 'reset') {
                 this.reset();
+                this.streamId = event.data.stream_id;
                 return;
             }
             if (event.data.type === 'audio') {
@@ -26,6 +30,8 @@ class NewtalkPcmPlayer extends AudioWorkletProcessor {
         this.ended = false;
         this.started = false;
         this.drained = false;
+        this.audible = false;
+        this.streamId = null;
     }
 
     enqueue(buffer) {
@@ -57,13 +63,18 @@ class NewtalkPcmPlayer extends AudioWorkletProcessor {
             if (sample === null) {
                 if (this.ended && !this.drained) {
                     this.drained = true;
-                    this.port.postMessage({type: 'playback_drained'});
+                    this.port.postMessage({type: 'playback_drained', stream_id: this.streamId});
                 }
                 break;
             }
             if (!this.started) {
                 this.started = true;
-                this.port.postMessage({type: 'playback_started'});
+                this.port.postMessage({type: 'playback_started', stream_id: this.streamId});
+            }
+            if (!this.audible && Math.abs(sample) >= AUDIBLE_THRESHOLD) {
+                this.audible = true;
+                this.port.postMessage({type: 'playback_audible', stream_id: this.streamId,
+                    context_time: currentTime + index / sampleRate});
             }
             for (const channel of output) channel[index] = sample;
         }

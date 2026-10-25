@@ -46,3 +46,24 @@ def test_vad_flush_ends_active_speech() -> None:
 
     assert len(events) == 1
     assert events[0].kind == "speech_end"
+
+
+def test_vad_reports_last_confirmed_voice_without_changing_end_boundary() -> None:
+    stream = SileroVadStream(
+        ProbabilitySequence([0.9, 0.8, 0.7, 0.1, 0.1, 0.1, 0.1]),
+        min_silence_duration_ms=64,
+    )
+    start, end = stream.process(bytes(WINDOW_BYTES * 7))
+    assert start.audio_ms == 96
+    assert end.audio_ms == 224
+    # 滑动窗口在 160ms 仍确认语音；这是检测器参考点，不是人工标注的词尾。
+    assert end.last_voice_audio_ms == 160
+    assert end.audio_ms - end.last_voice_audio_ms == 64
+
+
+def test_vad_flush_keeps_endpoint_before_reset_and_next_capture_starts_at_zero() -> None:
+    stream = SileroVadStream(ProbabilitySequence([0.9] * 6))
+    stream.process(bytes(WINDOW_BYTES * 3))
+    end = stream.flush()[0]
+    assert end.last_voice_audio_ms == 96
+    assert stream.process(bytes(WINDOW_BYTES * 3))[0].audio_ms == 96

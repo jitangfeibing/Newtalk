@@ -58,9 +58,11 @@ newtalk 2>&1 | Tee-Object -FilePath .\logs\newtalk.log
 
 排查麦克风或声纹时：先在“对话”连接并开启麦克风，再展开“语音诊断”，点击“保存接下来 10 秒”，自然说话后结束保存，即可试听或下载 WAV。仅旁路复制实际发送的 16kHz 单声道 PCM，不改变聊天输入；不是服务端 VAD 裁切后的单句声纹样本。录音仅保留在当前页面内存，刷新、清除或成员列表变化时释放，不额外上传；试听会关闭聊天麦克风并停止助手播放，继续聊天需再次开启麦克风。过去的录音无法补取；下载文件需自行删除。
 
-录音诊断的前端测试：`node --test tests/frontend/test_audio_diagnostics.mjs`。
+前端测试（含录音、播放计时和上下文看板）：`node --test tests/frontend/*.mjs`。
 
 用 `session_id` / `turn_id` / `utterance_id` 关联事件。关注 `asr_final`、`speaker_resolved`、`llm_first_token`、`tts_first_audio`、`browser_playback_started`、`browser_playback_drained` 的 `elapsed_ms`；不同事件的计时起点可能不同，不要直接相减当作整轮耗时。浏览器逐轮时延只供当前页面诊断，不随历史对话恢复。
+
+首声排查可查看 `voice_input_timing`、`turn_latency`、`llm_request_timing` 和 `browser_playback_audible`，并在上下文看板导出最近 5 轮计时。浏览器非静音输出是估算，不是麦克风回录的物理听到时间。`NEWTALK_MEMORY_RETRIEVAL_MODE=preload` 可试验成员记忆前置检索，`NEWTALK_LLM_THINKING=disabled` 可向支持该扩展的供应商显式关闭思考；均需重启主服务。默认分别为 `tool` / `default`，回退时恢复配置即可；参数与边界见 [架构说明](docs/architecture.md)。
 
 需要检查“本轮模型到底看到了什么”时，在 `.env` 设置 `NEWTALK_CONTEXT_DEBUG=true` 并重启主服务。也可只对当前终端启用：
 

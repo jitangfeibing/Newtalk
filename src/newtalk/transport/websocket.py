@@ -1,5 +1,7 @@
 import json
 import logging
+import math
+from dataclasses import replace
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -32,6 +34,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         device_id=device.device_id,
         max_turns=config.dialogue_max_turns,
     )
+    # user-only 输入可能早于成员删除已落库；删除任务尚未清理时也不能恢复其记录。
+    members = await websocket.app.state.identity_service.list_identities(device.device_id)
+    active_ids = {member.identity_id for member in members}
+    visible = tuple(
+        item for item in dialogue_snapshot.history
+        if item.exchange.speaker_identity_id is None
+        or item.exchange.speaker_identity_id in active_ids
+    )
+    for item in dialogue_snapshot.history:
+        identity_id = item.exchange.speaker_identity_id
+        if identity_id is not None and identity_id not in active_ids:
+            websocket.app.state.dialogue_cache_coordinator.remove_identity(
+                device.device_id, identity_id,
+            )
+    dialogue_snapshot = replace(
+        dialogue_snapshot,
+        history=visible,
+        resumed=bool(visible),
+        family=tuple(item.exchange for item in visible if item.lane == "family"),
+        guest=tuple(item.exchange for item in visible if item.lane == "guest"),
+    )
     await websocket.accept()
     session_id = dialogue_snapshot.session_id
     logger.info(
@@ -56,7 +79,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         recognizer=websocket.app.state.recognizer,
         vad_pre_roll_ms=websocket.app.state.config.vad_pre_roll_ms,
         dialogue_max_turns=websocket.app.state.config.dialogue_max_turns,
-        dialogue_max_chars=websocket.app.state.config.dialogue_max_chars,
         voiceprint_join_timeout_seconds=(
             websocket.app.state.config.voiceprint_join_timeout_seconds
         ),
@@ -113,6 +135,7 @@ def _hello_payload(
                     "turn_id": item.exchange.turn_id,
                     "user_text": item.exchange.user_text,
                     "assistant_text": item.exchange.assistant_text,
+                    "reply_status": "completed" if item.exchange.assistant_text else "user_only",
                     "speaker": {
                         "identity_id": item.exchange.speaker_identity_id,
                         "display_name": item.exchange.speaker_display_name,
@@ -253,6 +276,27 @@ async def _dispatch_event(
 
     if event_type == "audio_input_stop":
         await runtime.stop_audio_input(event)
+        return False
+
+    if event_type == "playback_audible":
+        metrics = event.get("metrics")
+        allowed = {"speech_end_to_audible_ms", "vad_to_audible_ms", "turn_to_audible_ms",
+                   "tts_to_audible_ms"}
+        valid = (
+            isinstance(event.get("turn_id"), str) and 0 < len(event["turn_id"]) <= 128
+            and isinstance(event.get("stream_id"), str) and 0 < len(event["stream_id"]) <= 128
+            and event.get("output_clock") in ("output_timestamp", "render_clock")
+            and isinstance(metrics, dict) and "turn_to_audible_ms" in metrics
+            and metrics.keys() <= allowed
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and 0 <= value <= 3_600_000 and math.isfinite(value)
+                    for value in metrics.values())
+        )
+        if valid:
+            runtime.record_playback_timing(event)
+        else:
+            await runtime.send_error(code="invalid_playback_metric",
+                                     message="playback_audible contains invalid fields", event_id=event_id)
         return False
 
     if event_type == "playback_started":

@@ -1,4 +1,4 @@
-import {recordVoiceprintSample} from './voiceprint-recorder.js?v=20261016.3';
+import {recordVoiceprintSample} from './voiceprint-recorder.js?v=20261024.1';
 
 const loading = document.querySelector('#identityLoading');
 const onboarding = document.querySelector('#deviceOnboarding');

@@ -65,14 +65,14 @@ class AudioInputSession:
             if event.kind == "speech_start":
                 await self._start_utterance(event.probability, event.audio_ms)
             else:
-                await self._finish_utterance(event.probability, event.audio_ms)
+                await self._finish_utterance(event.probability, event.audio_ms, event.last_voice_audio_ms)
 
     async def finish(self) -> None:
         if self._closed:
             return
         for event in self._vad_stream.flush():
             if event.kind == "speech_end":
-                await self._finish_utterance(event.probability, event.audio_ms)
+                await self._finish_utterance(event.probability, event.audio_ms, event.last_voice_audio_ms)
         if self._active_utterance_id is not None:
             await self._finish_active_utterance()
 
@@ -137,7 +137,9 @@ class AudioInputSession:
             if not await self._queue_chunk(chunk):
                 break
 
-    async def _finish_utterance(self, probability: float, audio_ms: float) -> None:
+    async def _finish_utterance(
+        self, probability: float, audio_ms: float, last_voice_audio_ms: float | None = None,
+    ) -> None:
         if self._active_utterance_id is None:
             return
         utterance_id = self._active_utterance_id
@@ -147,6 +149,7 @@ class AudioInputSession:
                 utterance_id=utterance_id,
                 probability=probability,
                 audio_ms=audio_ms,
+                last_voice_audio_ms=last_voice_audio_ms,
             )
         )
         if self._active_utterance_id == utterance_id:

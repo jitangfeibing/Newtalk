@@ -113,6 +113,29 @@ class AudioRecorder:
         )
 
 
+def test_audio_session_passes_vad_endpoint_to_boundary_without_changing_pcm():
+    class TimedVad(BoundaryVadStream):
+        def process(self, pcm):
+            return [VadEvent(event.kind, event.probability, event.audio_ms,
+                             20.0 if event.kind == 'speech_end' else None)
+                    for event in super().process(pcm)]
+
+    async def scenario():
+        recorder = AudioRecorder()
+        session = recorder.session(TimedVad(), FakeASR())
+        try:
+            await session.push(bytes(640))
+            await session.push(bytes(640))
+            await session.close()
+            assert recorder.boundaries[-1].last_voice_audio_ms == 20
+            assert recorder.boundaries[-1].audio_ms == 40
+            assert recorder.audio[0][1] == bytes(1280)
+        finally:
+            await session.abort()
+
+    asyncio.run(scenario())
+
+
 def test_audio_session_routes_one_utterance_to_asr() -> None:
     async def run() -> None:
         boundaries: list[SpeechBoundary] = []

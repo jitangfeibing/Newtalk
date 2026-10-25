@@ -1,8 +1,9 @@
-import {initializeIdentity, selectedTextSpeaker} from './identity.js?v=20261019.1';
+import {initializeIdentity, selectedTextSpeaker} from './identity.js?v=20261024.1';
 import {initializeMemoryCenter} from './memory-center.js?v=20261019.3';
 import {initializeCustomSelects} from './custom-select.js?v=20261019.2';
-import {initializeContextDashboard} from './context-dashboard.js?v=20261023.1';
+import {initializeContextDashboard} from './context-dashboard.js?v=20261025.1';
 import {initializeAudioDiagnostics} from './audio-diagnostics.js?v=20261023.2';
+import {captureOriginMs, outputPerformanceTime} from './voice-latency.js?v=20261024.1';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
@@ -107,12 +108,15 @@ const turnTelemetry = new Map();
 const voiceTimings = new Map();
 
 const TURN_METRIC_LABELS = [
-    ['speechMs', '有效语音'],
-    ['asrMs', 'ASR 完成'],
-    ['speakerMs', '声纹识别'],
-    ['llmFirstMs', 'LLM 首字'],
-    ['ttsFirstMs', 'TTS 首帧'],
-    ['playbackMs', '开始播放'],
+    ['speechEndToAudibleMs', '说完→非静音输出（VAD 末尾估算）'],
+    ['vadToAudibleMs', '收到判停→非静音输出'],
+    ['speechMs', 'VAD 语音段（含尾静音）'],
+    ['asrMs', '收到判停→ASR Final'],
+    ['speakerMs', '声纹 Provider（与 ASR 有并行）'],
+    ['llmFirstMs', 'Turn→文本首字'],
+    ['ttsFirstMs', 'Turn→收到 TTS 首帧'],
+    ['playbackMs', 'Turn→PCM 开始渲染'],
+    ['audibleMs', 'Turn→非静音输出'],
 ];
 
 function formatDuration(milliseconds) {
@@ -218,7 +222,7 @@ class PcmPlayer {
                 latencyHint: 'interactive',
                 sampleRate: format.sample_rate,
             });
-            await this.context.audioWorklet.addModule('/pcm-player-worklet.js');
+            await this.context.audioWorklet.addModule('/pcm-player-worklet.js?v=20261024.1');
             if (this.context.sampleRate !== format.sample_rate) {
                 throw new Error(`浏览器采样率为 ${this.context.sampleRate}，无法播放 ${format.sample_rate}Hz PCM`);
             }
@@ -244,7 +248,7 @@ class PcmPlayer {
             this.setStatus('error', '音频格式发生变化');
             return;
         }
-        this.node.port.postMessage({type: 'reset'});
+        this.node.port.postMessage({type: 'reset', stream_id: metadata.stream_id});
         this.active = {
             streamId: metadata.stream_id,
             turnId: metadata.turn_id,
@@ -265,6 +269,8 @@ class PcmPlayer {
         }
         if (!this.active.firstFrameSeen) {
             this.active.firstFrameSeen = true;
+            const telemetry = turnTelemetry.get(this.active.turnId);
+            if (telemetry) telemetry.firstFrameAt = performance.now();
             const startedAt = turnStartedAt.get(this.active.turnId);
             if (startedAt) recordTurnMetric(this.active.turnId, 'ttsFirstMs', performance.now() - startedAt);
         }
@@ -317,6 +323,32 @@ class PcmPlayer {
 
     handleWorkletEvent(event) {
         if (!this.active) return;
+        // 旧 Worklet 回执可能晚于新流的 reset；不能把旧流的声音计到下一轮。
+        if (event.stream_id !== this.active.streamId || this.active.stopped) return;
+        if (event.type === 'playback_audible') {
+            const telemetry = turnTelemetry.get(this.active.turnId);
+            if (!telemetry || telemetry.audibleReported) return;
+            telemetry.audibleReported = true;
+            const output = outputPerformanceTime(this.context, event.context_time, performance.now());
+            const metrics = {};
+            for (const [name, at, key] of [
+                ['turn_to_audible_ms', telemetry.startedAt, 'audibleMs'],
+                ['speech_end_to_audible_ms', telemetry.lastVoiceAt, 'speechEndToAudibleMs'],
+                ['vad_to_audible_ms', telemetry.speechEndedAt, 'vadToAudibleMs'],
+                ['tts_to_audible_ms', telemetry.firstFrameAt, null],
+            ]) {
+                const elapsed = output.atMs - at;
+                if (!Number.isFinite(at) || !Number.isFinite(elapsed) || elapsed < 0) continue;
+                metrics[name] = Number(elapsed.toFixed(1));
+                if (key) recordTurnMetric(this.active.turnId, key, metrics[name]);
+            }
+            const metric = {type: 'playback_audible', event_id: nextEventId('audible'),
+                turn_id: this.active.turnId, stream_id: this.active.streamId,
+                output_clock: output.clock, metrics};
+            if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(metric));
+            appendProtocolEvent('outgoing', metric);
+            return;
+        }
         if (event.type === 'playback_started') {
             this.setStatus('playing', '正在播放');
             const startedAt = turnStartedAt.get(this.active.turnId);
@@ -367,6 +399,7 @@ class MicrophoneRecorder {
         this.captureId = null;
         this.active = false;
         this.lastLevelUpdate = 0;
+        this.captureOriginMs = null;
     }
 
     async start(format) {
@@ -390,7 +423,7 @@ class MicrophoneRecorder {
         updateVoiceProcessing(audioTrack?.getSettings?.() ?? {});
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         this.context = new AudioContextClass({latencyHint: 'interactive'});
-        await this.context.audioWorklet.addModule('/mic-recorder-worklet.js');
+        await this.context.audioWorklet.addModule('/mic-recorder-worklet.js?v=20261024.1');
         this.source = this.context.createMediaStreamSource(this.stream);
         this.node = new AudioWorkletNode(this.context, 'newtalk-mic-recorder');
         const mute = this.context.createGain();
@@ -398,10 +431,12 @@ class MicrophoneRecorder {
         this.source.connect(this.node);
         this.node.connect(mute).connect(this.context.destination);
         this.captureId = nextEventId('capture');
+        this.captureOriginMs = null;
         this.active = true;
         this.node.port.onmessage = (event) => {
             if (!this.active || event.data?.type !== 'audio_frame') return;
             const now = performance.now();
+            this.captureOriginMs = captureOriginMs(event.data, this.context, now);
             if (now - this.lastLevelUpdate >= 120) {
                 this.lastLevelUpdate = now;
                 updateVoiceLevel(event.data.buffer);
@@ -440,6 +475,7 @@ class MicrophoneRecorder {
         this.node = null;
         this.captureId = null;
         this.lastLevelUpdate = 0;
+        this.captureOriginMs = null;
         if (sendEvent && captureId && socket?.readyState === WebSocket.OPEN) {
             const payload = {
                 type: 'audio_input_stop',
@@ -589,6 +625,7 @@ function handleIncoming(payload) {
     if (payload.type === 'vad_speech_start') {
         const timing = ensureVoiceTiming(payload.utterance_id);
         timing.speechStartedAt = performance.now();
+        timing.audioStartedMs = payload.audio_ms;
         audioPlayer.stop('检测到说话，已停止播放');
         microphone.setStatus('speech', '检测到说话');
         voiceVadStatus.textContent = '正在说话';
@@ -599,9 +636,15 @@ function handleIncoming(payload) {
     if (payload.type === 'vad_speech_end') {
         const timing = ensureVoiceTiming(payload.utterance_id);
         timing.speechEndedAt = performance.now();
-        if (Number.isFinite(Number(payload.audio_ms))) timing.speechMs = Number(payload.audio_ms);
+        if (Number.isFinite(payload.audio_ms) && Number.isFinite(timing.audioStartedMs)) {
+            timing.speechMs = payload.audio_ms - timing.audioStartedMs;
+        }
+        if (payload.capture_id === microphone.captureId && Number.isFinite(microphone.captureOriginMs)
+            && Number.isFinite(payload.last_voice_audio_ms)) {
+            timing.lastVoiceAt = microphone.captureOriginMs + payload.last_voice_audio_ms;
+        }
         microphone.setStatus('listening', '识别处理中');
-        voiceVadStatus.textContent = `有效语音 ${formatDuration(payload.audio_ms)}`;
+        voiceVadStatus.textContent = `VAD 语音段 ${formatDuration(timing.speechMs)}（含尾静音）`;
         voiceRecognitionStatus.textContent = '识别中';
         return;
     }
@@ -673,7 +716,7 @@ function handleIncoming(payload) {
             const utteranceId = payload.event_id.slice('voice-'.length);
             const voiceTiming = voiceTimings.get(utteranceId);
             if (voiceTiming) {
-                for (const key of ['speechMs', 'asrMs', 'speakerMs']) {
+                for (const key of ['speechMs', 'asrMs', 'speakerMs', 'speechEndedAt', 'lastVoiceAt']) {
                     if (Number.isFinite(voiceTiming[key])) telemetry[key] = voiceTiming[key];
                 }
                 voiceTimings.delete(utteranceId);
@@ -731,8 +774,11 @@ function handleIncoming(payload) {
         pendingEvents.delete(payload.event_id);
         const message = messagesByTurn.get(payload.turn_id);
         if (message) {
-            message.querySelector('.message-content').textContent = '回复生成失败，请重新发送。';
-            setMessageState(message, 'failed', '生成失败');
+            const overBudget = payload.code === 'context_budget_exceeded';
+            message.querySelector('.message-content').textContent = overBudget
+                ? '本次模型请求超出输入预算，未发送。请缩短输入或调整预算；用户输入仍保留在短期记录中。'
+                : '回复生成失败，请重新发送。';
+            setMessageState(message, 'failed', overBudget ? '预算超限' : '生成失败');
         }
         audioPlayer.fail();
         return;
@@ -771,6 +817,10 @@ function renderDialogueSnapshot(items) {
     for (const item of items) {
         const user = appendMessage('user', item.user_text, item.turn_id.slice(0, 8), item.lane);
         user.querySelector('.message-role').textContent = item.speaker.display_name;
+        if (!item.assistant_text) {
+            user.title = '用户输入已保留；本轮没有已完成的助手回答。';
+            continue;
+        }
         const assistant = appendMessage('assistant', item.assistant_text, item.turn_id.slice(0, 8), item.lane);
         assistant.dataset.turnId = item.turn_id;
         setMessageState(assistant, 'completed');

@@ -52,6 +52,32 @@ class StubClient:
         self.closed = True
 
 
+@pytest.mark.parametrize('mode', ['enabled', 'disabled'])
+def test_explicit_thinking_mode_reaches_sdk_and_exact_request_snapshot(mode, tmp_path):
+    from newtalk.context_debug import ContextDebugger
+    import json
+
+    async def scenario():
+        client = StubClient(StubStream([SimpleNamespace(type='content.delta', delta='reply')]))
+        model = OpenAICompatibleChatModel(api_key='unused', model='test', client=client, thinking=mode)
+        debugger = ContextDebugger(enabled=True, path=tmp_path / 'trace.jsonl')
+        service = ChatService(model, context_debug=debugger)
+        turn = service.create_turn(session_id='session', device_id='device', user_text='hello')
+        try:
+            assert [part async for part in service.stream_reply(turn)] == ['reply']
+            sent = client.chat.completions.request
+            assert sent['extra_body'] == {'thinking': {'type': mode}}
+            assert 'thinking' not in {key: value for key, value in sent.items() if key != 'extra_body'}
+            request = next(e['request'] for e in debugger.events_for_device('device') if e['event'] == 'llm_request')
+            assert request['thinking'] == {'type': mode}
+            assert 'extra_body' not in request
+            assert json.dumps(request['messages']) == json.dumps(sent['messages'])
+        finally:
+            await service.aclose()
+
+    asyncio.run(scenario())
+
+
 class SequencedCompletions:
     def __init__(self, streams: list[StubStream]) -> None:
         self._streams = iter(streams)
@@ -287,3 +313,27 @@ def test_openai_compatible_model_rejects_mixed_text_and_tool_call() -> None:
             ]
 
     asyncio.run(exercise())
+
+
+def test_real_tool_call_preserves_provider_reasoning_for_the_followup_request() -> None:
+    async def scenario():
+        call = SimpleNamespace(index=0, id="call-1", function=SimpleNamespace(
+            name="memory_search", arguments='{"query":"过去经历"}',
+        ))
+        client = SequencedClient([
+            StubStream([SimpleNamespace(type="chunk", chunk=SimpleNamespace(choices=[
+                SimpleNamespace(delta=SimpleNamespace(reasoning_content="provider-reasoning", tool_calls=[call]))
+            ]))]),
+            StubStream([SimpleNamespace(type="content.delta", delta="回答")]),
+        ])
+        model = OpenAICompatibleChatModel(api_key="unused", model="test", client=client)
+        events = [event async for event in model.stream((ChatMessage("user", "回忆一下"),),
+                  tools=({"type": "function", "function": {"name": "memory_search"}},))]
+        tool = events[0]
+        assert tool.reasoning_content == "provider-reasoning"
+        _ = [event async for event in model.stream((
+            ChatMessage("user", "回忆一下"), ChatMessage("assistant", "", tool_calls=(tool,)),
+            ChatMessage("tool", '{"status":"no_match"}', tool_call_id=tool.call_id),
+        ))]
+        assert client.chat.completions.requests[1]["messages"][-2]["reasoning_content"] == "provider-reasoning"
+    asyncio.run(scenario())

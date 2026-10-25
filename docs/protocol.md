@@ -1,6 +1,6 @@
 # Newtalk HTTP、VoicePrint、Memory 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.10`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.11`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
 WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID。服务端读取 Family/Guest 兼容 lane 后按时间合并为设备级短期 Dialogue。
 
@@ -50,7 +50,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.10",
+  "protocol_version": "0.11",
   "session_id": "stable dialogue session UUID",
   "device_id": "02:11:22:33:44:55",
   "dialogue": {
@@ -63,6 +63,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
         "turn_id": "completed Turn UUID",
         "user_text": "我今天面试了",
         "assistant_text": "感觉怎么样？",
+        "reply_status": "completed",
         "speaker": {
           "identity_id": "member UUID",
           "display_name": "小明",
@@ -80,7 +81,11 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 }
 ```
 
-`dialogue.items` 只包含当前滑动窗口内成功完成的交换，并按时间排序。取消、失败、进行中的 Turn 不返回。浏览器只能接收快照，协议不接受客户端提供 `session_id` 或请求其他家庭 Session。同一设备多页面共享持久化 Session，但聊天列表不实时广播，重连时重新读取快照。
+`dialogue.items` 包含当前窗口内已落库的最终用户输入，按接受时间排序。`reply_status=completed` 表示助手完整回答已补全；`user_only` 表示只有用户输入，`assistant_text` 为空串，可能来自进行中、被打断、失败或补全未确认的轮次，不能据此猜测具体原因。前端只显示用户气泡，不创建空助手气泡；该条输入仍可参与下一轮上下文。Family/Guest 计数按输入条目而非完整问答对计算。
+
+恢复查询每 lane 默认最多加载 256 条（`NEWTALK_DIALOGUE_MAX_TURNS`），计数不是数据库全部原文数量，也不代表这些消息最终全部发送给模型。正式模型对每次完整请求按 `NEWTALK_CONTEXT_INPUT_TOKENS` 预算独立取舍，默认 32768，当前为保守 Token 估算；取舍明细见设备鉴权的上下文看板。旧原文不会因为本轮预算或恢复窗口限制而从数据库删除。
+
+浏览器只能接收快照，协议不接受客户端提供 `session_id` 或请求其他家庭 Session。同一设备多页面共享持久化 Session，但聊天列表不实时广播，重连时重新读取快照。接受到内存尚未落库的输入不保证出现在此快照；确认前的进程崩溃或落库失败可能导致刷新无法恢复。已停用成员的历史不会恢复。
 
 ## 麦克风输入
 
@@ -99,7 +104,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 
 ```json
 {"type":"vad_speech_start","capture_id":"capture ID","utterance_id":"UUID","probability":0.87,"audio_ms":96.0}
-{"type":"vad_speech_end","capture_id":"capture ID","utterance_id":"UUID","probability":0.08,"audio_ms":1248.0}
+{"type":"vad_speech_end","capture_id":"capture ID","utterance_id":"UUID","probability":0.08,"audio_ms":1248.0,"last_voice_audio_ms":608.0}
 ```
 
 `vad_speech_start` 会立即停止浏览器本地播放，并取消仍在生成的旧 Turn；即使服务端已经完成 TTS 发送，只要浏览器尚未确认播放队列耗尽，服务端仍会发送 `audio_stop`。ASR 事件为：
@@ -218,9 +223,24 @@ Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息�
 - 文本 `identity_id` 类型错误：`invalid_identity_id`。
 - 文本选择了当前家庭不存在的成员：`identity_not_found`。
 - 清除短期对话持久化失败：`dialogue_clear_failed`。
+- 待完成输入落库任务达到上限：`dialogue_busy`；本次输入未接受，当前 Turn 不因此取消，可稍后重试。
+- `turn_failed.code=context_budget_exceeded`：系统信息、当前输入和必要工具交互仍超出输入预算，本次模型请求未发送；用户输入已接受到短期窗口，落库结果另行确认。需缩短输入或调整预算，不应无条件重发同一超长输入。
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
-- `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
+- `playback_started` 继续记录浏览器首次渲染 PCM 的时间；PCM 可能包含静音，不等同于首个声音，不创建 Turn。
+- `playback_audible` 是可选的非静音输出计时回执，不改变 Turn 或播放状态，正常时不响应；非法数值返回 `invalid_playback_metric`。
 - `playback_drained` 表示浏览器已经播放完指定流，不产生响应事件。
 
 
 内部 Task 调用链、记忆后台状态及其限制统一见 [架构与边界](architecture.md)，不作为浏览器事件协议的一部分维护。
+
+### 非静音输出计时
+
+`last_voice_audio_ms` 是可空的、当前 capture 内 VAD 最后确认语音的样本位置；不是人工标注的词尾。旧客户端可以忽略该附加字段。客户端把它与采集 Worklet 的样本位置、AudioContext 时钟关联，不能直接用服务器时间减浏览器时间。
+
+```json
+{"type":"playback_audible","event_id":"client ID","turn_id":"Turn UUID","stream_id":"stream UUID","output_clock":"output_timestamp","metrics":{"speech_end_to_audible_ms":2200.0,"vad_to_audible_ms":1500.0,"turn_to_audible_ms":1300.0,"tts_to_audible_ms":60.0}}
+```
+
+播放器在首次输出幅度达到 -60 dBFS 的样本时记录音频时钟位置，优先通过 `getOutputTimestamp()` 映射至设备输出时间估计，无法取得时 `output_clock=render_clock`。这既不是 TTS 网络首包，也不是扬声器物理出声的实录。静音流没有此回执；迟到的旧流事件被浏览器忽略。
+
+`turn_to_audible_ms` 必填；其他差值缺少基准时省略，不能填 0。`speech_end_to_audible_ms` 基于 VAD 语音末尾估计；`vad_to_audible_ms` 从浏览器收到判停事件起算；`tts_to_audible_ms` 从浏览器收到首帧起算。数值须为有限、非负、至多一小时的毫秒数。全部是客户端观测，不用于鉴权、计费或控制状态。

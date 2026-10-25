@@ -147,7 +147,9 @@ def record_context(event: str, **fields: Any) -> None:
         scope.debugger.record_turn(scope.turn, event, **fields)
 
 
-def record_model_request(request: dict[str, Any]) -> None:
+def record_model_request(
+    request: dict[str, Any], *, budget: dict[str, Any] | None = None, call_id: str | None = None,
+) -> None:
     scope = _current_trace.get()
     if scope is None:
         return
@@ -156,4 +158,6 @@ def record_model_request(request: dict[str, Any]) -> None:
     # 此处只接收最终消息/工具请求，不接收 Client、HTTP Header、Key 或环境配置。
     scope.debugger.record_turn(
         scope.turn, "llm_request", request_index=scope.request_index, request=request,
+        **({"budget": budget} if budget is not None else {}),
+        **({"call_id": call_id} if call_id is not None else {}),
     )

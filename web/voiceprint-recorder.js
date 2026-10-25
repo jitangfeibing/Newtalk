@@ -60,12 +60,13 @@ function analyzeVoiceSample(frames) {
 
 export async function recordVoiceprintSample(onProgress) {
     window.dispatchEvent(new CustomEvent('newtalk:voiceprint-recording'));
+    // 与聊天使用相同处理，避免用原始声音录入、用降噪后的声音匹配。
     const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
             channelCount: 1,
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
         },
     });
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;

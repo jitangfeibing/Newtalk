@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 import os
 from uuid import uuid4
@@ -9,9 +10,59 @@ from sqlalchemy import update
 from newtalk.chat import DialogueExchange, SqlAlchemyDialogueStore
 from newtalk.chat.persistence import DialogueExchangeRow
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
+from newtalk.identity.deletion import SqlAlchemyIdentityDeletionStore
 
 
 DATABASE_URL = os.getenv("NEWTALK_TEST_DATABASE_URL")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration URL is not configured")
+def test_postgres_user_input_completion_and_member_deletion_boundaries() -> None:
+    async def scenario() -> None:
+        identities = IdentityService(SqlAlchemyIdentityStore(DATABASE_URL))
+        dialogues = SqlAlchemyDialogueStore(DATABASE_URL)
+        deletions = SqlAlchemyIdentityDeletionStore(DATABASE_URL)
+        await identities.start()
+        await dialogues.start()
+        await deletions.start()
+        try:
+            family = await identities.register_device()
+            member = await identities.create_identity(
+                device_id=family.device.device_id, display_name="Input Member",
+            )
+            opened = await dialogues.open(device_id=family.device.device_id, max_turns=2)
+            accepted_at = datetime(2026, 10, 24, tzinfo=timezone.utc)
+            exchange = replace(_exchange(uuid4().hex, member_id=member.identity_id), assistant_text="")
+            assert await dialogues.append(
+                session_id=opened.session_id, lane="family", exchange=exchange,
+                accepted_at=accepted_at,
+            )
+            restored = await dialogues.open(device_id=family.device.device_id, max_turns=2)
+            assert restored.family == (exchange,)
+            assert restored.history[0].created_at == accepted_at
+            completed = replace(exchange, assistant_text="完整回答")
+            assert await dialogues.complete(session_id=opened.session_id, exchange=completed)
+            assert not await dialogues.complete(session_id=opened.session_id, exchange=completed)
+            restored = await dialogues.open(device_id=family.device.device_id, max_turns=2)
+            assert restored.family == (completed,)
+            assert restored.history[0].created_at == accepted_at
+            assert await dialogues.clear(session_id=opened.session_id) == 1
+            assert not await dialogues.complete(session_id=opened.session_id, exchange=completed)
+            assert await deletions.schedule(device_id=family.device.device_id, identity_id=member.identity_id)
+            assert not await dialogues.append(
+                session_id=opened.session_id, lane="family", exchange=exchange,
+            )
+            assert (await dialogues.open(device_id=family.device.device_id, max_turns=2)).history == ()
+            job = await deletions.claim()
+            assert job is not None and job.identity_id == member.identity_id
+            await deletions.complete(job.job_id)
+        finally:
+            await deletions.close()
+            await dialogues.close()
+            await identities.close()
+
+    asyncio.run(scenario())
 
 
 def _exchange(turn_id: str, *, member_id: str | None = None) -> DialogueExchange:
@@ -53,19 +104,16 @@ def test_postgres_dialogue_restores_and_prunes_each_lane() -> None:
                     session_id=opened.session_id,
                     lane="guest",
                     exchange=_exchange(turn_id),
-                    max_turns=2,
                 )
             assert await dialogues.append(
                 session_id=opened.session_id,
                 lane="family",
                 exchange=_exchange(family_turn_id, member_id=member.identity_id),
-                max_turns=2,
             )
             assert not await dialogues.append(
                 session_id=opened.session_id,
                 lane="family",
                 exchange=_exchange(family_turn_id, member_id=member.identity_id),
-                max_turns=2,
             )
 
             restored = await dialogues.open(
@@ -75,11 +123,13 @@ def test_postgres_dialogue_restores_and_prunes_each_lane() -> None:
             assert restored.session_id == opened.session_id
             assert [item.turn_id for item in restored.guest] == guest_turn_ids[1:]
             assert [item.turn_id for item in restored.family] == [family_turn_id]
+            expanded = await dialogues.open(device_id=family.device.device_id, max_turns=3)
+            assert [item.turn_id for item in expanded.guest] == guest_turn_ids
 
             assert await dialogues.clear(
                 session_id=opened.session_id,
                 lane="guest",
-            ) == 2
+            ) == 3
             guest_cleared = await dialogues.open(
                 device_id=family.device.device_id,
                 max_turns=2,
@@ -135,7 +185,6 @@ def test_postgres_dialogue_serializes_concurrent_appends() -> None:
                         session_id=opened.session_id,
                         lane="guest",
                         exchange=_exchange(turn_id),
-                        max_turns=2,
                     )
                     for turn_id in turn_ids
                 )
@@ -176,7 +225,6 @@ def test_postgres_dialogue_has_stable_order_when_timestamps_match() -> None:
                     session_id=opened.session_id,
                     lane="guest",
                     exchange=_exchange(turn_id),
-                    max_turns=3,
                 )
 
             async with dialogues._sessions.begin() as session:

@@ -35,9 +35,14 @@ def test_production_prompt_keeps_persona_and_adds_context_rules() -> None:
     service = create_chat_service(AppConfig(
         llm_backend="openai", llm_api_key="unused-test-key", llm_model="test",
         llm_system_prompt="你叫 Newtalk，回答简短。",
+        context_input_tokens=8000,
+        memory_retrieval_mode="preload", memory_preload_timeout_seconds=0.6,
     ))
     try:
         prompt = service._model.system_prompt
+        assert service._model._input_token_budget == 8000
+        assert service._memory_retrieval_mode == "preload"
+        assert service._memory_preload_timeout_seconds == 0.6
         assert "你叫 Newtalk，回答简短。" in prompt
         assert "当前对话" in prompt
         assert "未命中不代表" in prompt
@@ -118,6 +123,9 @@ def test_debug_records_exact_requests_for_both_tool_rounds(tmp_path, capsys) -> 
     requests = [event for event in events if event["event"] == "llm_request"]
     assert [event["request"] for event in requests] == client.chat.completions.requests
     assert [event["request_index"] for event in requests] == [1, 2]
+    assert all(event["budget"]["after_tokens_estimate"] <= event["budget"]["input_token_limit"]
+               for event in requests)
+    assert all(event["budget"]["is_estimate"] for event in requests)
     assert all(event["turn_id"] == turn.turn_id for event in requests)
     assert requests[0]["request"]["messages"][0]["content"] == "真实系统提示"
     assert requests[1]["request"]["messages"][-1]["role"] == "tool"
@@ -173,7 +181,7 @@ def test_concurrent_turn_traces_are_isolated_and_cancelled_scope_is_reset(tmp_pa
             for event in requests] == [(first.turn_id, "one", 1), (second.turn_id, "two", 1)]
 
 
-def test_runtime_trace_explains_budget_selection_and_commit(tmp_path) -> None:
+def test_runtime_trace_reports_candidates_separately_from_final_budget_selection(tmp_path) -> None:
     from newtalk.context_debug import ContextDebugger
 
     path = tmp_path / "context.jsonl"
@@ -184,7 +192,6 @@ def test_runtime_trace_explains_budget_selection_and_commit(tmp_path) -> None:
             FakeLLM(chunk_delay_seconds=0),
             context_debug=ContextDebugger(enabled=True, path=path),
         )
-        runtime._dialogue.max_chars = 50
         old_turns = []
         for index in range(10):
             old = runtime._chat_service.create_turn(session_id=runtime.session_id, user_text=str(index))
@@ -203,8 +210,10 @@ def test_runtime_trace_explains_budget_selection_and_commit(tmp_path) -> None:
     events = read_events(path)
     selected = next(event for event in events if event["event"] == "context_selected")
     assert selected["identity"]["reason"] == "explicit_guest"
-    assert selected["history"][-1] == {"turn_id": old[-1].turn_id, "reason": "character_budget"}
-    assert all(item["reason"] == "older_than_budget_boundary" for item in selected["history"][:-1])
+    assert selected["history"][-1] == {
+        "turn_id": old[-1].turn_id, "reason": "candidate", "reply_status": "completed",
+    }
+    assert all(item["reason"] == "candidate" for item in selected["history"])
     ended = next(event for event in events if event["event"] == "turn_end")
     assert ended["dialogue_memory"] == "completed"
     assert ended["dialogue_database"] == "completed"
@@ -214,7 +223,7 @@ def test_runtime_trace_explains_budget_selection_and_commit(tmp_path) -> None:
                and event["excluded_turn_id"] == old[0].turn_id for event in events)
 
 
-def test_interrupted_turn_is_explained_but_not_added_to_next_context(tmp_path) -> None:
+def test_interrupted_reply_is_omitted_but_user_input_is_in_next_context(tmp_path) -> None:
     from newtalk.context_debug import ContextDebugger
 
     path = tmp_path / "context.jsonl"
@@ -242,7 +251,8 @@ def test_interrupted_turn_is_explained_but_not_added_to_next_context(tmp_path) -
             await runtime.cancel_turn(reason="barge_in")
             await runtime.start_turn(text="新问题", event_id="text-new", identity=None)
             await asyncio.wait_for(runtime._turn_state.task, timeout=2)
-            assert [item.user_text for item in runtime._dialogue.exchanges] == ["新问题"]
+            assert [item.user_text for item in runtime._dialogue.exchanges] == ["旧问题", "新问题"]
+            assert runtime._dialogue.exchanges[0].assistant_text == ""
         finally:
             await runtime.close()
             await runtime._chat_service.aclose()
@@ -251,7 +261,11 @@ def test_interrupted_turn_is_explained_but_not_added_to_next_context(tmp_path) -
     old_id = asyncio.run(scenario())
     events = read_events(path)
     selected = [event for event in events if event["event"] == "context_selected"][-1]
-    assert {"turn_id": old_id, "reason": "interrupted"} in selected["recent_exclusions"]
+    assert {"turn_id": old_id, "reason": "candidate", "reply_status": "user_only"} in selected["history"]
+    assert not any(item["turn_id"] == old_id for item in selected["recent_exclusions"])
+    ended = next(item for item in events if item["event"] == "turn_end" and item["turn_id"] == old_id)
+    assert ended["user_input_memory"] == "retained"
+    assert ended["dialogue_memory"] == "user_only"
 
 
 def test_cancel_during_persistence_is_reported_as_unknown_not_false(tmp_path) -> None:
@@ -264,7 +278,7 @@ def test_cancel_during_persistence_is_reported_as_unknown_not_false(tmp_path) ->
         entered = asyncio.Event()
 
         class WaitingStore(InMemoryDialogueStore):
-            async def append(self, **kwargs):
+            async def complete(self, **kwargs):
                 entered.set()
                 await asyncio.Future()
 
@@ -377,7 +391,7 @@ def test_member_commit_trace_reports_actual_persistence_and_queue_result(tmp_pat
         async def append(self, **kwargs):
             if result == "database_failed":
                 raise RuntimeError("deterministic persistence failure")
-            await super().append(**kwargs)
+            return await super().append(**kwargs)
 
     class Writer:
         calls = 0

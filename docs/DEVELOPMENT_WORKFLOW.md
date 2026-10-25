@@ -93,7 +93,7 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`。它在以下情况运�
 -> pip check
 -> Alembic migration
 -> Ruff 高置信静态检查
--> Node.js 24 前端脚本语法检查与录音诊断测试
+-> Node.js 24 前端脚本语法检查与全部前端测试
 -> 主项目 pytest + coverage 报告
 -> VoicePrint pytest
 ```

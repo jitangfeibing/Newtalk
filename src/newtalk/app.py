@@ -161,6 +161,8 @@ def create_chat_service(
             memory_search_limit=config.memory_search_limit,
             memory_search_relativity=config.memory_search_relativity,
             memory_result_max_chars=config.memory_result_max_chars,
+            memory_retrieval_mode=config.memory_retrieval_mode,
+            memory_preload_timeout_seconds=config.memory_preload_timeout_seconds,
             context_debug=ContextDebugger(enabled=config.context_debug),
         )
 
@@ -173,12 +175,16 @@ def create_chat_service(
             model=config.llm_model,
             system_prompt=conversation_system_prompt(config.llm_system_prompt),
             timeout_seconds=config.llm_timeout_seconds,
+            input_token_budget=config.context_input_tokens,
+            thinking=config.llm_thinking,
         ),
         synthesizer,
         memory_provider,
         memory_search_limit=config.memory_search_limit,
         memory_search_relativity=config.memory_search_relativity,
         memory_result_max_chars=config.memory_result_max_chars,
+        memory_retrieval_mode=config.memory_retrieval_mode,
+        memory_preload_timeout_seconds=config.memory_preload_timeout_seconds,
         context_debug=ContextDebugger(enabled=config.context_debug),
     )
 
@@ -312,15 +318,17 @@ def create_app(
             await resolved_memory_writer.start()
             await resolved_identity_deletion_service.start()
             logger.info(
-                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s memory_backend=%s identity_service=%s",
+                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s llm_thinking=%s tts_backend=%s asr_backend=%s memory_backend=%s memory_retrieval_mode=%s identity_service=%s",
                 config.host,
                 config.port,
                 config.web_root,
                 config.llm_backend,
                 config.llm_model or "fake",
+                config.llm_thinking,
                 config.tts_backend,
                 config.asr_backend,
                 config.memory_backend,
+                config.memory_retrieval_mode,
                 type(resolved_identity_service).__name__,
             )
             yield

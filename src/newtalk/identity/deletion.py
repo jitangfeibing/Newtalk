@@ -424,10 +424,16 @@ class IdentityDeletionService:
                 await self._memory.delete_all_memories(scope)
                 await self._memory.delete_profile(scope)
             if self._dialogue_store is not None:
-                await self._dialogue_store.delete_identity(
-                    device_id=job.device_id,
-                    identity_id=job.identity_id,
-                )
+                if self._dialogue_coordinator is not None:
+                    scope_guard = self._dialogue_coordinator.write_scope(job.device_id)
+                    async with scope_guard.lock:
+                        await self._dialogue_store.delete_identity(
+                            device_id=job.device_id, identity_id=job.identity_id,
+                        )
+                else:
+                    await self._dialogue_store.delete_identity(
+                        device_id=job.device_id, identity_id=job.identity_id,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -79,7 +79,6 @@ def make_runtime(
         recognizer=FakeASR(),
         vad_pre_roll_ms=300,
         dialogue_max_turns=10,
-        dialogue_max_chars=8_000,
         voiceprint_join_timeout_seconds=0.1,
         profile_cache=profile_cache,
         profile_max_chars=2_000,

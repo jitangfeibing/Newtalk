@@ -23,6 +23,7 @@ from newtalk.chat import (
     AudioStarted,
     ChatService,
     ChatMessage,
+    DialogueExchange,
     DialogueSnapshot,
     DialogueStore,
     DialogueCacheCoordinator,
@@ -40,11 +41,14 @@ from newtalk.voiceprint import (
     VoicePrintIdentification,
     VoicePrintUnavailableError,
 )
+from newtalk.chat.context_budget import ContextBudgetExceeded
 
 
 logger = logging.getLogger(__name__)
 _SEND_END = object()
 _RECENT_EVENT_LIMIT = 4096
+# 输入落库独立于回复取消；数据库变慢时必须有界，满载明确拒绝新输入。
+_MAX_PENDING_INPUT_WRITES = 128
 
 
 def _format_optional_ms(value: float | None) -> str:
@@ -251,6 +255,9 @@ class _VoiceJoinState:
     task: asyncio.Task[VoicePrintIdentification] | None = None
     failure_reason: str | None = None
     started_at: float = field(default_factory=perf_counter)
+    speech_ended_at: float | None = None
+    asr_final_at: float | None = None
+    vad_silence_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +267,13 @@ class _SpeakerResolution:
     reason: str
     provider_elapsed_ms: float | None
     elapsed_ms: float
+    timing: tuple[tuple[str, float | None], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedUserInput:
+    revision: int
+    persistence: asyncio.Task[str]
 
 
 class ConnectionRuntime:
@@ -273,6 +287,7 @@ class ConnectionRuntime:
     - 识别 Task（AudioInputSession._recognize）：_on_asr_event、_on_asr_error；
       _on_asr_event 经 _resolve_voice_speaker 确认身份后调用 start_turn。
     - Turn Task：_stream_turn、_can_commit_turn，负责流式交付和完成后的提交。
+    - 独立输入落库 Task：_persist_user_input、_can_commit_turn；不随 Turn 取消，正常关闭时收尾。
     - 发送 Task：_OutboundSender._run，串行写入 WebSocket，并过滤失效 Turn 输出。
     - websocket_endpoint Task：构造并 start；其 finally 中 close，等待各后台任务退出。
       接收循环是该 Task 中被 await 的协程，不是另一个独立创建的 Task。
@@ -280,6 +295,8 @@ class ConnectionRuntime:
     _turn_transition_lock 串行保护 start_turn/cancel_turn 的替换与取消：
     摘除旧 Turn 状态、等待其 Task 退出、发送通知，以及激活新 Turn 并保存 Task 引用。
     _cancel_turn 由已持锁的调用方执行；_stream_turn、播放回执及声纹汇合不持此锁。
+    _dialogue_write_scope.lock 则按设备协调输入落库、助手补全与清理；
+    它不保护生成过程，也不跨进程共享。revision 使清空前的排队输入失效。
     方法入口的持锁说明只指当前 Task；通用发送方法继承调用方的持锁状态。
     await 不会切换调用链所属 Task，create_task 才启动另一任务。
     Provider 的单次 I/O 超时不能作为整条调用链上限；未设总超时处最坏时长待确认。
@@ -298,7 +315,6 @@ class ConnectionRuntime:
         recognizer: SpeechRecognizer,
         vad_pre_roll_ms: int,
         dialogue_max_turns: int,
-        dialogue_max_chars: int,
         voiceprint_join_timeout_seconds: float,
         profile_cache: SessionProfileCache,
         profile_max_chars: int,
@@ -319,7 +335,6 @@ class ConnectionRuntime:
         self._dialogue = DialogueSession(
             session_id,
             max_turns=dialogue_max_turns,
-            max_chars=dialogue_max_chars,
         )
         # 同一设备代表同一家庭空间。声纹只标记当前说话人，不能因为一次
         # no_match/timeout 就切断整段对话，因此按真实时间顺序恢复统一窗口。
@@ -337,6 +352,9 @@ class ConnectionRuntime:
                 for item in dialogue_snapshot.history[:-dialogue_max_turns]
             )
         self._dialogue_coordinator = dialogue_coordinator
+        self._dialogue_write_scope = dialogue_coordinator.write_scope(device_id)
+        self._accepted_inputs: dict[str, _AcceptedUserInput] = {}
+        self._pending_input_writes: set[asyncio.Task[str]] = set()
         # family 注册范围表示成员删除时需要同步移除其活跃缓存；Guest 记录
         # 没有 identity_id，不会受 remove_identity 影响。
         self._dialogue_coordinator.register(device_id, "family", self._dialogue)
@@ -441,9 +459,9 @@ class ConnectionRuntime:
         # 运行于：接收循环 Task；持锁：否（cancel_turn 内获取）；可能阻塞：旧任务清理、数据库清空及发送，未设总超时。
         await self.cancel_turn(reason="dialogue_cleared")
         try:
-            deleted = await self._dialogue_store.clear(
-                session_id=self.session_id,
-            )
+            async with self._dialogue_write_scope.lock:
+                deleted = await self._dialogue_store.clear(session_id=self.session_id)
+                self._dialogue_coordinator.clear(self.device_id)
         except Exception:
             logger.exception(
                 "dialogue_clear_failed session_id=%s scope=all",
@@ -456,7 +474,6 @@ class ConnectionRuntime:
             )
             return
 
-        self._dialogue_coordinator.clear(self.device_id)
         logger.info(
             "dialogue_cleared session_id=%s device_id=%s scope=all deleted=%s",
             self.session_id,
@@ -485,6 +502,15 @@ class ConnectionRuntime:
         # 文本输入和 ASR Final 可能同时到达。整个替换过程必须串行，
         # 否则新 Turn 可能在旧 Turn 保存 task 引用前完成取消，留下孤儿任务。
         async with self._turn_transition_lock:
+            if self._closing:
+                return
+            if len(self._pending_input_writes) >= _MAX_PENDING_INPUT_WRITES:
+                await self.send_error(
+                    code="dialogue_busy",
+                    message="Dialogue storage is busy; retry this input",
+                    event_id=event_id,
+                )
+                return
             await self._cancel_turn(reason="superseded")
             context_started_at = perf_counter()
             dialogue = self._dialogue
@@ -533,9 +559,7 @@ class ConnectionRuntime:
                 ),
             )
             if self._chat_service.context_debug.enabled:
-                # 根据已生成的 messages 反推实际入选条数，不再实现一遍裁剪算法。
-                selected_count = (len(messages) - len(context_messages) - 1) // 2
-                cutoff = len(dialogue.exchanges) - selected_count
+                # 此处仅记录候选；系统提示和工具加入后的最终取舍由模型适配器记录。
                 self._record_context(
                     turn.turn_id, "context_selected", event_id=event_id,
                     source="voice" if event_id.startswith("voice-") else "text",
@@ -550,18 +574,34 @@ class ConnectionRuntime:
                     profile={"enabled": self._profile_cache.enabled,
                              "ready": turn.profile_ready, "fields": turn.profile_field_count,
                              "injected": bool(profile_prompt), "chars": len(profile_prompt or "")},
-                    limits={"max_turns": dialogue.max_turns, "max_chars": dialogue.max_chars},
+                    limits={"max_turns": dialogue.max_turns},
                     history=[
-                        {"turn_id": exchange.turn_id, "reason": (
-                            "included" if index >= cutoff else
-                            "character_budget" if index == cutoff - 1 else
-                            "older_than_budget_boundary"
-                        )}
-                        for index, exchange in enumerate(dialogue.exchanges)
+                        {"turn_id": exchange.turn_id, "reply_status": (
+                            "completed" if exchange.assistant_text else "user_only"
+                        ), "reason": "candidate"}
+                        for exchange in dialogue.exchanges
                     ],
                     recent_exclusions=list(self._recent_context_exclusions),
                     messages=[{"role": message.role, "content": message.content} for message in messages],
                 )
+            if speaker_resolution is not None:
+                self._record_context(
+                    turn.turn_id, "voice_input_timing", utterance_id=event_id.removeprefix("voice-"),
+                    **dict(speaker_resolution.timing),
+                )
+            evicted_turn_id = (
+                dialogue.exchanges[0].turn_id
+                if len(dialogue.exchanges) == dialogue.max_turns else None
+            )
+            self._dialogue_coordinator.accept_user_input(self.device_id, turn)
+            if evicted_turn_id is not None:
+                self._exclude_from_context(evicted_turn_id, "window_limit")
+            revision = self._dialogue_write_scope.revision
+            persistence = asyncio.create_task(self._persist_user_input(turn, revision))
+            self._pending_input_writes.add(persistence)
+            persistence.add_done_callback(self._pending_input_writes.discard)
+            self._accepted_inputs[turn.turn_id] = _AcceptedUserInput(revision, persistence)
+            self._record_context(turn.turn_id, "user_input_accepted", dialogue_memory="user_only")
             self._turn_state.activate(turn.turn_id)
             logger.info(
                 "turn_started session_id=%s turn_id=%s event_id=%s",
@@ -570,7 +610,7 @@ class ConnectionRuntime:
                 event_id,
             )
             logger.info(
-                "context_ready session_id=%s turn_id=%s completed_turns=%s messages=%s chars=%s elapsed_ms=%.1f",
+                "context_candidates_ready session_id=%s turn_id=%s window_inputs=%s messages=%s chars=%s elapsed_ms=%.1f",
                 self.session_id,
                 turn.turn_id,
                 len(dialogue.exchanges),
@@ -600,6 +640,7 @@ class ConnectionRuntime:
                 )
             except BaseException:
                 self._turn_state.clear_active(turn.turn_id)
+                self._accepted_inputs.pop(turn.turn_id, None)
                 raise
             task = asyncio.create_task(
                 self._stream_turn(turn, event_id=event_id, dialogue=dialogue)
@@ -621,8 +662,7 @@ class ConnectionRuntime:
             cancellation.task.cancel()
             await asyncio.gather(cancellation.task, return_exceptions=True)
         if cancellation.turn_id is not None:
-            if not any(item.turn_id == cancellation.turn_id for item in self._dialogue.exchanges):
-                self._exclude_from_context(cancellation.turn_id, "interrupted")
+            self._accepted_inputs.pop(cancellation.turn_id, None)
             self._record_context(cancellation.turn_id, "turn_cancelled", reason=reason)
             logger.info(
                 "turn_cancelled session_id=%s turn_id=%s reason=%s",
@@ -764,11 +804,10 @@ class ConnectionRuntime:
         )
 
     async def close(self) -> None:
-        # 运行于：websocket_endpoint Task 的 finally；持锁：否（cancel_turn 内获取）；可能阻塞：画像/ASR/声纹/Turn/发送任务清理，未设总超时。
+        # 运行于：endpoint 的 finally；持锁：否（cancel_turn 内获取）；可能阻塞：画像/ASR/声纹/Turn/输入落库/发送任务收尾，未设总超时。
         if self._closing:
             return
         self._closing = True
-        self._dialogue_coordinator.unregister(self._dialogue)
         await self._profile_cache.close()
         if self._audio_session is not None:
             session = self._audio_session
@@ -786,13 +825,68 @@ class ConnectionRuntime:
             await asyncio.gather(*voiceprint_tasks, return_exceptions=True)
         self._voice_joins.clear()
         await self.cancel_turn(reason="connection_closed", notify=False)
+        # 正常断开不能取消已接受输入的落库；只取消生成，独立输入任务需收尾。
+        if self._pending_input_writes:
+            await asyncio.gather(*tuple(self._pending_input_writes), return_exceptions=True)
+        self._dialogue_coordinator.unregister(self._dialogue)
         await self._sender.close()
+
+    async def _persist_user_input(self, turn: Turn, revision: int) -> str:
+        """独立输入 Task；不在接收循环等待 DB，不随 LLM/TTS 取消。"""
+        status = "failed"
+        try:
+            async with self._dialogue_write_scope.lock:
+                if not self._dialogue_write_scope.permits(revision, turn.speaker_identity_id):
+                    status = "skipped"
+                elif not await self._can_commit_turn(turn):
+                    status = "skipped"
+                else:
+                    exchange = DialogueExchange(
+                        turn_id=turn.turn_id,
+                        user_text=turn.user_text,
+                        assistant_text="",
+                        speaker_identity_id=turn.speaker_identity_id,
+                        speaker_display_name=turn.speaker_display_name,
+                        speaker_relationship=turn.speaker_relationship,
+                    )
+                    inserted = await self._dialogue_store.append(
+                        session_id=self.session_id,
+                        lane="family" if turn.speaker_identity_id is not None else "guest",
+                        exchange=exchange,
+                        accepted_at=turn.created_at,
+                    )
+                    status = "completed" if inserted else "skipped"
+        except asyncio.CancelledError:
+            self._record_context(turn.turn_id, "user_input_persistence", status="unknown")
+            raise
+        except Exception:
+            logger.exception(
+                "user_input_persist_failed session_id=%s turn_id=%s",
+                self.session_id,
+                turn.turn_id,
+            )
+        self._record_context(turn.turn_id, "user_input_persistence", status=status)
+        return status
 
     def _record_context(self, turn_id: str, event: str, **fields: Any) -> None:
         # 运行于：调用方 Task；持锁：继承调用方；可能阻塞：仅显式开启时写本机调试文件。
         self._chat_service.context_debug.record(
             event, turn_id=turn_id, session_id=self.session_id, device_id=self.device_id,
             **fields,
+        )
+
+    def record_playback_timing(self, event: dict) -> None:
+        # 运行于：接收循环 Task；持锁：否；可能阻塞：仅本机日志，不等待 Provider。
+        # 这是浏览器自报的设备输出估计，不用于身份、Turn 状态或计费判断。
+        self._record_context(
+            event["turn_id"], "playback_audible", stream_id=event["stream_id"],
+            output_clock=event["output_clock"], metrics=event["metrics"],
+        )
+        logger.info(
+            "browser_playback_audible session_id=%s turn_id=%s stream_id=%s "
+            "output_clock=%s metrics=%s",
+            self.session_id, event["turn_id"], event["stream_id"],
+            event["output_clock"], event["metrics"],
         )
 
     def _exclude_from_context(self, turn_id: str, reason: str) -> None:
@@ -822,8 +916,9 @@ class ConnectionRuntime:
         audio_frames = 0
         audio_bytes = 0
         summary_logged = False
+        accepted = self._accepted_inputs[turn.turn_id]
         outcome = "started"
-        dialogue_memory = "not_attempted"
+        dialogue_memory = "user_only"
         dialogue_database = "not_attempted"
         memory_queue = "not_attempted"
         response_text: str | None = None
@@ -833,6 +928,12 @@ class ConnectionRuntime:
             if summary_logged:
                 return
             summary_logged = True
+            self._record_context(
+                turn.turn_id, "turn_latency", status=status,
+                first_text_ms=first_text_ms, first_audio_ms=first_audio_ms,
+                audio_complete_ms=audio_complete_ms,
+                total_ms=(perf_counter() - started_at) * 1000,
+            )
             logger.info(
                 "turn_latency_summary session_id=%s turn_id=%s source=%s "
                 "speaker=%s status=%s context_messages=%s prompt_chars=%s "
@@ -929,42 +1030,43 @@ class ConnectionRuntime:
                         persisted = False
                         if (
                             self._turn_state.turn_id == turn.turn_id
+                            and self._dialogue_write_scope.permits(
+                                accepted.revision, turn.speaker_identity_id
+                            )
                             and await self._can_commit_turn(turn)
                         ):
-                            # 同一设备的多个活跃连接共享家庭短期上下文；这里只同步
-                            # 已完整完成的 Turn，不传播进行中输出或播放状态。
-                            evicted_turn_id = (
-                                dialogue.exchanges[0].turn_id
-                                if len(dialogue.exchanges) == dialogue.max_turns else None
-                            )
-                            self._dialogue_coordinator.commit(
+                            # 补全原 user-only 位置，不追加第二条输入，也不重新插入已淘汰记录。
+                            committed = self._dialogue_coordinator.commit(
                                 self.device_id,
                                 turn,
                                 output.text,
                             )
-                            committed = True
-                            dialogue_memory = "completed"
-                            if evicted_turn_id is not None:
-                                self._exclude_from_context(evicted_turn_id, "window_limit")
-                            lane = (
-                                "family"
-                                if turn.speaker_identity_id is not None
-                                else "guest"
-                            )
+                            dialogue_memory = "completed" if committed else "not_retained"
                             try:
                                 # await 被取消时无法确定数据库是否已提交，不能谎报“未保存”。
                                 dialogue_database = "unknown"
                                 self._record_context(
                                     turn.turn_id, "turn_commit", stage="dialogue_database", status="started",
                                 )
-                                await self._dialogue_store.append(
-                                    session_id=self.session_id,
-                                    lane=lane,
-                                    exchange=dialogue.exchanges[-1],
-                                    max_turns=dialogue.max_turns,
+                                # shield 防止回复取消沿 await 传播到独立输入落库 Task。
+                                input_status = await asyncio.shield(accepted.persistence)
+                                if committed and input_status == "completed":
+                                    async with self._dialogue_write_scope.lock:
+                                        if self._dialogue_write_scope.permits(
+                                            accepted.revision, turn.speaker_identity_id
+                                        ):
+                                            exchange = next(
+                                                (item for item in dialogue.exchanges
+                                                 if item.turn_id == turn.turn_id),
+                                                None,
+                                            )
+                                            if exchange is not None:
+                                                persisted = await self._dialogue_store.complete(
+                                                    session_id=self.session_id, exchange=exchange,
+                                                )
+                                dialogue_database = "completed" if persisted else (
+                                    "failed" if input_status == "failed" else "not_retained"
                                 )
-                                persisted = True
-                                dialogue_database = "completed"
                             except Exception:
                                 dialogue_database = "failed"
                                 logger.exception(
@@ -974,7 +1076,7 @@ class ConnectionRuntime:
                                 )
                             logger.info(
                                 "dialogue_committed session_id=%s turn_id=%s "
-                                "completed_turns=%s persisted=%s",
+                                "window_inputs=%s persisted=%s",
                                 self.session_id,
                                 turn.turn_id,
                                 len(dialogue.exchanges),
@@ -1015,37 +1117,56 @@ class ConnectionRuntime:
             outcome = "cancelled"
             log_summary("cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             outcome = "failed"
-            if dialogue_memory != "completed":
-                self._exclude_from_context(turn.turn_id, "generation_failed")
+            self._record_context(turn.turn_id, "assistant_reply_failed")
             log_summary("failed")
-            logger.exception(
-                "turn_failed session_id=%s turn_id=%s event_id=%s",
-                self.session_id,
-                turn.turn_id,
-                event_id,
-            )
+            if isinstance(exc, ContextBudgetExceeded):
+                logger.warning(
+                    "context_budget_exceeded session_id=%s turn_id=%s limit=%s estimated=%s",
+                    self.session_id, turn.turn_id,
+                    exc.decision["input_token_limit"], exc.decision["after_tokens_estimate"],
+                )
+            else:
+                logger.exception(
+                    "turn_failed session_id=%s turn_id=%s event_id=%s",
+                    self.session_id,
+                    turn.turn_id,
+                    event_id,
+                )
             await self.send_json(
                 {
                     "type": "turn_failed",
                     "turn_id": turn.turn_id,
                     "event_id": event_id,
-                    "code": "chat_failed",
-                    "message": "Unable to generate a reply",
+                    "code": "context_budget_exceeded" if isinstance(exc, ContextBudgetExceeded) else "chat_failed",
+                    "message": (
+                        "System context and current input exceed the input budget; shorten the input or adjust the budget"
+                        if isinstance(exc, ContextBudgetExceeded) else "Unable to generate a reply"
+                    ),
                 },
                 turn_id=turn.turn_id,
             )
         finally:
+            user_input_database = (
+                "unknown" if accepted.persistence.cancelled() else
+                accepted.persistence.result() if accepted.persistence.done() else "pending"
+            )
             self._record_context(
                 turn.turn_id, "turn_end", outcome=outcome,
                 dialogue_memory=dialogue_memory, dialogue_database=dialogue_database,
                 memory_queue=memory_queue, memory_writer=type(self._memory_writer).__name__,
                 memory_skip_reason=(
-                    "guest" if turn.speaker_identity_id is None else "dialogue_not_persisted"
+                    "guest" if turn.speaker_identity_id is None else
+                    "turn_not_completed" if outcome != "completed" else "dialogue_not_persisted"
                 ) if memory_queue == "not_attempted" else None,
                 response_text=response_text,
+                user_input_memory=("retained" if any(
+                    item.turn_id == turn.turn_id for item in dialogue.exchanges
+                ) else "not_retained"),
+                user_input_database=user_input_database,
             )
+            self._accepted_inputs.pop(turn.turn_id, None)
             if self._turn_state.clear_active(turn.turn_id):
                 logger.info(
                     "turn_completed session_id=%s turn_id=%s",
@@ -1054,7 +1175,7 @@ class ConnectionRuntime:
                 )
 
     async def _can_commit_turn(self, turn: Turn) -> bool:
-        # 运行于：Turn Task；持锁：否；可能阻塞：成员有效性数据库查询，未设本地总超时。
+        # 运行于：Turn/独立输入落库 Task；持锁：输入任务持设备写锁，Turn 不持；可能阻塞：成员有效性数据库查询，未设本地总超时。
         if turn.speaker_identity_id is None:
             return True
         try:
@@ -1088,6 +1209,12 @@ class ConnectionRuntime:
         # 运行于：接收循环 Task（push/stop 回调）；持锁：否（cancel_turn 内获取）；可能阻塞：边界发送和旧 Turn 取消清理，未设总超时。
         if self._closing:
             return
+        if event.kind == "speech_end":
+            state = self._voice_joins.get(event.utterance_id)
+            if state is not None:
+                state.speech_ended_at = perf_counter()
+                if event.last_voice_audio_ms is not None:
+                    state.vad_silence_ms = event.audio_ms - event.last_voice_audio_ms
         event_type = "vad_speech_start" if event.kind == "speech_start" else "vad_speech_end"
         elapsed_ms = (
             (perf_counter() - self._audio_started_at) * 1000
@@ -1101,6 +1228,7 @@ class ConnectionRuntime:
                 "utterance_id": event.utterance_id,
                 "probability": round(event.probability, 4),
                 "audio_ms": round(event.audio_ms, 1),
+                "last_voice_audio_ms": event.last_voice_audio_ms,
             }
         )
         logger.info(
@@ -1145,6 +1273,9 @@ class ConnectionRuntime:
             )
             return
         if isinstance(event, AsrFinal):
+            state = self._voice_joins.get(utterance_id)
+            if state is not None:
+                state.asr_final_at = perf_counter()
             text = event.text.strip()
             await self.send_json(
                 {
@@ -1239,6 +1370,20 @@ class ConnectionRuntime:
                 reason = "identity_missing"
         elapsed_ms = (perf_counter() - state.started_at) * 1000
         join_wait_ms = (perf_counter() - join_started_at) * 1000
+        # ASR 与声纹并行：记录共同判停基准和汇合等待，不能把两个总耗时相加。
+        timing = (
+            ("vad_silence_ms", state.vad_silence_ms),
+            ("vad_to_asr_final_ms", (
+                (state.asr_final_at - state.speech_ended_at) * 1000
+                if state.asr_final_at is not None and state.speech_ended_at is not None else None
+            )),
+            ("vad_to_speaker_ready_ms", (
+                (perf_counter() - state.speech_ended_at) * 1000
+                if state.speech_ended_at is not None else None
+            )),
+            ("speaker_join_ms", join_wait_ms),
+            ("voiceprint_provider_ms", identification.elapsed_ms if identification else None),
+        )
         await self._discard_voice_join(utterance_id, cancel=False)
         logger.info(
             "speaker_resolved session_id=%s utterance_id=%s identity_id=%s "
@@ -1266,6 +1411,7 @@ class ConnectionRuntime:
                 identification.elapsed_ms if identification is not None else None
             ),
             elapsed_ms=elapsed_ms,
+            timing=timing,
         )
 
     async def _discard_voice_join(
