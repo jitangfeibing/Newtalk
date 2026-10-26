@@ -54,7 +54,32 @@ def test_postgres_memory_job_claim_is_idempotent() -> None:
             assert reclaimed.job_id == claimed.job_id
             assert reclaimed.attempts == 1
             assert reclaimed.provider_task_id == "provider-task"
-            await store.complete(reclaimed.job_id, "provider-task")
+            assert reclaimed.poll_count == 1
+            await store.submit(
+                job.job_id, "provider-task", check_at=datetime.now(timezone.utc)
+            )
+            await store.close()
+            store = SqlAlchemyMemoryJobStore(DATABASE_URL, lease_seconds=0)
+            await store.start()
+            reclaimed = await store.claim()
+            assert reclaimed is not None
+            assert reclaimed.poll_count == 2
+            assert reclaimed.attempts == 1
+            await store.submit(
+                job.job_id, "new-provider-task", check_at=datetime.now(timezone.utc)
+            )
+            reclaimed = await store.claim()
+            assert reclaimed is not None
+            assert reclaimed.poll_count == 1
+            await store.fail(
+                job.job_id, error="retry submission", retry_at=datetime.now(timezone.utc)
+            )
+            reclaimed = await store.claim()
+            assert reclaimed is not None
+            assert reclaimed.poll_count == 0
+            assert reclaimed.provider_task_id is None
+            assert reclaimed.attempts == 2
+            await store.complete(reclaimed.job_id, None)
             assert await store.claim() is None
         finally:
             await store.close()

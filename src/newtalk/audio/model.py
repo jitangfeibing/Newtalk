@@ -27,6 +27,7 @@ class VadEvent:
     kind: Literal["speech_start", "speech_end"]
     probability: float
     audio_ms: float
+    last_voice_audio_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class SpeechBoundary:
     utterance_id: str
     probability: float
     audio_ms: float
+    last_voice_audio_ms: float | None = None
 
 
 class VoiceActivityStream(Protocol):

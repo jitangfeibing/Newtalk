@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
 from newtalk.chat.session import DialogueExchange
-from newtalk.identity.sqlalchemy_store import Base
+from newtalk.identity.sqlalchemy_store import Base, IdentityRow
 
 
 DialogueLane = Literal["family", "guest"]
@@ -55,8 +55,10 @@ class DialogueStore(Protocol):
         session_id: str,
         lane: DialogueLane,
         exchange: DialogueExchange,
-        max_turns: int,
+        accepted_at: datetime | None = None,
     ) -> bool: ...
+
+    async def complete(self, *, session_id: str, exchange: DialogueExchange) -> bool: ...
 
     async def clear(
         self, *, session_id: str, lane: DialogueLane | None = None
@@ -197,10 +199,23 @@ class SqlAlchemyDialogueStore:
         session_id: str,
         lane: DialogueLane,
         exchange: DialogueExchange,
-        max_turns: int,
+        accepted_at: datetime | None = None,
     ) -> bool:
         parsed_session_id = UUID(session_id)
         async with self._sessions.begin() as session:
+            # 删除调度也锁同一成员行。若成员已停用，不得新建其短期输入记录。
+            if exchange.speaker_identity_id is not None:
+                identity = await session.scalar(
+                    select(IdentityRow).where(
+                        IdentityRow.identity_id == UUID(exchange.speaker_identity_id),
+                        IdentityRow.status == "active",
+                        IdentityRow.device_id == select(DialogueSessionRow.device_id).where(
+                            DialogueSessionRow.session_id == parsed_session_id
+                        ).scalar_subquery(),
+                    ).with_for_update()
+                )
+                if identity is None:
+                    return False
             dialogue = await session.scalar(
                 select(DialogueSessionRow)
                 .where(DialogueSessionRow.session_id == parsed_session_id)
@@ -219,35 +234,34 @@ class SqlAlchemyDialogueStore:
                     speaker_identity_id=exchange.speaker_identity_id,
                     speaker_display_name=exchange.speaker_display_name,
                     speaker_relationship=exchange.speaker_relationship,
+                    created_at=accepted_at or datetime.now(timezone.utc),
                 )
                 .on_conflict_do_nothing(index_elements=[DialogueExchangeRow.turn_id])
                 .returning(DialogueExchangeRow.exchange_id)
             )
             inserted = result.scalar_one_or_none() is not None
             if inserted:
-                stale = (
-                    select(DialogueExchangeRow.exchange_id)
-                    .where(
-                        DialogueExchangeRow.session_id == parsed_session_id,
-                        DialogueExchangeRow.lane == lane,
-                    )
-                    .order_by(
-                        DialogueExchangeRow.created_at.desc(),
-                        DialogueExchangeRow.turn_id.desc(),
-                    )
-                    .offset(max_turns)
-                )
-                await session.execute(
-                    delete(DialogueExchangeRow).where(
-                        DialogueExchangeRow.exchange_id.in_(stale)
-                    )
-                )
+                # 请求/缓存窗口不再决定原文保留期；只有显式清空或删除成员才清理。
                 await session.execute(
                     update(DialogueSessionRow)
                     .where(DialogueSessionRow.session_id == parsed_session_id)
                     .values(updated_at=func.now())
                 )
             return inserted
+
+    async def complete(self, *, session_id: str, exchange: DialogueExchange) -> bool:
+        if not exchange.assistant_text:
+            raise ValueError("Completed assistant text must not be empty")
+        async with self._sessions.begin() as session:
+            # 只补全已存在的 user-only 行；被清空、删除或淘汰后绝不重新插入。
+            result = await session.execute(
+                update(DialogueExchangeRow).where(
+                    DialogueExchangeRow.session_id == UUID(session_id),
+                    DialogueExchangeRow.turn_id == exchange.turn_id,
+                    DialogueExchangeRow.assistant_text == "",
+                ).values(assistant_text=exchange.assistant_text)
+            )
+            return bool(result.rowcount)
 
     async def close(self) -> None:
         await self._engine.dispose()
@@ -319,21 +333,27 @@ class InMemoryDialogueStore:
         session_id: str,
         lane: DialogueLane,
         exchange: DialogueExchange,
-        max_turns: int,
+        accepted_at: datetime | None = None,
     ) -> bool:
         history = self._history.setdefault(session_id, [])
         if any(item.exchange.turn_id == exchange.turn_id for item in history):
             return False
         history.append(
-            PersistedDialogueExchange(lane, exchange, datetime.now(timezone.utc))
+            PersistedDialogueExchange(lane, exchange, accepted_at or datetime.now(timezone.utc))
         )
-        lane_items = [item for item in history if item.lane == lane]
-        stale_ids = {id(item) for item in lane_items[:-max_turns]}
-        if stale_ids:
-            self._history[session_id] = [
-                item for item in history if id(item) not in stale_ids
-            ]
         return True
+
+    async def complete(self, *, session_id: str, exchange: DialogueExchange) -> bool:
+        if not exchange.assistant_text:
+            raise ValueError("Completed assistant text must not be empty")
+        history = self._history.get(session_id, [])
+        for index, item in enumerate(history):
+            if item.exchange.turn_id == exchange.turn_id and not item.exchange.assistant_text:
+                history[index] = replace(
+                    item, exchange=replace(item.exchange, assistant_text=exchange.assistant_text)
+                )
+                return True
+        return False
 
     async def close(self) -> None:
         return None

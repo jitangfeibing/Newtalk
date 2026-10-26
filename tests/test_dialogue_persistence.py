@@ -25,19 +25,16 @@ def test_in_memory_dialogue_store_restores_scoped_sliding_windows() -> None:
                 session_id=first.session_id,
                 lane="guest",
                 exchange=exchange(turn_id),
-                max_turns=2,
             )
         assert await store.append(
             session_id=first.session_id,
             lane="family",
             exchange=exchange("family-1", member=True),
-            max_turns=2,
         )
         assert not await store.append(
             session_id=first.session_id,
             lane="family",
             exchange=exchange("family-1", member=True),
-            max_turns=2,
         )
 
         restored = await store.open(device_id="02:00:00:00:00:01", max_turns=2)
@@ -55,7 +52,9 @@ def test_in_memory_dialogue_store_restores_scoped_sliding_windows() -> None:
         assert other.session_id != first.session_id
         assert other.history == ()
 
-        assert await store.clear(session_id=first.session_id, lane="guest") == 2
+        expanded = await store.open(device_id="02:00:00:00:00:01", max_turns=3)
+        assert [item.turn_id for item in expanded.guest] == ["guest-1", "guest-2", "guest-3"]
+        assert await store.clear(session_id=first.session_id, lane="guest") == 3
         guest_cleared = await store.open(
             device_id="02:00:00:00:00:01", max_turns=2
         )

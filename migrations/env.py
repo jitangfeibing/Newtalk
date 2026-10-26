@@ -7,7 +7,11 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from newtalk.config import DEFAULT_DATABASE_URL
+# Alembic 必须先导入所有模型模块，否则自动生成迁移会把未注册的表当作已删除。
+from newtalk.chat import persistence
+from newtalk.identity import deletion, recovery_limit
 from newtalk.identity.sqlalchemy_store import Base
+from newtalk.memory import jobs
 
 
 config = context.config

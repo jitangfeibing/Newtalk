@@ -154,6 +154,8 @@ class SileroVadStream:
             kind=kind,
             probability=probability,
             audio_ms=self._processed_samples * 1000 / SAMPLE_RATE,
+            # 仅用于计时；滑动窗口确认点不能冒充人工标注的最后一个字。
+            last_voice_audio_ms=self._last_voice_sample * 1000 / SAMPLE_RATE,
         )
 
     def _reset_model_state(self) -> None:

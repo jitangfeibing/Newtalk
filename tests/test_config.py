@@ -6,6 +6,13 @@ from newtalk.config import AppConfig, ConfigError, DEFAULT_WEB_ROOT, load_config
 from newtalk.logging_config import configure_logging
 
 
+def test_llm_thinking_setting_is_explicit_and_reversible():
+    assert load_config({}).llm_thinking == 'default'
+    for mode in ('enabled', 'disabled'):
+        assert load_config({'NEWTALK_LLM_THINKING': mode}).llm_thinking == mode
+    with pytest.raises(ConfigError, match='NEWTALK_LLM_THINKING'):
+        load_config({'NEWTALK_LLM_THINKING': 'maybe'})
+
 def test_config_uses_p1_defaults() -> None:
     config = load_config({})
 
@@ -15,6 +22,17 @@ def test_config_uses_p1_defaults() -> None:
         log_level="INFO",
         web_root=DEFAULT_WEB_ROOT,
     )
+    assert config.memory_job_max_attempts == 8
+    assert config.dialogue_max_turns == 256
+    assert config.context_input_tokens == 32768
+    assert config.memory_retrieval_mode == "tool"
+    assert config.memory_preload_timeout_seconds == 0.8
+
+
+def test_legacy_character_budget_is_reported_and_not_treated_as_token_budget(caplog) -> None:
+    config = load_config({"NEWTALK_DIALOGUE_MAX_CHARS": "12000"})
+    assert config.context_input_tokens == 32768
+    assert "deprecated_config name=NEWTALK_DIALOGUE_MAX_CHARS" in caplog.text
 
 
 def test_config_reads_environment_values(tmp_path) -> None:
@@ -25,7 +43,7 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_LOG_LEVEL": "debug",
             "NEWTALK_WEB_ROOT": str(tmp_path),
             "NEWTALK_DIALOGUE_MAX_TURNS": "6",
-            "NEWTALK_DIALOGUE_MAX_CHARS": "9000",
+            "NEWTALK_CONTEXT_INPUT_TOKENS": "16000",
             "NEWTALK_LLM_BACKEND": "openai",
             "NEWTALK_LLM_API_KEY": "test-secret",
             "NEWTALK_LLM_BASE_URL": "https://example.test/v1",
@@ -71,6 +89,8 @@ def test_config_reads_environment_values(tmp_path) -> None:
             "NEWTALK_MEMOS_TIMEOUT_SECONDS": "4.5",
             "NEWTALK_PROFILE_MAX_CHARS": "1500",
             "NEWTALK_MEMORY_SEARCH_LIMIT": "7",
+            "NEWTALK_MEMORY_RETRIEVAL_MODE": "preload",
+            "NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS": "0.6",
             "NEWTALK_MEMORY_SEARCH_RELATIVITY": "0.65",
             "NEWTALK_MEMORY_RESULT_MAX_CHARS": "3500",
             "NEWTALK_MEMORY_JOB_POLL_SECONDS": "0.5",
@@ -83,7 +103,7 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.log_level == "DEBUG"
     assert config.web_root == tmp_path.resolve()
     assert config.dialogue_max_turns == 6
-    assert config.dialogue_max_chars == 9000
+    assert config.context_input_tokens == 16000
     assert config.llm_backend == "openai"
     assert config.llm_api_key == "test-secret"
     assert config.llm_base_url == "https://example.test/v1"
@@ -128,6 +148,8 @@ def test_config_reads_environment_values(tmp_path) -> None:
     assert config.memos_timeout_seconds == 4.5
     assert config.profile_max_chars == 1500
     assert config.memory_search_limit == 7
+    assert config.memory_retrieval_mode == "preload"
+    assert config.memory_preload_timeout_seconds == 0.6
     assert config.memory_search_relativity == 0.65
     assert config.memory_result_max_chars == 3500
     assert config.memory_job_poll_seconds == 0.5
@@ -147,10 +169,15 @@ def test_config_reads_environment_values(tmp_path) -> None:
         ("NEWTALK_PORT", "0"),
         ("NEWTALK_LOG_LEVEL", "verbose"),
         ("NEWTALK_DIALOGUE_MAX_TURNS", "0"),
-        ("NEWTALK_DIALOGUE_MAX_TURNS", "51"),
-        ("NEWTALK_DIALOGUE_MAX_CHARS", "0"),
-        ("NEWTALK_DIALOGUE_MAX_CHARS", "100001"),
+        ("NEWTALK_DIALOGUE_MAX_TURNS", "2001"),
+        ("NEWTALK_CONTEXT_INPUT_TOKENS", "0"),
+        ("NEWTALK_CONTEXT_INPUT_TOKENS", "255"),
+        ("NEWTALK_CONTEXT_INPUT_TOKENS", "262145"),
         ("NEWTALK_MEMORY_SEARCH_LIMIT", "0"),
+        ("NEWTALK_MEMORY_RETRIEVAL_MODE", "unknown"),
+        ("NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS", "0"),
+        ("NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS", "nan"),
+        ("NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS", "6"),
         ("NEWTALK_MEMORY_SEARCH_RELATIVITY", "1.1"),
         ("NEWTALK_MEMORY_RESULT_MAX_CHARS", "100"),
         ("NEWTALK_MEMORY_JOB_POLL_SECONDS", "0"),

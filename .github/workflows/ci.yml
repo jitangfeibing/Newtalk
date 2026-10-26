@@ -65,7 +65,17 @@ jobs:
         run: >-
           python -m ruff check
           --select E9,F63,F7,F82
-          src tests services/voiceprint/src services/voiceprint/tests
+          src tests scripts services/voiceprint/src services/voiceprint/tests
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Check frontend scripts and audio diagnostics
+        run: |
+          for script in web/*.js; do node --check "$script"; done
+          node --test tests/frontend/*.mjs
 
       - name: Run tests
         run: |

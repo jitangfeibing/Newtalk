@@ -1,139 +1,174 @@
-# Newtalk 当前架构（P7.8）
+# Newtalk 架构与边界
 
-当前架构在 Identity、Memory Center 和成员完整删除基础上使用 PostgreSQL Dialogue Session。聊天主链仍由连接内 Runtime 执行，但短期上下文不再等同于 WebSocket 生命周期；同一 `device_id` 刷新或短暂重连后恢复最近窗口。P7.8 进一步加入新对话清理、真实语音打断、逐 Turn 时延日志和第一版产品界面。
+本文描述当前实现及其设计约束。接口字段见 [protocol.md](protocol.md)，未完成事项和验收标准见 [roadmap.md](roadmap.md)；不在此保留阶段进度和历史测试计数。
 
-```text
-Browser HTTP -> Device/Member API -> IdentityService -> IdentityStore
-                |                                    |-> PostgreSQL (runtime)
-                `-> HttpOnly device cookie           `-> InMemory (unit tests only)
+## 模块与数据归属
 
-Browser 3 x WAV -> authenticated member VoicePrint API
-              -> HttpVoicePrintClient -> internal VoicePrint FastAPI
-                   -> validate PCM WAV -> CAM++ Embedder -> normalized average
-                   -> device_id + identity_id scoped PostgreSQL template
+| 模块 | 职责与边界 |
+|---|---|
+| `app` | 组合配置、Provider、Store 和后台服务，管理启动与关闭。 |
+| `transport` | HTTP 鉴权后的 WebSocket 协议分发；每连接一个 Runtime，编排 Turn、播放、音频与任务。 |
+| `audio` / `asr` | AudioInputSession 用独立 VAD 状态切分 utterance；ASR Provider 只处理语音协议和 partial/final。 |
+| `chat` / `tts` | ChatService 编排 LLM、一次可选工具轮和分句 TTS；不负责声纹或设备鉴权。 |
+| `identity` / `voiceprint` | Identity 管设备凭据、成员和删除；独立 VoicePrint 服务生成/匹配模板，主服务验证成员归属。 |
+| `profile` / `memory` | 成员画像缓存、MemOS 协议、Memory Center 和后台写入；检索权限来自 Turn 中固定的身份。 |
+| `web` | 四个业务视图与独立上下文看板；HTTP 管理/诊断数据，WebSocket 传实时事件和 PCM，AudioWorklet 采集/播放。 |
 
-Browser cookie -> authenticated WebSocket
-       -> DialogueStore.open(device_id)
-              |-> stable session_id
-              |-> Family/Guest persisted lanes (compatibility metadata)
-              `-> merged device history ordered by completion time
-       -> SessionProfileCache -> background MemosMemoryProvider
-              |                    |-> get Profile
-              |                    `-> bind missing Profile Template
-              `-> identity_id scoped immutable Snapshot
-Browser text_input + selected identity -----------+
-Browser microphone -> recorder AudioWorklet       |
-       -> 16k mono PCM -> WebSocket binary        |
-                                                   v
-WebSocket receive loop -> ConnectionRuntime
-                              |-> current Member Profile Snapshot
-                              |-> one device Dialogue -> immutable Turn
-                              |                                         `-> ChatService
-                              |                                              |-> LLM direct text -> TTS
-                              |                                              `-> memory_search Tool
-                              |                                                   -> MemOS Search
-                              |                                                   -> second LLM round -> TTS
-                              `-> AudioInputSession
-                                   |-> per-capture Silero state
-                                   |-> SpeechRecognizer -> ASR partial/final -----+
-                                   `-> utterance PCM -> VoicePrint identify ------+
-                                                                                  |
-                                      utterance_id join -> Member or Guest --------+
+| 状态 | 所有者与生命周期 |
+|---|---|
+| 当前生成 Turn、播放 stream、发送顺序 | 连接内 Runtime；生成与播放分别记录。 |
+| 采集与 utterance、ASR/声纹汇合 | 单次采集及 utterance；用 `utterance_id` 关联异步结果。 |
+| 短期 Dialogue | 每设备一个持久化 Session；连接内窗口由进程内协调器同步。 |
+| Profile Snapshot | 每连接、每成员缓存；后台预取，Turn 只读创建时快照。 |
+| 记忆写入与成员删除 | PostgreSQL 持久化任务，后台 Worker 用租约恢复处理。 |
 
-all server output -> one ConnectionRuntime send queue -> WebSocket
+主库的 ORM 元数据包含 `devices`、`identities`、`dialogue_sessions`、`dialogue_exchanges`、`memory_jobs`、`identity_deletion_jobs`、`recovery_rate_limits` 七张表；独立声纹服务另维护模板表。Alembic 是建表和升级 schema 的入口，应用启动不自动建表。生产 Store 使用 PostgreSQL，内存 Store 主要用于测试。
 
-completed current Member Turn
-       |-> DialogueStore.append(family) -> PostgreSQL dialogue_exchanges
-       -> PostgreSQL memory_jobs Outbox
-       -> background MemoryWriteService
-       -> MemOS Add Message (async mode)
-       -> submitted(task_id) -> MemOS Get Task Status
-       -> remote completed or failed
-
-completed current Guest Turn
-       -> DialogueStore.append(guest) -> PostgreSQL dialogue_exchanges
-```
-
-## 当前职责
-
-- `newtalk.app` 是组合入口，按配置选择 ChatService、Silero VAD、Fake ASR 或豆包 ASR，并关闭有生命周期的 Provider。
-- `newtalk.memory.provider.MemoryProvider` 是当前实际需要的最小 Memory 契约，包含 Profile、检索、写入和人工管理；默认实现关闭。
-- `newtalk.profile.memos.MemosMemoryProvider` 当前同时实现上述契约，负责 Profile Template 懒绑定、Search Memory 和 Add Message 的 HTTP 协议细节。
-- `newtalk.chat.service.ChatService` 只给 Member 注册 `memory_search`，每个 Turn 最多执行一次，并使用 Turn 内不可变身份建立服务端 Scope。
-- `newtalk.memory.jobs.MemoryWriteService` 消费 PostgreSQL Outbox；本地入队按 `turn_id` 去重，任务领取使用租约，并持久化 MemOS `task_id` 直到远端最终完成，远端失败有限重试。
-- `newtalk.profile.session.SessionProfileCache` 在连接开始后异步预取成员 Profile，按 `identity_id` 保存 Snapshot；Turn 读取只访问内存，不等待 MemOS。
-- `newtalk.identity.api` 处理 Device Cookie、恢复限速和成员 HTTP API，不向浏览器暴露凭据摘要；正式进程使用 PostgreSQL 共享恢复限流，本机测试使用内存实现。
-- `newtalk.identity.service.IdentityService` 生成设备标识、凭据和恢复码，并编排认证、恢复和成员操作。
-- `newtalk.identity.store.IdentityStore` 是持久化契约；正式进程使用异步 SQLAlchemy/PostgreSQL，内存实现只用于自动测试。
-- `newtalk.chat.persistence.DialogueStore` 负责按 `device_id` 打开稳定 Session、按兼容 lane 读取/裁剪并合并历史，并以 `turn_id` 幂等追加成功交换；正式进程使用 PostgreSQL，内存实现用于单元测试。
-- `newtalk.chat.session.DialogueCacheCoordinator` 跟踪同设备的活动 Dialogue；任一连接完成 Turn 后会同步提交到其他活动连接的上下文。成员删除会移除其交换，新对话会清空同设备的全部活动窗口。
-- Alembic migration 是 schema 唯一建立方式，应用启动不会隐式创建数据表。
-- `newtalk.voiceprint.client` 是主服务需要的最小内部 HTTP 契约；除录入和删除外，也负责提交当前 utterance WAV 并返回匹配身份、分数和耗时。
-- `services/voiceprint` 独立加载 CAM++、校验 16k PCM WAV、串行保护模型推理并保存模板，不进入主服务 Python 环境。
-- VoicePrint 只查询请求 `device_id` 下 Active Identity 的模板；同名成员和其他家庭不会进入候选集。
-- `web/voiceprint-recorder.js` 复用 AudioWorklet 重采样链，录音前停止聊天麦克风和 TTS 播放。
-- `newtalk.transport.websocket` 在设备鉴权后打开 Dialogue Session，把恢复快照放入 `hello`，随后接受连接、解析帧类型和分派协议事件。
-- `newtalk.transport.runtime.ConnectionRuntime` 从合并快照恢复连接内设备 Dialogue，并编排活动 Turn、utterance 汇合、采集会话、任务和发送队列。
-- `newtalk.chat.session.DialogueSession` 保存同一设备成功完成的用户/助手交换；Member 和 Guest 共用短期窗口，历史用户消息携带说话人标签。
-- `newtalk.chat.models.Turn` 固定保存 `device_id`、`speaker_identity_id` 和显示信息；`messages` 是创建 Turn 时的不可变上下文快照。
-- `newtalk.audio.session.AudioInputSession` 把连续 PCM 切成 utterance，维护 pre-roll，并把语音段交给 ASR。
-- `newtalk.audio.vad.SileroVadStream` 保存每条采集流独立的 ONNX recurrent state、双阈值、滑窗和静音结束状态。
-- `newtalk.asr.model.SpeechRecognizer` 只定义真实调用需要的音频流输入与 partial/final 输出。
-- `newtalk.asr.doubao.DoubaoStreamingASR` 负责豆包鉴权、二进制协议、100ms PCM 分包和并发收发，不负责 VAD、Turn 或聊天。
-- `web/mic-recorder-worklet.js` 重采样并切 20ms 帧；`web/pcm-player-worklet.js` 继续负责播放。
-
-## 并发和取消
-
-WebSocket 接收循环不再等待整个回复结束。每个 Turn 在独立 task 中运行，所以连接可继续接收麦克风帧、ping、新文本和关闭事件。
-
-每条连接只有一个发送 task。LLM、TTS、VAD 和 ASR 产生的输出都先进入同一队列，避免多个协程同时写 WebSocket。队列项可携带 `turn_id`；旧 Turn 被取消后，尚未发送的迟到项会被丢弃。
-
-`speech_start` 只负责打断，不创建 Turn；`asr_final` 才创建新 Turn。这保证一段用户语音不会因多个 VAD 帧或 ASR partial 创建多个对话轮次。
-
-声纹使用同一 utterance 的完整 PCM。ASR Final 到达后只等待配置的有限期限；匹配成功后创建 Member Turn，超时、低分、音频过短、服务不可用或身份已删除均创建 Guest Turn。Turn 一旦创建，迟到声纹不能改变其身份。
-
-只有当前活动 Turn 成功产生 `TurnCompleted` 时才提交 Dialogue History，并在提交后发送 `turn_completed`。取消、生成失败和旧 Turn 迟到结果不会提交，因此下一轮不会看到半截助手回复。
-
-内存提交后，Runtime 把同一 `DialogueExchange` 写入 PostgreSQL。`turn_id` 唯一约束防止重试造成重复交换；追加前锁定所属 `dialogue_sessions` 行，使同一家庭的多页面提交和滑动裁剪串行。不同 `device_id` 锁定不同 Session 行，彼此不阻塞。持久化失败会记录日志，但不会撤销已经生成的回复或关闭 WebSocket。
-
-刷新或重连时，服务端分别读取 Family 和 Guest 兼容 lane，再按时间合并并恢复一个设备级内存窗口。`hello.dialogue.items` 返回合并快照供页面重建，不允许浏览器提交或选择 `session_id`。同进程内其他已打开页面会立即获得新完成 Turn 的上下文，但不会收到界面消息广播；其可见列表仍要到重连后刷新。
-
-浏览器的“新对话”通过 WebSocket `dialogue_clear` 清除当前设备 Session 的全部短期 Dialogue。服务端先取消当前连接的 Turn，再锁定 Dialogue Session 行删除 Family 与 Guest 交换，并清理本进程活动缓存。Profile、MemOS、Identity 和 VoicePrint 不受影响。
-
-同一个提交点还会把 Member Turn 写入 `memory_jobs`。Runtime 只等待一次本地数据库入队，不等待 MemOS；Guest 不进入队列。多个 Worker 通过 PostgreSQL `FOR UPDATE SKIP LOCKED` 竞争任务，租约过期后可由其他 Worker 恢复。Add Message 返回后先持久化 `provider_task_id` 和 `submitted`，后续 Worker 只调用 Get Task Status；查询失败同样保留任务 ID，因此不会因轮询故障重复提交。远端已接收但 HTTP 响应尚未持久化时进程崩溃的极小窗口仍无法由当前 MemOS 文档中的接口完全消除。
-
-主 LLM 调用 `memory_search` 时会增加一次 MemOS 查询和第二次 LLM 调用。查询超时或失败被转换为 Tool Result，第二轮模型仍可根据 Dialogue/Profile 回答；Tool Call 及 Tool Result 不进入 TTS，只有最终文本播放。
-
-## 已确认但尚未实现的调整
-
-被打断 Turn 当前完全不提交 Dialogue。是否保存用户问题及已经实际播放的助手片段仍需单独确定，不能把目标方案描述成当前行为。后续验收标准见 [../PROJECT_PLAN.md](../PROJECT_PLAN.md)。
-
-## 当前边界
-
-- 豆包 ASR 按官方单次识别会话模型为每个 utterance 新建一条 Provider WebSocket；这是当前协议边界，不列为连接复用缺陷，后续只需观察高并发下的建连耗时和配额。
-- `enable_nonstream=false`，本地 Silero 仍是当前语音边界和打断的唯一判定来源。
-- 输入固定为 16kHz、16-bit、单声道 PCM，输出继续采用 TTS 配置的 PCM 采样率。
-- 浏览器启用系统回声消除、降噪和自动增益；服务端 AEC 尚未实现，真实扬声器场景仍需手工测试。
-- Silero 模型固定为 v6.2.1 并随仓库保存，运行时不联网下载。
-- 浏览器手工“停止播放”仍是本地操作。VAD `speech_start` 会先在浏览器立即清空播放队列，再由服务端用 `turn_cancelled` 取消仍在生成的 Turn，并用 `audio_stop` 终止仍在浏览器缓冲的播放流。
-- 声纹录入、识别、`speaker_identity_id` 映射和 Guest 降级已进入主链。
-- `deterministic-test-v1` 只供 CI；真实 CAM++ 已完成模型加载和录入，识别分数、阈值与有限等待期限仍需在家庭样本中校准。
-- Profile Snapshot、`memory_search`、后台长期记忆写入、Memory Center 和 Dialogue 刷新恢复已进入 Member 数据链；Vision 和其他实用 Tool 尚未实现。
-
-Memory Center 调用链：
+## 一次语音交互与 Task 归属
 
 ```text
-Browser Memory Center
--> Newtalk /api/members/{identity_id}/profile|memories
--> HttpOnly Device Cookie 鉴权
--> IdentityService 校验 Active 成员归属
--> MemoryProvider 绑定 device_id + identity_id
--> MemOS Get/Search/Edit/Update/Delete
+接收循环 Task：Cookie 鉴权 -> 打开设备 Session -> hello(历史快照)
+  浏览器 AudioWorklet -> 16kHz / 单声道 / PCM16 / 20ms 帧
+  -> AudioInputSession.push -> VAD
+     speech_start -> 通知浏览器停播、取消旧生成任务（此时不创建 Turn）
+     speech_end   -> 通知边界、结束 ASR 输入、启动声纹识别 Task
+
+识别 Task：ASR partial/final -> Runtime 回调
+  非空 Final -> 有限等待同 utterance 声纹 -> 校验 Active 成员或降级 Guest
+  -> 创建不可变 Turn（身份 + Dialogue + 已就绪 Profile）
+  -> 先将最终用户输入加入设备短期窗口；启动独立输入落库 Task
+  -> 启动 Turn Task
+
+Turn Task：ChatService
+  LLM producer -> text_delta + 分句队列 -> TTS producer -> PCM
+  两个 producer 完成 -> 校验仍可提交
+  -> 在原用户输入位置补全完整助手回答 -> 数据库补全 -> Member 记忆任务入队
+  -> turn_completed
+
+发送 Task：所有实时输出 -> 单一队列 -> WebSocket
+  发送前按 turn_id 丢弃旧 Turn 输出
+浏览器：播放 PCM -> playback_drained -> 清除匹配的播放状态
 ```
 
-成员删除不是跨服务事务。HTTP 请求只负责把 Identity 原子改为 `deletion_pending` 并写入 `identity_deletion_jobs`；该成员随即从列表、活动 Family Dialogue 和 Memory API 消失。Member Turn 完成提交前会重新校验 Identity 仍为 Active，避免删除期间的旧 Turn 把 Dialogue 或 Memory 写回来。后台 Worker 删除 VoicePrint、MemOS 全部 Memory/Profile 与该成员的持久化 Dialogue，全部成功后才物理删除本地 Identity。Provider 关闭时会跳过对应远端清理，因此曾经启用 Provider 后再关闭所遗留的数据仍需人工确认。
-- 一个 `device_id` 第一版只有一个当前 Dialogue Session，不提供历史 Session 列表，也不支持浏览器指定任意 Session。
-- Family 与 Guest 兼容 lane 都会恢复并合并为设备短期窗口；Guest 不读取 Profile 或 MemOS。
-- 当前消息角色为 `system`、`user`、`assistant` 和内部 `tool`；WebSocket 不暴露中间 Tool 消息。
-- Profile 预取失败不会阻塞聊天；后续 Member Turn 会重新触发加载，成功后更新当前 Session Snapshot。
-- 真实 MemOS Profile、Search/Add 和 Memory Center 核心链路已由用户完成浏览器验收；异步任务的 `submitted -> /get/status -> completed/failed` 恢复逻辑由自动测试和真实 PostgreSQL 集成测试覆盖，部署后仍需通过日志观察外部任务状态与配额。
+文本输入跳过 VAD/ASR/声纹，验证所选成员后进入同一 Turn 链路。Profile 预取和记忆/删除 Worker 不运行在 Turn 的生成链路中。
+
+`_turn_transition_lock` 串行化 Turn 替换和取消，包括等待旧任务退出、建立新快照与绑定新任务；它不是整个 Runtime 的全局锁。Turn 流、发送、播放回执和识别回调仍可能交错。取消先使旧 Turn 失效，再清理任务；浏览器必须同时清空尚未播放的 PCM。
+
+接收循环不等待整段 LLM/TTS 生成，但**不保证完全不阻塞**：停止采集会等待识别收尾，打断会等待旧任务退出，鉴权/持久化和输出发送也存在等待。ASR 队列已采用有界非阻塞写入，满队列按单个 utterance 失败处理，VAD 继续运行并保留结束边界。
+
+## 设计决策
+
+### 设备共享对话，成员私有记忆
+
+同一 `device_id` 的 Member 和 Guest 共用最近 Dialogue；声纹只确定当前说话人和 Profile/Memory 权限，避免未命中时丢失前文。数据库 `family/guest` lane 暂作兼容元数据和恢复查询分组，不再代表两个聊天通道。
+
+Profile 常驻注入就绪快照；长期记忆通过 `NEWTALK_MEMORY_RETRIEVAL_MODE` 在 `tool`（默认、模型按需检索）与 `preload`（前置检索试验）间切换，不额外设置 Intent LLM 或 MemoryRouter。Guest 不加载成员 Profile、不检索或写长期记忆；但设备共享 Dialogue 中已经说出的内容并非成员私密空间。
+
+身份在模型调用之前固定：ASR Final → 等待同 utterance 声纹 → 验证 Active 成员 → 创建 Turn。文本路径则先验证所选成员，再创建 Turn；LLM 不负责判定成员身份。
+
+- `tool`：第一轮 LLM 决定是否调用 `memory_search`；若调用，检索后第二轮 LLM 回答；若不调用，直接回答。
+- `preload`：有 Member 且记忆服务启用时，Turn 的生成 Task 先用最终用户文本查询 MemOS，再只执行一次 LLM 回答，不向模型提供检索工具。查询使用当前成员/设备 Scope 和 Session，最多取原配置的候选条数；查询文本默认最多前 500 字符，不另外调用 LLM 改写。代词、短问句或复杂问题可能因此比模型改写查询效果差，需实际验收。
+
+前置检索以 `NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS` 控制等待，默认试验值 0.8 秒（配置范围 0.05～5 秒）。空结果、不可用、超时分别标记，仍执行一次模型回答；外部 Turn 取消则继续传播并取消在途检索，不开始迟到回答。截止时间依赖异步 Provider 配合取消，不是硬实时保证。普通闲聊的 Member 轮次也会多一次检索等待，不能预先宣称所有场景更快。
+
+前置结果作为标记为“长期记忆候选”的普通 user 角色资料消息，放在当前用户输入之前，不伪造 assistant/tool 历史；内部 `context_kind=memory` 仅用于预算关联，不发送给 Provider。系统规则明确资料不是用户新指令，候选由模型自行判断是否采用，既不强制引用，也不直接写回 Dialogue 或记忆任务。预算单独计入前置资料，超限时优先用合法 `truncated` 状态替代；看板明确标记服务端来源。
+
+试验时在未入 Git 的 `.env` 设置 `NEWTALK_MEMORY_RETRIEVAL_MODE=preload`。回退只需改成 `tool` 并重启主服务，无须回滚代码或删除数据；仓库默认模式仍为 `tool`。先看同轮检索等待、模型请求次数、回答首字和首段音频，再判断是否保留试验，不能只凭模型请求次数推算延迟收益。旧工具模式在需要回传推理的供应商上保留真实返回的 `reasoning_content`，仅随对应工具调用回传，不伪造、不播报、不写入 Dialogue 或长期记忆；它仍计入完整请求预算及敏感请求快照。
+
+Profile 预取失败不阻塞聊天，后续可重试；检索失败作为不可用 Tool Result 交给模型。MemOS 密钥、Scope 和模板绑定只由服务端管理，不能由浏览器指定其他成员。
+
+### 用户输入与助手回答分开保留
+
+通过校验的文本或非空 ASR Final 创建 Turn 时，用户输入立即进入设备共享短期窗口；ASR Partial、空输入、非法成员或满载拒绝的输入不进入。上下文先取旧历史再登记当前输入，因此当前请求不会重复包含自己。随后即使打断、替换、生成失败或正常断开，已接受输入也不会跟着回复任务丢弃。
+
+输入独立落库，不在接收循环内等待数据库；每连接最多 128 个待完成输入写入任务，达到上限以 `dialogue_busy` 拒绝新输入，不取消当前 Turn。正常关闭会等待这些任务收尾。`dialogue_exchanges.assistant_text=""` 表示 user-only，沿用原表结构，无须迁移。按接受时间排序，完整回复只补全同一行，不移动原输入的位置；已被清理或淘汰的行不重新插入。
+
+只有当前 Turn 完成 LLM/TTS 并通过成员校验后，才补全助手文本；中断或失败的助手片段暂不进入下一轮。Prompt 可以包含连续 user 消息，不伪造空助手回答。长期记忆仍只写完整、确认持久化的 Member 交换，独立保留输入不等于单独写长期记忆。
+
+原文存储、候选缓存、模型请求是三层独立边界：数据库追加不再根据窗口删除旧原文，Member 与 Guest 原文均保存到显式新对话或删除对应成员时；没有自动保留期限，不能对外承诺无限、无成本保存。旧版本已经删除的历史不会自动恢复。候选缓存默认保留最近 256 条用户输入，恢复查询每 lane 最多加载相同条数，Runtime 合并后取最近候选；更早原文虽在数据库，尚无历史分页或自动重载进入本轮的能力。候选数可通过 `NEWTALK_DIALOGUE_MAX_TURNS` 调整（1～2000）；已有显式设置 8 的环境不会被默认值自动覆盖。
+
+进程内按设备串行化输入写入、清空与成员记录清理，用清空版本/已删成员标记阻止旧任务写回；SQL 追加时还锁定并校验 Active 成员。恢复快照过滤已停用成员；同进程新连接继承活跃窗口，避免落库尚未完成时下一轮漏掉输入。
+
+**生成完成仍不等于播放完成**：浏览器在服务端完成后可能还在播放缓冲音频，此时打断只停止播放，不自动撤销已经补全的交换。助手生成、已发送与实际播放片段的区分留待下一步。
+
+新对话清理设备全部短期 Dialogue 和本进程活动缓存，不删除 Profile、长期记忆、成员或声纹。刷新通过 `hello.dialogue` 重建窗口；同进程多页面共享上下文，但不实时广播聊天列表。
+
+### 完整请求预算
+
+`NEWTALK_CONTEXT_INPUT_TOKENS` 默认 32768，范围 256～262144，是应用输入预算，不是供应商模型容量。`NEWTALK_DIALOGUE_MAX_CHARS` 已废弃，配置残留时启动告警，不把旧字符值当成 Token 值。原始候选在 `DialogueSession` 中不再按字符裁剪；正式模型适配器拼好角色提示、Profile、说话人标签、全部候选、当前输入、工具定义或工具结果后，对每一次请求独立执行预算检查。
+
+当前没有匹配实际供应商模型的 Tokenizer，使用 JSON 字段的 UTF-8 字节长度与结构余量做保守 Token 估算，通常会高估，不是精确 Token 数、计费数或供应商硬上限保证。预算只控制输入，输出上限仍沿用 Provider 原有设置；不宣称已实现自动读取模型容量或精确的输出空间预留。后续需要用实际 usage 与模型 Tokenizer 校准。
+
+预算不足时，过大的 `memory_search` 结果先替换为合法 JSON 的 `truncated` 提示，保留工具调用/结果配对，不伪装成未命中；再按最旧用户输入起整组移除历史。系统提示、Profile、当前输入不被静默截断。固定部分仍超预算则本次请求不发送，报告 `context_budget_exceeded`；输入独立保留，下一次较短输入仍可继续。裁剪只修改请求副本，不改原文、Turn 快照或长期记忆写入内容。
+
+这一步不增加 LLM 调用、不自动摘要，也不设置必须存在的任务目标。较长的原始窗口可承接英语学习等连续任务，但超过预算或候选范围仍可能缺少旧目标；不能据此保证无限长任务连续性。带来源的任务状态、摘要生成和长期记忆预取单独验收。
+
+### 上下文调试与回复规则
+
+`NEWTALK_CONTEXT_DEBUG` 默认关闭。开启后 Runtime 记录身份原因、历史候选和近期观察到的缓存排除原因；模型适配器在完整预算取舍后记录准备发送的请求，工具第二轮也单独记录。每条 `llm_request` 附带独立 `budget`，包括估算方式、裁剪前后占用、各部分开销、选入/排除的历史 turn_id、工具结果是否省略。预算拒绝另记 `context_budget_rejected`，不伪装成已发送请求。ChatService 使用 Task 局部的 ContextVar 关联 Turn，取消时恢复作用域，不通过共享“当前 Turn”字段关联并发请求。
+
+调试内容写 `logs/context-debug.jsonl` 及其两个轮转备份，不进入普通日志或 WebSocket。看板通过设备 Cookie 鉴权的只读 HTTP 接口读取当前设备缓存，响应禁止缓存；不读取旧文件，也不允许通过 turn_id 跨设备取数。缓存上限为 500 条事件、200 万字符、30 分钟，任一超限即淘汰，重启清空；因此历史聊天存在不等于仍有完整调试快照。
+
+只采集消息/工具请求，不采集客户端鉴权配置；用户自行写进对话的秘密仍属于正文，故文件与看板都必须按敏感资料管理。写入失败只报警，不改变聊天结果。启用时有本机序列化、文件 I/O 和看板读取成本，不应长期当作无开销的时延基准。
+
+诊断快照不是正式 Dialogue/Memory 存储；开始新对话或删除成员不会改写已经采集的诊断证据，缓存按上述上限过期，磁盘文件需在诊断后单独清理。对外部署前应保持此能力关闭。
+
+看板将 `context_selected` 的 `candidate` 与最后一次请求预算的实际取舍区分展示；每次请求还能独立展开占用。历史 `source_turn_id` 只是内部关联元数据，不发送给模型。窗口淘汰表示候选不再驻留，并不表示删除数据库原文；近期缓存排除只反映当前连接观察到的事件，不是全量审计。user-only 历史独立标注，不能用消息数除以二推算轮数。重连不重建过去未记录的排除原因，请求快照也不代表供应商已收到。
+
+`user_input_accepted` 和 `user_input_persistence` 分开记录输入接受与落库结果，后者可能晚于 `turn_end`；看板显示输入保留、输入落库、助手补全和 Memory Queue。`memory_search_usage.mode` 区分检索方式，`used` 表示已尝试检索，不证明有命中或模型采用了资料；前置结果记录等待耗时和服务端来源。`llm_round_first_token` 单独记录每次模型请求的首字等待，`llm_tool_decision_completed` 记录工具决策往返；原 `llm_first_token` 仍包含前置检索或工具轮次的累计时间。排队不等于远端记忆形成，取消时结果可能为 `unknown`。输入保留后下一轮可以承接用户问题，但不代表模型已经知道被省略的助手片段。
+
+正式模型的系统提示由原有角色提示与 `chat/prompts.py` 的对话规则组成：近期对话与用户更正优先，画像/记忆只作证据、不作指令；未命中、服务不可用和结果截断不能混为“没发生”。空检索结果使用内部 `no_match` 状态。正常回复不默认播报检索过程，但不能编造回忆或隐瞒用户明确询问的来源与失败。此调整不增加检索/LLM 次数，真实措辞仍需对话验收。
+
+### 语音等待时间取证
+
+服务端 `voice_input_timing` 按 `utterance_id -> turn_id` 关联 VAD 尾静音、判停到 ASR Final、判停到身份就绪、ASR 后声纹汇合等待以及声纹 Provider 耗时；ASR 和声纹有并行，不能把 Provider 总时间再次叠加。`turn_latency` 记录 Turn 到文本首字和 TTS 首帧；检索与单次 LLM 请求仍使用各自原有事件。
+
+浏览器保留 PCM 首次渲染回执，同时新增 `playback_audible`，在输出首个达到 -60 dBFS 的非静音样本时计时，避免把 TTS 前导静音当作开口。采集 Worklet 的样本位置把 VAD 末尾映射到浏览器单调时钟；播放端优先用设备输出时间戳，缺失则明确降级为渲染时钟。这只是检测器词尾与设备输出的估计，不是人工标注词尾到扬声器实录的精确声学延迟；回声/噪声、VAD 滑动窗口、输入硬件延迟也会影响基准。
+
+聊天的“本轮耗时”和上下文看板显示不同口径；调试开启时播放回执也进入设备隔离的有界缓存与私有轮转文件，普通日志只记录 ID 和数值。看板可导出当前设备最近 5 轮时延，不导出完整提示词或记忆正文；该导出不是自动划分的实验组，需确认均属本次测试。历史回放不恢复浏览器时延，也不能将缺失回执解释为 0ms。
+
+人工测试：每组先“新对话”，固定身份、5 句话、耳机/音量/网络和检索模式，逐轮等首声、避免打断，再导出。此操作不会冻结 Profile、MemOS 检索返回或后台记忆写入，属于链路诊断，不是受控 A/B。严格对照还需使用同一录音并标注真实词尾，固定上下文与记忆快照、交替重复两种模式；目前未实现自动录音回放基准或声学回环测量。
+
+### LLM 请求细分计时
+
+`llm_request_timing` 以独立 `call_id` 关联 `llm_request`，记录本地准备、SDK 开始、每次 HTTP 尝试、DNS/TCP 与 TLS 阶段、响应头、首个 SDK 流事件、首个思考片段和回答首字。全部毫秒偏移基于同一单调时钟；SDK 重试保留默认预算，连接事件通过 HTTPX/httpcore 的请求级回调采集。ContextVar 和每次尝试的闭包隔离并发请求；取消、异常、消费者提前结束仍关闭 SDK 流并复位作用域。
+
+只记录时长、状态码、安全格式的供应商请求 ID、请求字节数/估算 Token、业务请求 SHA-256 以及供应商可选返回的 Token/cache usage；不记录密钥、原始 Header、异常正文或思考正文。普通日志保留此诊断元数据，私人看板只在原有调试开关开启时采集。注入自定义客户端或传输不提供 trace 时标为未观测；没有建连事件不能直接证明连接复用，响应等待也不能直接称为供应商排队或纯推理耗时。指纹仅证明业务请求相同，不证明云端随机性、缓存、调度或 HTTP 封装相同。
+
+SDK 的 chat/completions 资源在模型构造（启动阶段）准备，避免延迟导入由第一条用户请求承担。此操作不发送预热 API、不改变思考、超时、重试、模型或消息；启动可能增加约一秒本地准备时间，不代表云端已预热，也不保证每次对话首句减少固定时长。
+
+DeepSeek 的思考扩展通过 `NEWTALK_LLM_THINKING=default|enabled|disabled` 显式配置；仓库默认 `default` 不发送扩展、保留供应商行为，其他兼容供应商不应随意启用此字段。本机语音验收在未提交的 `.env` 使用 `disabled`。切回 `enabled` 或 `default` 并重启即可回退。消息、模型、记忆和音频策略不随该开关改变；预算/请求快照记录实际线上 `thinking` JSON，SDK 经 `extra_body` 发送，看板明确展示当前请求的开关状态。当前是服务端统一模式，尚未实现按用户或复杂任务自动切换的深度模式。
+
+`scripts/probe_llm_latency.py` 可从私有日志选择一个不含工具、仅可附带 `thinking` 开关的首个文本请求，冻结系统提示、身份资料、记忆候选、历史和原思考模式，按“新客户端/立即再次使用客户端”复测。脚本不启动 Runtime、不检索或写记忆、不写 Dialogue、不生成 TTS；真实调用需显式确认，默认两组共 4 次，会产生 API 费用。它只诊断 LLM，不是完整语音或声学回环测试；结果及完整请求快照仍须按敏感日志管理。
+
+```powershell
+.venv/Scripts/python scripts/probe_llm_latency.py --turn-id <已记录的Turn-ID> --cycles 1 --confirm-live
+```
+
+### 记忆写入与成员删除协调
+
+```text
+成功 Member Turn -> 本地 memory_jobs（turn_id 去重）
+  -> Worker 领取 -> Add Message -> 保存 submitted + provider_task_id
+  -> 查询同一任务 -> completed / 失败退避重试
+
+删除成员 -> 同一事务标记 deletion_pending、终止未提交记忆任务、登记删除作业
+  -> 阻止新记忆提交；已提交远端任务继续查询直到终结
+  -> 清理 VoicePrint / MemOS / Dialogue -> 物理删除 Identity
+```
+
+提交阶段与删除调度使用同一成员行锁协调，内存实现使用对应成员锁；删除 Worker 清理 MemOS 前检查已提交任务，避免清理后又写回。删除失败持续退避重试，最多间隔 300 秒；记忆提交默认最多 8 次。活动成员的同一远端任务默认最多轮询 600 次，耗尽后进入提交失败处理；删除中的成员不能丢弃已知任务 ID，超限后退避查询，等待远端终结再清理。
+
+本地去重和远端任务追踪不等于严格一次投递：远端接收 Add Message、但响应/任务 ID 尚未落库的窗口仍可能重复。关闭过往使用的 Provider 后，删除会跳过该远端清理，遗留数据需要人工确认。
+
+## 已知边界
+
+- 当前以单进程主服务为部署基线。Dialogue/Profile 协调器只在进程内同步，不能直接据此承诺多 worker 的缓存一致性。
+- 停止录音、打断清理、独立输入任务收尾没有统一总预算。接受到内存不等于数据库确认；落库故障会记录失败但不自动重试，确认前进程崩溃仍可能丢失输入。助手内存补全、数据库补全与记忆入队仍非原子，取消时可能不一致；在途 Profile 加载与成员删除的竞态仍需处理。
+- 中断助手片段是否保留及如何标识尚未定案；不能把完整生成文本视为用户已听到。完整预算目前为保守估算，长程任务状态、摘要和长期记忆预取尚未实现；ASR Final 到达顺序也不保证等于用户开始讲话的顺序。
+- 声纹录入与聊天统一请求单声道、AEC / 降噪 / 自动增益，均经同一 Worklet 转为 16kHz PCM16；浏览器不保证实际采用全部请求参数，聊天诊断可显示实际设置、音量和 VAD 状态。旧模板不会自动转换，需重新录入才能基于新采集设置生成模板。这不等于工程级回声消除或准确率保证；固定 VAD 参数、扬声器回声和复杂噪声仍需样本验证。
+- 声纹模型使用 CAM++，单进程推理有锁，容量未压测；阈值需家庭样本校准。默认录入至少 2 秒、识别至少 0.8 秒，过短、低分、超时或服务异常均降级 Guest，迟到结果不改 Turn 身份。
+- 豆包 ASR 当前每 utterance 建立独立 Provider WebSocket；短期对话只有一个当前 Session，不提供历史 Session 列表。
+- 浏览器设备 ID 不是物理 MAC。清除 Cookie 后不能凭硬件自动找回家庭，应使用恢复码；服务端以凭据而非前端自报 ID 鉴权。
+- 前端时延与音频诊断是当前页面会话数据，不持久化；历史恢复只有对话快照。已中断和失败在界面上区分展示。
+- Dialogue 原文与 `memory_jobs` 均仍保留正文，尚无独立自动保留期限；应明确产品保留策略与存储容量，再实现自动清理，而不是让请求裁剪隐式删除原文。Memory 可关闭，Guest 仍能正常聊天。Vision、生产 CD 和声纹横向扩容未实现。

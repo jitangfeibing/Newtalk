@@ -1,4 +1,5 @@
 import os
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,8 +12,8 @@ DEFAULT_WEB_ROOT = PROJECT_ROOT / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8006
 DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_DIALOGUE_MAX_TURNS = 8
-DEFAULT_DIALOGUE_MAX_CHARS = 12000
+DEFAULT_DIALOGUE_MAX_TURNS = 256
+DEFAULT_CONTEXT_INPUT_TOKENS = 32_768
 DEFAULT_LLM_BACKEND = "fake"
 DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 DEFAULT_TTS_BACKEND = "fake"
@@ -50,7 +51,7 @@ DEFAULT_MEMORY_SEARCH_LIMIT = 5
 DEFAULT_MEMORY_SEARCH_RELATIVITY = 0.55
 DEFAULT_MEMORY_RESULT_MAX_CHARS = 4000
 DEFAULT_MEMORY_JOB_POLL_SECONDS = 1.0
-DEFAULT_MEMORY_JOB_MAX_ATTEMPTS = 3
+DEFAULT_MEMORY_JOB_MAX_ATTEMPTS = 8
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 VALID_LLM_BACKENDS = {"fake", "openai"}
 VALID_TTS_BACKENDS = {"fake", "doubao"}
@@ -68,13 +69,15 @@ class AppConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     log_level: str = DEFAULT_LOG_LEVEL
+    context_debug: bool = False
     web_root: Path = DEFAULT_WEB_ROOT
     dialogue_max_turns: int = DEFAULT_DIALOGUE_MAX_TURNS
-    dialogue_max_chars: int = DEFAULT_DIALOGUE_MAX_CHARS
+    context_input_tokens: int = DEFAULT_CONTEXT_INPUT_TOKENS
     llm_backend: str = DEFAULT_LLM_BACKEND
     llm_api_key: str | None = field(default=None, repr=False)
     llm_base_url: str | None = None
     llm_model: str | None = None
+    llm_thinking: str = "default"
     llm_system_prompt: str | None = None
     llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     tts_backend: str = DEFAULT_TTS_BACKEND
@@ -111,6 +114,8 @@ class AppConfig:
     voiceprint_timeout_seconds: float = DEFAULT_VOICEPRINT_TIMEOUT_SECONDS
     voiceprint_join_timeout_seconds: float = DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS
     memory_backend: str = DEFAULT_MEMORY_BACKEND
+    memory_retrieval_mode: str = "tool"
+    memory_preload_timeout_seconds: float = 0.8
     memos_base_url: str = DEFAULT_MEMOS_BASE_URL
     memos_api_key: str | None = field(default=None, repr=False)
     memos_profile_template_id: str | None = None
@@ -124,6 +129,10 @@ class AppConfig:
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
+        if "NEWTALK_DIALOGUE_MAX_CHARS" in values:
+            logging.getLogger(__name__).warning(
+                "deprecated_config name=NEWTALK_DIALOGUE_MAX_CHARS replacement=NEWTALK_CONTEXT_INPUT_TOKENS"
+            )
         host = values.get("NEWTALK_HOST", DEFAULT_HOST).strip()
         if not host:
             raise ConfigError("NEWTALK_HOST must not be empty")
@@ -153,15 +162,15 @@ class AppConfig:
             "NEWTALK_DIALOGUE_MAX_TURNS",
             DEFAULT_DIALOGUE_MAX_TURNS,
         )
-        if dialogue_max_turns > 50:
-            raise ConfigError("NEWTALK_DIALOGUE_MAX_TURNS must not exceed 50")
-        dialogue_max_chars = _positive_int_value(
+        if dialogue_max_turns > 2000:
+            raise ConfigError("NEWTALK_DIALOGUE_MAX_TURNS must not exceed 2000")
+        context_input_tokens = _positive_int_value(
             values,
-            "NEWTALK_DIALOGUE_MAX_CHARS",
-            DEFAULT_DIALOGUE_MAX_CHARS,
+            "NEWTALK_CONTEXT_INPUT_TOKENS",
+            DEFAULT_CONTEXT_INPUT_TOKENS,
         )
-        if dialogue_max_chars > 100000:
-            raise ConfigError("NEWTALK_DIALOGUE_MAX_CHARS must not exceed 100000")
+        if context_input_tokens < 256 or context_input_tokens > 262144:
+            raise ConfigError("NEWTALK_CONTEXT_INPUT_TOKENS must be between 256 and 262144")
 
         (
             llm_backend,
@@ -171,6 +180,9 @@ class AppConfig:
             llm_system_prompt,
             llm_timeout_seconds,
         ) = _parse_llm_config(values)
+        llm_thinking = values.get("NEWTALK_LLM_THINKING", "default").strip().lower()
+        if llm_thinking not in {"default", "enabled", "disabled"}:
+            raise ConfigError("NEWTALK_LLM_THINKING must be default, enabled or disabled")
 
         (
             tts_backend,
@@ -232,17 +244,29 @@ class AppConfig:
             memory_job_max_attempts,
         ) = _parse_memory_config(values)
 
+        memory_retrieval_mode = values.get("NEWTALK_MEMORY_RETRIEVAL_MODE", "tool").strip().lower()
+        if memory_retrieval_mode not in {"tool", "preload"}:
+            raise ConfigError("NEWTALK_MEMORY_RETRIEVAL_MODE must be tool or preload")
+        memory_preload_timeout_seconds = _bounded_float_value(
+            values, "NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS", 0.8, minimum=0.05, maximum=5.0,
+        )
+
         return cls(
             host=host,
             port=port,
             log_level=log_level,
+            context_debug=_boolean_value(
+                values.get("NEWTALK_CONTEXT_DEBUG"), default=False,
+                name="NEWTALK_CONTEXT_DEBUG",
+            ),
             web_root=web_root,
             dialogue_max_turns=dialogue_max_turns,
-            dialogue_max_chars=dialogue_max_chars,
+            context_input_tokens=context_input_tokens,
             llm_backend=llm_backend,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
             llm_model=llm_model,
+            llm_thinking=llm_thinking,
             llm_system_prompt=llm_system_prompt,
             llm_timeout_seconds=llm_timeout_seconds,
             tts_backend=tts_backend,
@@ -279,6 +303,8 @@ class AppConfig:
             voiceprint_timeout_seconds=voiceprint_timeout_seconds,
             voiceprint_join_timeout_seconds=voiceprint_join_timeout_seconds,
             memory_backend=memory_backend,
+            memory_retrieval_mode=memory_retrieval_mode,
+            memory_preload_timeout_seconds=memory_preload_timeout_seconds,
             memos_base_url=memos_base_url,
             memos_api_key=memos_api_key,
             memos_profile_template_id=memos_profile_template_id,

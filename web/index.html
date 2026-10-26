@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Newtalk · 家庭陪伴助手</title>
-    <link rel="stylesheet" href="/styles.css?v=20261019.7">
+    <link rel="stylesheet" href="/styles.css?v=20261023.2">
+    <link rel="stylesheet" href="/context-dashboard.css?v=20261023.1">
 </head>
 <body>
     <div class="app-frame">
@@ -18,13 +19,14 @@
                 <a class="nav-item" href="#conversation" data-view-target="conversation"><span aria-hidden="true">◌</span>对话</a>
                 <a class="nav-item" href="#family" data-view-target="family"><span aria-hidden="true">♙</span>家庭成员</a>
                 <a class="nav-item" href="#memoryCenter" data-view-target="memory"><span aria-hidden="true">◇</span>记忆中心</a>
+                <a class="nav-item" href="#context" data-view-target="context"><span aria-hidden="true">≡</span>上下文看板</a>
             </nav>
             <div class="sidebar-footer">
                 <div class="status" data-state="offline" id="connectionStatus">
                     <span class="status-dot"></span>
                     <span id="statusLabel">离线</span>
                 </div>
-                <span class="version">P7.7</span>
+                <span class="version">P7.8</span>
             </div>
         </aside>
 
@@ -62,10 +64,47 @@
                     <div>
                         <h2>对话</h2>
                     </div>
-                    <div class="runtime-badges">
-                        <span class="model-badge">LLM STREAM</span>
-                        <span class="mic-badge" data-state="idle" id="micStatus">麦克风待命</span>
-                        <span class="audio-badge" data-state="idle" id="audioStatus">音频待命</span>
+                    <div class="conversation-tools">
+                        <div class="runtime-badges">
+                            <span class="model-badge">LLM STREAM</span>
+                            <span class="mic-badge" data-state="idle" id="micStatus">麦克风待命</span>
+                            <span class="audio-badge" data-state="idle" id="audioStatus">音频待命</span>
+                        </div>
+                        <details class="voice-diagnostics">
+                            <summary>语音诊断</summary>
+                            <div class="voice-diagnostics-panel">
+                                <div class="voice-diagnostic-row">
+                                    <span>输入处理</span>
+                                    <strong id="voiceProcessingStatus">麦克风未开启</strong>
+                                </div>
+                                <div class="voice-diagnostic-row voice-level-row">
+                                    <span>输入音量</span>
+                                    <span class="voice-level-meter" id="voiceLevelMeter" role="meter" aria-label="麦克风输入音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                                        <i id="voiceLevelBar"></i>
+                                    </span>
+                                    <strong id="voiceLevelText">待命</strong>
+                                </div>
+                                <div class="voice-diagnostic-row">
+                                    <span>语音边界</span>
+                                    <strong id="voiceVadStatus">等待麦克风</strong>
+                                </div>
+                                <div class="voice-diagnostic-row">
+                                    <span>识别结果</span>
+                                    <strong id="voiceRecognitionStatus">等待语音</strong>
+                                </div>
+                                <p>输入处理为浏览器报告状态，仅用于排查，不代表实际处理效果。</p>
+                                <hr>
+                                <p>保存聊天发送的音频（最多 10 秒），仅在本页内存保留。它包含静音，并非服务端 VAD 裁切后的单句声纹样本。刷新或清除后释放，下载的文件需自行删除。</p>
+                                <div class="diagnostic-recording-actions">
+                                    <button type="button" class="button secondary compact" id="diagnosticRecordStart">保存接下来 10 秒</button>
+                                    <button type="button" class="button secondary compact" id="diagnosticRecordStop" disabled>结束保存</button>
+                                    <button type="button" class="text-button" id="diagnosticRecordClear" disabled>清除录音</button>
+                                </div>
+                                <p id="diagnosticRecordingStatus" role="status">仅在手动开启后记录；未保存之前的音频。</p>
+                                <audio id="diagnosticRecordingPlayer" controls preload="none" style="width:100%;margin-top:10px" hidden></audio>
+                                <a id="diagnosticRecordingDownload" hidden>下载 WAV</a>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
@@ -251,9 +290,35 @@
             <p class="memory-feedback" id="memoryFeedback" role="status"></p>
         </section>
 
+        <section class="view-section context-view" id="context" data-view="context" aria-labelledby="contextTitle" hidden>
+            <header class="context-header">
+                <div>
+                    <p class="eyebrow">CONTEXT OBSERVABILITY</p>
+                    <h2 id="contextTitle">这一轮，模型看到了什么</h2>
+                    <p class="context-caption">查看真实输入与提交结果，不推测模型内部思维。</p>
+                </div>
+                <div class="context-actions">
+                    <label><input type="checkbox" id="contextAutoRefresh" checked> 自动刷新</label>
+                    <button type="button" class="button secondary compact" id="contextRefreshButton">刷新记录</button>
+                    <button type="button" class="button secondary compact" id="contextLatencyExport">导出最近5轮时延</button>
+                </div>
+            </header>
+            <div class="context-notice" id="contextDashboardStatus" role="status" data-state="idle">进入看板后读取当前设备记录。</div>
+            <p class="context-privacy">敏感调试内容 · 仅当前设备、当前进程近期记录；重启、超时或容量淘汰后可能不完整。不保存到浏览器本地存储。</p>
+            <div class="context-layout">
+                <aside class="context-directory" aria-label="对话轮次">
+                    <label for="contextTurnFilter">最近轮次 <span id="contextTurnCount">0</span></label>
+                    <input id="contextTurnFilter" type="search" placeholder="按提问或 Turn ID 筛选" autocomplete="off">
+                    <ol id="contextTurnList" class="context-turn-list"></ol>
+                </aside>
+                <div id="contextTurnDetail" class="context-detail" aria-live="polite">
+                    <div class="context-empty"><strong>选择一轮对话</strong><p>可以从左侧选择，也可以在聊天回复上点击“查看上下文”。</p></div>
+                </div>
+            </div>
+        </section>
         </main>
     </div>
 
-    <script type="module" src="/app.js?v=20261019.6"></script>
+    <script type="module" src="/app.js?v=20261025.1"></script>
 </body>
 </html>

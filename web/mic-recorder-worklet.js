@@ -8,6 +8,7 @@ class NewtalkMicRecorder extends AudioWorkletProcessor {
         this.sourcePosition = 0;
         this.frame = new Int16Array(this.frameSamples);
         this.frameOffset = 0;
+        this.framesEmitted = 0;
     }
 
     process(inputs, outputs) {
@@ -28,7 +29,13 @@ class NewtalkMicRecorder extends AudioWorkletProcessor {
 
             if (this.frameOffset === this.frameSamples) {
                 const buffer = this.frame.buffer;
-                this.port.postMessage({type: 'audio_frame', buffer}, [buffer]);
+                this.framesEmitted += 1;
+                // 把服务端 VAD 的样本位置映射回采集时钟，不用网络回执时间猜词尾。
+                const frameEndTime = currentTime
+                    + (input.length - (this.source.length - this.sourcePosition)) / sampleRate;
+                this.port.postMessage({type: 'audio_frame', buffer,
+                    audio_end_ms: this.framesEmitted * this.frameSamples * 1000 / this.targetSampleRate,
+                    frame_end_time: frameEndTime}, [buffer]);
                 this.frame = new Int16Array(this.frameSamples);
                 this.frameOffset = 0;
             }

@@ -3,6 +3,7 @@ import json
 import logging
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from newtalk.app import create_app
@@ -99,7 +100,7 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with isolated_client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.10"
+        assert hello["protocol_version"] == "0.11"
         assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]
@@ -684,7 +685,7 @@ def test_unknown_text_member_is_rejected_without_starting_turn() -> None:
     assert error["code"] == "identity_not_found"
 
 
-def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
+def test_cancelled_reply_keeps_the_accepted_user_input_in_dialogue_context() -> None:
     model = RecordingModel(delay_seconds=0.1)
     context_client = make_client(chat_service=ChatService(model))
 
@@ -705,7 +706,10 @@ def test_cancelled_turn_is_not_added_to_dialogue_context() -> None:
                 event_types.append(json.loads(frame["text"])["type"])
 
     assert "turn_cancelled" in event_types
-    assert model.requests[-1] == (ChatMessage("user", guest("新的问题")),)
+    assert model.requests[-1] == (
+        ChatMessage("user", guest("不要记住")),
+        ChatMessage("user", guest("新的问题")),
+    )
 
 
 def test_websocket_reconnect_restores_dialogue_context_for_same_device() -> None:
@@ -870,13 +874,21 @@ def test_member_deleted_during_turn_is_not_restored() -> None:
         assert restored["dialogue"]["items"] == []
 
 
-def test_identity_lookup_failure_skips_private_persistence_but_completes_turn() -> None:
+def test_identity_lookup_failure_keeps_accepted_input_but_skips_reply_persistence() -> None:
     identity_service = FailingIdentityLookupService()
     writer = RecordingMemoryWriter()
+
+    class AcceptedInputStore(InMemoryDialogueStore):
+        async def append(self, **kwargs):
+            inserted = await super().append(**kwargs)
+            identity_service.fail_lookup = True
+            return inserted
+
     isolated_client = make_client(
         identity_service=identity_service,
         memory_writer=writer,
-        chat_service=ChatService(RecordingModel(delay_seconds=0.05)),
+        dialogue_store=AcceptedInputStore(),
+        chat_service=ChatService(RecordingModel()),
     )
     member = isolated_client.post(
         "/api/members",
@@ -889,12 +901,11 @@ def test_identity_lookup_failure_skips_private_persistence_but_completes_turn() 
             {
                 "type": "text_input",
                 "event_id": "identity-check-failure",
-                "text": "回复可以完成，但不要持久化",
+                "text": "输入已保存，回复提交时身份服务故障",
                 "identity_id": member["identity_id"],
             }
         )
         assert websocket.receive_json()["type"] == "turn_started"
-        identity_service.fail_lookup = True
 
         completed = None
         while completed is None:
@@ -912,8 +923,63 @@ def test_identity_lookup_failure_skips_private_persistence_but_completes_turn() 
     with isolated_client.websocket_connect("/ws") as websocket:
         restored = websocket.receive_json()
 
-    assert restored["dialogue"]["family_turns"] == 0
-    assert restored["dialogue"]["items"] == []
+    assert restored["dialogue"]["family_turns"] == 1
+    assert len(restored["dialogue"]["items"]) == 1
+    item = restored["dialogue"]["items"][0]
+    assert item["user_text"] == "输入已保存，回复提交时身份服务故障"
+    assert item["assistant_text"] == ""
+    assert item["reply_status"] == "user_only"
+
+
+@pytest.mark.parametrize("member_input", [False, True])
+def test_reconnect_restores_cancelled_user_input_without_partial_assistant_reply(member_input) -> None:
+    class InterruptedModel:
+        async def stream(self, messages):
+            yield "未完整交付的半句"
+            await asyncio.Future()
+
+        async def aclose(self):
+            pass
+
+    writer = RecordingMemoryWriter()
+    isolated_client = make_client(
+        chat_service=ChatService(InterruptedModel()), memory_writer=writer,
+    )
+    identity_id = None
+    if member_input:
+        identity_id = isolated_client.post(
+            "/api/members", json={"display_name": "鱼鱼", "relationship": "家人"},
+        ).json()["identity_id"]
+    with isolated_client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json({
+            "type": "text_input", "event_id": "learn", "text": "我想学英语",
+            "identity_id": identity_id,
+        })
+        started = websocket.receive_json()
+        assert started["type"] == "turn_started"
+        assert websocket.receive_json()["type"] == "text_delta"
+        websocket.send_json({"type": "close", "event_id": "leave"})
+        assert websocket.receive_json()["type"] == "closing"
+        assert websocket.receive()["type"] == "websocket.close"
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        dialogue = websocket.receive_json()["dialogue"]
+        assert dialogue["resumed"] is True
+        assert dialogue["family_turns"] == int(member_input)
+        assert dialogue["guest_turns"] == int(not member_input)
+        assert len(dialogue["items"]) == 1
+        item = dialogue["items"][0]
+        assert item["turn_id"] == started["turn_id"]
+        assert item["user_text"] == "我想学英语"
+        assert item["assistant_text"] == ""
+        assert item["reply_status"] == "user_only"
+        websocket.send_json({"type": "dialogue_clear", "event_id": "clear"})
+        assert websocket.receive_json()["type"] == "dialogue_cleared"
+
+    with isolated_client.websocket_connect("/ws") as websocket:
+        assert websocket.receive_json()["dialogue"]["items"] == []
+    assert writer.calls == []
 
 
 def test_duplicate_event_id_does_not_create_another_turn() -> None:
@@ -1106,13 +1172,14 @@ def test_microphone_voiceprint_match_becomes_member_turn() -> None:
         websocket.receive_json()
         websocket.send_bytes(bytes(640))
         events = []
-        while not any(event["type"] == "turn_started" for event in events):
+        while not any(event["type"] == "speaker_resolved" for event in events):
             frame = websocket.receive()
             if frame.get("bytes") is None:
                 events.append(json.loads(frame["text"]))
+        started, _, completed, _, _ = receive_turn(websocket)
+        assert completed["type"] == "turn_completed"
 
     resolved = next(event for event in events if event["type"] == "speaker_resolved")
-    started = next(event for event in events if event["type"] == "turn_started")
     assert resolved["identity_id"] == member["identity_id"]
     assert resolved["reason"] == "matched"
     assert started["speaker"]["display_name"] == "小明"
@@ -1121,7 +1188,20 @@ def test_microphone_voiceprint_match_becomes_member_turn() -> None:
 
 
 def test_voiceprint_timeout_degrades_to_guest_turn() -> None:
-    provider = IdentifyingVoicePrintClient(delay_seconds=0.1)
+    class WaitingVoicePrintClient(IdentifyingVoicePrintClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = threading.Event()
+
+        async def identify(self, *, device_id, sample):
+            del device_id
+            self.samples.append(sample)
+            try:
+                await asyncio.Future()
+            finally:
+                self.cancelled.set()
+
+    provider = WaitingVoicePrintClient()
     voice_client = make_client(
         config=AppConfig(voiceprint_join_timeout_seconds=0.01),
         vad=ScriptedVad(),
@@ -1136,16 +1216,21 @@ def test_voiceprint_timeout_degrades_to_guest_turn() -> None:
         websocket.receive_json()
         websocket.send_bytes(bytes(640))
         events = []
-        while not any(event["type"] == "turn_started" for event in events):
+        while not any(event["type"] == "speaker_resolved" for event in events):
             frame = websocket.receive()
             if frame.get("bytes") is None:
                 events.append(json.loads(frame["text"]))
+        # 本测试验证超时后仍能完成聊天；不能在识别 Task 刚启动 Turn 时
+        # 关闭 TestClient，把作用域取消与业务降级混成一次调度竞态。
+        started, _, completed, _, _ = receive_turn(websocket)
+        assert completed["type"] == "turn_completed"
+        assert completed["text"] == "我收到了：超时也继续聊天"
 
     resolved = next(event for event in events if event["type"] == "speaker_resolved")
-    started = next(event for event in events if event["type"] == "turn_started")
     assert resolved["reason"] == "timeout"
     assert resolved["matched"] is False
     assert started["speaker"]["guest"] is True
+    assert provider.cancelled.is_set()
 
 
 def test_vad_speech_start_cancels_the_active_turn() -> None:

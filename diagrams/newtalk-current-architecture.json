@@ -1,7 +1,7 @@
 {
   "type": "architecture",
   "title": "Newtalk 当前系统架构",
-  "subtitle": "Web 家庭陪伴助手 · P7.8 运行时全景",
+  "subtitle": "Web 家庭陪伴助手 · 系统模块总览",
   "eyebrow": "SYSTEM MAP",
   "caption": "主对话链实时流式执行；Dialogue、身份与任务写入 PostgreSQL，长期记忆通过 MemOS 按需读取并异步沉淀。",
   "lang": "zh-CN",

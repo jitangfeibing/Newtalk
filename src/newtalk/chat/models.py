@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -10,6 +10,8 @@ class ModelToolCall:
     call_id: str
     name: str
     arguments: str
+    # 部分思考模型要求工具后续请求回传原推理字段；不用于播报或对话历史。
+    reasoning_content: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,9 @@ class ChatMessage:
     content: str
     tool_calls: tuple[ModelToolCall, ...] = ()
     tool_call_id: str | None = None
+    # 仅用于解释历史取舍，不发送给 Provider，也不改变消息内容的相等语义。
+    source_turn_id: str | None = field(default=None, compare=False, repr=False)
+    context_kind: Literal["memory"] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

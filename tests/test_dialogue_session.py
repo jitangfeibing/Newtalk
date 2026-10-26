@@ -28,7 +28,7 @@ def _completed_turn(service: ChatService, session: DialogueSession, text: str):
 
 def test_dialogue_session_builds_context_from_completed_turns() -> None:
     service = ChatService()
-    session = DialogueSession("session-1", max_turns=3, max_chars=1000)
+    session = DialogueSession("session-1", max_turns=3)
     first = _completed_turn(service, session, "我叫小明")
     session.commit(first, "你好，小明")
 
@@ -41,7 +41,7 @@ def test_dialogue_session_builds_context_from_completed_turns() -> None:
 
 def test_dialogue_session_keeps_only_the_latest_turns() -> None:
     service = ChatService()
-    session = DialogueSession("session-1", max_turns=2, max_chars=1000)
+    session = DialogueSession("session-1", max_turns=2)
     for index in range(3):
         turn = _completed_turn(service, session, f"用户{index}")
         session.commit(turn, f"助手{index}")
@@ -59,14 +59,16 @@ def test_dialogue_session_keeps_only_the_latest_turns() -> None:
     )
 
 
-def test_dialogue_session_applies_a_contiguous_character_window() -> None:
+def test_dialogue_session_defers_budget_selection_until_the_complete_request_is_built() -> None:
     service = ChatService()
-    session = DialogueSession("session-1", max_turns=5, max_chars=12)
+    session = DialogueSession("session-1", max_turns=5)
     for user, assistant in (("111", "aaa"), ("22", "bb"), ("3", "c")):
         turn = _completed_turn(service, session, user)
         session.commit(turn, assistant)
 
     assert session.messages_for("now") == (
+        ChatMessage("user", guest("111")),
+        ChatMessage("assistant", "aaa"),
         ChatMessage("user", guest("22")),
         ChatMessage("assistant", "bb"),
         ChatMessage("user", guest("3")),
@@ -77,7 +79,7 @@ def test_dialogue_session_applies_a_contiguous_character_window() -> None:
 
 def test_dialogue_session_rejects_cross_session_and_duplicate_commits() -> None:
     service = ChatService()
-    session = DialogueSession("session-1", max_turns=2, max_chars=100)
+    session = DialogueSession("session-1", max_turns=2)
     turn = _completed_turn(service, session, "你好")
     session.commit(turn, "你好")
 
@@ -90,7 +92,7 @@ def test_dialogue_session_rejects_cross_session_and_duplicate_commits() -> None:
 
 
 def test_dialogue_session_restores_completed_exchanges_once() -> None:
-    session = DialogueSession("session-1", max_turns=2, max_chars=100)
+    session = DialogueSession("session-1", max_turns=2)
     restored = (
         DialogueExchange("turn-1", "一", "答一", None, "Guest", None),
         DialogueExchange("turn-2", "二", "答二", None, "Guest", None),

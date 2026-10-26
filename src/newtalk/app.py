@@ -22,6 +22,9 @@ from newtalk.chat import (
     SqlAlchemyDialogueStore,
 )
 from newtalk.config import AppConfig, load_config
+from newtalk.context_debug import ContextDebugger
+from newtalk.context_debug_api import router as context_debug_router
+from newtalk.chat.prompts import conversation_system_prompt
 from newtalk.logging_config import configure_logging
 from newtalk.identity import IdentityService, SqlAlchemyIdentityStore
 from newtalk.identity.deletion import (
@@ -39,6 +42,7 @@ from newtalk.identity.recovery_limit import (
 from newtalk.memory import (
     DisabledMemoryProvider,
     DisabledMemoryWriteService,
+    InMemoryMemoryJobStore,
     MemoryProvider,
     MemoryWriteService,
     MemoryWriter,
@@ -157,6 +161,9 @@ def create_chat_service(
             memory_search_limit=config.memory_search_limit,
             memory_search_relativity=config.memory_search_relativity,
             memory_result_max_chars=config.memory_result_max_chars,
+            memory_retrieval_mode=config.memory_retrieval_mode,
+            memory_preload_timeout_seconds=config.memory_preload_timeout_seconds,
+            context_debug=ContextDebugger(enabled=config.context_debug),
         )
 
     if not config.llm_api_key or not config.llm_model:
@@ -166,14 +173,19 @@ def create_chat_service(
             api_key=config.llm_api_key,
             base_url=config.llm_base_url,
             model=config.llm_model,
-            system_prompt=config.llm_system_prompt,
+            system_prompt=conversation_system_prompt(config.llm_system_prompt),
             timeout_seconds=config.llm_timeout_seconds,
+            input_token_budget=config.context_input_tokens,
+            thinking=config.llm_thinking,
         ),
         synthesizer,
         memory_provider,
         memory_search_limit=config.memory_search_limit,
         memory_search_relativity=config.memory_search_relativity,
         memory_result_max_chars=config.memory_result_max_chars,
+        memory_retrieval_mode=config.memory_retrieval_mode,
+        memory_preload_timeout_seconds=config.memory_preload_timeout_seconds,
+        context_debug=ContextDebugger(enabled=config.context_debug),
     )
 
 
@@ -275,8 +287,15 @@ def create_app(
     )
     resolved_identity_deletion_service = identity_deletion_service
     if resolved_identity_deletion_service is None:
+        memory_job_store = (
+            resolved_memory_writer.job_store
+            if isinstance(resolved_memory_writer, MemoryWriteService) else None
+        )
         deletion_store = (
-            InMemoryIdentityDeletionStore(resolved_identity_service)
+            InMemoryIdentityDeletionStore(
+                resolved_identity_service,
+                memory_jobs=memory_job_store if isinstance(memory_job_store, InMemoryMemoryJobStore) else None,
+            )
             if persistence_backend == "memory"
             else SqlAlchemyIdentityDeletionStore(config.database_url)
         )
@@ -288,7 +307,6 @@ def create_app(
             dialogue_store=resolved_dialogue_store,
             dialogue_coordinator=dialogue_cache_coordinator,
             poll_seconds=config.memory_job_poll_seconds,
-            max_attempts=config.memory_job_max_attempts,
         )
 
     @asynccontextmanager
@@ -300,15 +318,17 @@ def create_app(
             await resolved_memory_writer.start()
             await resolved_identity_deletion_service.start()
             logger.info(
-                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s tts_backend=%s asr_backend=%s memory_backend=%s identity_service=%s",
+                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s llm_thinking=%s tts_backend=%s asr_backend=%s memory_backend=%s memory_retrieval_mode=%s identity_service=%s",
                 config.host,
                 config.port,
                 config.web_root,
                 config.llm_backend,
                 config.llm_model or "fake",
+                config.llm_thinking,
                 config.tts_backend,
                 config.asr_backend,
                 config.memory_backend,
+                config.memory_retrieval_mode,
                 type(resolved_identity_service).__name__,
             )
             yield
@@ -363,6 +383,7 @@ def create_app(
     app.include_router(identity_router)
     app.include_router(voiceprint_router)
     app.include_router(memory_router)
+    app.include_router(context_debug_router)
     app.include_router(websocket_router)
 
     app.mount(

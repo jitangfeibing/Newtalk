@@ -1,6 +1,6 @@
 # Newtalk HTTP、VoicePrint、Memory 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.10`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.11`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
 WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID。服务端读取 Family/Guest 兼容 lane 后按时间合并为设备级短期 Dialogue。
 
@@ -22,7 +22,15 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 - `PATCH /api/members/{identity_id}/memories/{memory_id}`：校验该 Memory 属于当前成员后修改标题和内容。
 - `DELETE /api/members/{identity_id}/memories/{memory_id}`：校验归属后删除长期记忆。
 
-所有成员读写都由服务端从 Cookie 解析 `device_id`，客户端不能在请求体中指定其他家庭。
+所有成员读写都由服务端从 Cookie 解析 `device_id`，客户端不能在请求体中指定其他家庭。MemOS API Key、远端 user_id、conversation_id 和 Profile Template 由服务端管理，不接受浏览器指定。
+
+## 上下文调试 HTTP API
+
+- `GET /api/debug/context?limit=30`：只列出当前 Cookie 对应设备在当前进程的近期轮次；`limit` 为 1～50。返回 `enabled`、`retention_seconds`、`scope` 和 `turns`。
+- `GET /api/debug/context/{turn_id}`：返回该轮仍保留的 `events`，包括最终模型请求、身份/历史取舍、检索与提交状态。API 不提供思维链或模型理解质量评分。
+- 未绑定设备返回 `401`；关闭调试时列表为 `enabled=false, turns=[]`，详情为 `503`；未捕获、已淘汰或属于其他设备的轮次统一返回 `404`。
+- 成功响应与详情错误响应使用 `Cache-Control: no-store`。服务端只接受 Cookie 鉴权后的 Scope，不接受客户端指定其他 `device_id`。
+- 只有显式开启 `NEWTALK_CONTEXT_DEBUG` 后才采集。快照含私人数据；缓存有时间与容量上限，不从日志文件恢复。设置与边界见 [上下文调试](architecture.md#上下文调试与回复规则)。
 
 ## 内部 VoicePrint API
 
@@ -33,7 +41,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 - `POST /v1/identify`：`device_id` 和一个 `sample`，只匹配当前家庭模板。
 - `DELETE /v1/templates/{identity_id}?device_id=...`：按家庭和成员双重条件删除。
 
-录音格式固定为 16kHz、单声道、PCM16 WAV，每段默认 2～15 秒。原始 WAV 不持久化；PostgreSQL 只保存归一化 float32 Embedding、维度、模型名和录入时间。
+录音格式固定为 16kHz、单声道、PCM16 WAV。默认录入每段 2～15 秒，识别每段 0.8～15 秒；实际限制由服务端配置决定，格式或长度不符返回 `422`。原始 WAV 不持久化；PostgreSQL 只保存归一化 float32 Embedding、维度、模型名和录入时间。
 
 ## 建连
 
@@ -42,7 +50,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.10",
+  "protocol_version": "0.11",
   "session_id": "stable dialogue session UUID",
   "device_id": "02:11:22:33:44:55",
   "dialogue": {
@@ -55,6 +63,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
         "turn_id": "completed Turn UUID",
         "user_text": "我今天面试了",
         "assistant_text": "感觉怎么样？",
+        "reply_status": "completed",
         "speaker": {
           "identity_id": "member UUID",
           "display_name": "小明",
@@ -72,7 +81,11 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 }
 ```
 
-`dialogue.items` 只包含当前滑动窗口内成功完成的交换，并按时间排序。取消、失败、进行中的 Turn 不返回。浏览器只能接收快照，协议不接受客户端提供 `session_id` 或请求其他家庭 Session。
+`dialogue.items` 包含当前窗口内已落库的最终用户输入，按接受时间排序。`reply_status=completed` 表示助手完整回答已补全；`user_only` 表示只有用户输入，`assistant_text` 为空串，可能来自进行中、被打断、失败或补全未确认的轮次，不能据此猜测具体原因。前端只显示用户气泡，不创建空助手气泡；该条输入仍可参与下一轮上下文。Family/Guest 计数按输入条目而非完整问答对计算。
+
+恢复查询每 lane 默认最多加载 256 条（`NEWTALK_DIALOGUE_MAX_TURNS`），计数不是数据库全部原文数量，也不代表这些消息最终全部发送给模型。正式模型对每次完整请求按 `NEWTALK_CONTEXT_INPUT_TOKENS` 预算独立取舍，默认 32768，当前为保守 Token 估算；取舍明细见设备鉴权的上下文看板。旧原文不会因为本轮预算或恢复窗口限制而从数据库删除。
+
+浏览器只能接收快照，协议不接受客户端提供 `session_id` 或请求其他家庭 Session。同一设备多页面共享持久化 Session，但聊天列表不实时广播，重连时重新读取快照。接受到内存尚未落库的输入不保证出现在此快照；确认前的进程崩溃或落库失败可能导致刷新无法恢复。已停用成员的历史不会恢复。
 
 ## 麦克风输入
 
@@ -91,7 +104,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 
 ```json
 {"type":"vad_speech_start","capture_id":"capture ID","utterance_id":"UUID","probability":0.87,"audio_ms":96.0}
-{"type":"vad_speech_end","capture_id":"capture ID","utterance_id":"UUID","probability":0.08,"audio_ms":1248.0}
+{"type":"vad_speech_end","capture_id":"capture ID","utterance_id":"UUID","probability":0.08,"audio_ms":1248.0,"last_voice_audio_ms":608.0}
 ```
 
 `vad_speech_start` 会立即停止浏览器本地播放，并取消仍在生成的旧 Turn；即使服务端已经完成 TTS 发送，只要浏览器尚未确认播放队列耗尽，服务端仍会发送 `audio_stop`。ASR 事件为：
@@ -157,7 +170,7 @@ ASR 和 VoicePrint 使用相同 `utterance_id`。非空 `asr_final` 会先发给
 }
 ```
 
-Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息带说话人姓名和家庭关系。说话人字段在 Turn 创建后固定，迟到声纹结果不能修改当前回复归属；Guest 仍不能读取成员 Profile 或长期 Memory。
+Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息带说话人姓名和家庭关系。说话人字段在 Turn 创建后固定，迟到声纹结果不能修改当前回复归属；Guest 不获准加载成员 Profile 或检索长期 Memory；设备共享短期 Dialogue 的可见性边界见 [架构说明](architecture.md#设备共享对话成员私有记忆)。
 
 `profile.enabled` 表示服务端是否配置 Profile Provider；`ready` 表示当前成员的 Snapshot 在本 Turn 创建时已经就绪；`fields` 是本次 Snapshot 的非空字段数。`ready=false` 不属于聊天错误，当前 Turn 会在不等待 MemOS 的情况下继续。Guest 的 `ready` 始终为 `false`。
 
@@ -210,116 +223,24 @@ Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息�
 - 文本 `identity_id` 类型错误：`invalid_identity_id`。
 - 文本选择了当前家庭不存在的成员：`identity_not_found`。
 - 清除短期对话持久化失败：`dialogue_clear_failed`。
+- 待完成输入落库任务达到上限：`dialogue_busy`；本次输入未接受，当前 Turn 不因此取消，可稍后重试。
+- `turn_failed.code=context_budget_exceeded`：系统信息、当前输入和必要工具交互仍超出输入预算，本次模型请求未发送；用户输入已接受到短期窗口，落库结果另行确认。需缩短输入或调整预算，不应无条件重发同一超长输入。
 - `ping` 返回 `pong`；`close` 返回 `closing` 并以 code `1000` 关闭。
-- `playback_started` 继续用于记录浏览器首播时间，不创建 Turn。
+- `playback_started` 继续记录浏览器首次渲染 PCM 的时间；PCM 可能包含静音，不等同于首个声音，不创建 Turn。
+- `playback_audible` 是可选的非静音输出计时回执，不改变 Turn 或播放状态，正常时不响应；非法数值返回 `invalid_playback_metric`。
 - `playback_drained` 表示浏览器已经播放完指定流，不产生响应事件。
 
-## P7.3 调用链
 
-```text
-Browser getUserMedia
--> mic-recorder-worklet (resample -> 16kHz / 20ms / PCM S16LE)
--> WebSocket binary frames
--> AudioInputSession -> SileroVadStream
-   |-> speech_start -> local playback reset + cancel active Turn/buffered playback
-   |                   -> turn_cancelled（仍在生成时）+ audio_stop（仍有播放流时）
-   `-> same utterance PCM
-       |-> SpeechRecognizer.stream -> ASR partial/final
-       `-> WAV -> VoicePrint /v1/identify
--> utterance_id join with bounded wait
-   |-> matched active member -> Member Turn --+
-   `-> timeout/no-match/failure -> Guest Turn -+-> device Dialogue
--> ConnectionRuntime.start_turn with immutable device/speaker
--> DialogueSession.messages_for -> speaker-labelled immutable Turn.messages
--> ChatService.stream_turn
--> text_delta + TTS binary PCM -> PcmPlayer / AudioWorklet
--> turn_completed -> DialogueSession.commit
+内部 Task 调用链、记忆后台状态及其限制统一见 [架构与边界](architecture.md)，不作为浏览器事件协议的一部分维护。
+
+### 非静音输出计时
+
+`last_voice_audio_ms` 是可空的、当前 capture 内 VAD 最后确认语音的样本位置；不是人工标注的词尾。旧客户端可以忽略该附加字段。客户端把它与采集 Worklet 的样本位置、AudioContext 时钟关联，不能直接用服务器时间减浏览器时间。
+
+```json
+{"type":"playback_audible","event_id":"client ID","turn_id":"Turn UUID","stream_id":"stream UUID","output_clock":"output_timestamp","metrics":{"speech_end_to_audible_ms":2200.0,"vad_to_audible_ms":1500.0,"turn_to_audible_ms":1300.0,"tts_to_audible_ms":60.0}}
 ```
 
-## P7.4 Profile 调用链
+播放器在首次输出幅度达到 -60 dBFS 的样本时记录音频时钟位置，优先通过 `getOutputTimestamp()` 映射至设备输出时间估计，无法取得时 `output_clock=render_clock`。这既不是 TTS 网络首包，也不是扬声器物理出声的实录。静音流没有此回执；迟到的旧流事件被浏览器忽略。
 
-```text
-WebSocket authenticated
--> hello 立即进入发送队列
--> SessionProfileCache 后台列出当前 device_id 的 Active Identity
--> 每个 Identity 生成服务端 MemOS user_id
--> GET /get/memory（只请求 profile）
-   |-> 已绑定 -> 缓存 Profile Snapshot
-   `-> 未绑定 -> POST /bind/profile_template -> 再次读取 -> 缓存
-
-Member Turn
--> 按 speaker_identity_id 只读当前 Session 缓存
-   |-> 已就绪 -> 有字符预算的 Profile system message -> Dialogue -> LLM
-   `-> 未就绪/失败 -> 无 Profile -> Dialogue -> LLM
-
-Guest Turn
--> 不读取、不绑定、不注入 Profile
-```
-
-MemOS API Key 只存在于服务端环境变量。浏览器协议没有 `memos_user_id`、模板 ID 或任意 Memory Scope 参数。
-
-## P7.5 Memory Tool 调用链
-
-P7.5 没有新增 WebSocket 客户端消息，协议版本仍为 `0.7`。Tool Call 是 ChatModel 与 ChatService 之间的内部事件，不发送浏览器，也不进入 TTS。
-
-```text
-Member Turn + Memory enabled
--> 主 LLM 收到 memory_search Tool 定义
-   |-> 不调用 -> 直接流式文本
-   `-> 调用一次 -> ChatService 校验 JSON query
-                 -> 使用 Turn.device_id + Turn.speaker_identity_id
-                 -> POST /search/memory
-                 -> assistant tool_call + tool result
-                 -> 第二轮 LLM（不再提供 Tool）
-                 -> 最终流式文本
-
-Guest / Memory disabled
--> 不向主 LLM注册 memory_search
-```
-
-`POST /search/memory` 请求由后端生成 `user_id` 和 `conversation_id`，查询 `detail_factual`、`preference` 与 `event`。返回内容按相关度排序并受条数和字符预算限制。鉴权、超时、格式错误等异常会变成 `unavailable` Tool Result，当前 Turn 仍可继续生成回答。
-
-## P7.5 长期记忆写入链
-
-```text
-当前活动 Member Turn 完成
--> Dialogue commit
--> INSERT memory_jobs（turn_id 唯一）
--> turn_completed / 当前回复结束
-
-后台 Worker
--> FOR UPDATE SKIP LOCKED 领取到期任务
--> 设置 processing 租约；仅首次提交或远端明确失败重试时增加 attempts
--> POST /add/message（user + final assistant，async_mode=true）
-   |-> running -> 持久化 submitted + provider_task_id
-   |                -> POST /get/status
-   |                   |-> running -> 保留 task_id，延后再查
-   |                   |-> completed -> 本地 completed
-   |                   `-> failed -> 延迟重新提交，超过上限标记 failed
-   |-> completed -> 本地 completed
-   `-> failed/请求失败 -> 延迟重试，超过上限标记 failed
-```
-
-只写入成功完成的 Member 用户消息和最终助手回答。Guest、被打断 Turn、生成失败 Turn、旧 Turn 迟到结果、Tool Result 和检索返回的旧记忆均不写入。状态查询网络失败不会清空 `provider_task_id` 或重新 Add Message。该 Outbox 保证本地去重和至少一次投递；官方接口未声明 `info.turn_id` 为幂等键，因此 Add Message 已被远端接收但响应尚未落库时的崩溃窗口仍不能承诺严格一次写入。
-
-## P7.7 Dialogue 恢复链
-
-P7.7 当时没有新增客户端上行事件，协议版本升级为 `0.8`，变化集中在 `hello.dialogue`。后续语音打断补充 `playback_drained` 升级为 `0.9`；当前新增 `dialogue_clear/dialogue_cleared`，协议版本为 `0.10`。
-
-```text
-WebSocket 握手携带 HttpOnly Device Cookie
--> 服务端认证 device_id
--> DialogueStore.open(device_id)
-   |-> 首次连接：创建唯一 Session，resumed=false
-   `-> 再次连接：读取 Family/Guest 最近窗口，resumed=true
--> hello(session_id, dialogue snapshot)
--> 浏览器重建消息列表
--> ConnectionRuntime 按时间合并并恢复一个设备 DialogueSession
-
-当前 Turn 成功完成
--> 内存 Dialogue commit
--> PostgreSQL append(turn_id unique, lane)
--> 数据库按兼容 lane 裁剪；Runtime 使用合并后的最近 max_turns
-```
-
-同一家庭多个页面共享持久化 Session。同进程内一个页面完成 Turn 后，其他活动连接的内存上下文会同步提交该 Turn，但页面消息列表不做实时广播；每个页面仍在建立连接时从 `hello.dialogue` 获得可见快照。
+`turn_to_audible_ms` 必填；其他差值缺少基准时省略，不能填 0。`speech_end_to_audible_ms` 基于 VAD 语音末尾估计；`vad_to_audible_ms` 从浏览器收到判停事件起算；`tts_to_audible_ms` 从浏览器收到首帧起算。数值须为有限、非负、至多一小时的毫秒数。全部是客户端观测，不用于鉴权、计费或控制状态。

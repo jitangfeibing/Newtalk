@@ -2,7 +2,7 @@ const SAMPLE_RATE = 16000;
 const SAMPLE_SECONDS = 4;
 
 
-function pcmToWav(frames) {
+export function pcmToWav(frames) {
     const sampleCount = frames.reduce((total, frame) => total + frame.length, 0);
     const buffer = new ArrayBuffer(44 + sampleCount * 2);
     const view = new DataView(buffer);
@@ -60,12 +60,13 @@ function analyzeVoiceSample(frames) {
 
 export async function recordVoiceprintSample(onProgress) {
     window.dispatchEvent(new CustomEvent('newtalk:voiceprint-recording'));
+    // 与聊天使用相同处理，避免用原始声音录入、用降噪后的声音匹配。
     const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
             channelCount: 1,
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
         },
     });
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
