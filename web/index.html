@@ -4,8 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Newtalk · 家庭陪伴助手</title>
-    <link rel="stylesheet" href="/styles.css?v=20261023.2">
+    <link rel="stylesheet" href="/styles.css?v=20261025.1">
     <link rel="stylesheet" href="/context-dashboard.css?v=20261023.1">
+    <link rel="stylesheet" href="/reminders.css?v=20261025.1">
+    <link rel="stylesheet" href="/music.css?v=20261026.1">
 </head>
 <body>
     <div class="app-frame">
@@ -20,6 +22,7 @@
                 <a class="nav-item" href="#family" data-view-target="family"><span aria-hidden="true">♙</span>家庭成员</a>
                 <a class="nav-item" href="#memoryCenter" data-view-target="memory"><span aria-hidden="true">◇</span>记忆中心</a>
                 <a class="nav-item" href="#context" data-view-target="context"><span aria-hidden="true">≡</span>上下文看板</a>
+                <a class="nav-item" href="#tools" data-view-target="tools"><span aria-hidden="true">◷</span>工具</a>
             </nav>
             <div class="sidebar-footer">
                 <div class="status" data-state="offline" id="connectionStatus">
@@ -31,6 +34,20 @@
         </aside>
 
         <main class="shell">
+            <aside class="media-panel" id="mediaPanel" aria-label="音乐播放器" hidden>
+                <div class="media-info"><strong id="mediaTitle">音乐</strong><span id="mediaArtist"></span><span id="mediaStatus" role="status"></span></div>
+                <div class="media-actions">
+                    <button type="button" class="button secondary compact" data-music-action="pause" disabled>暂停音乐</button>
+                    <button type="button" class="button secondary compact" data-music-action="resume" disabled>继续播放</button>
+                    <button type="button" class="button secondary compact" data-music-action="stop" disabled>停止音乐</button>
+                    <label>音量<input id="musicVolume" type="range" min="0" max="1" step="0.05" value="1"></label>
+                </div>
+            </aside>
+            <aside class="reminder-banner" id="reminderBanner" role="status" hidden>
+                <strong id="reminderBannerText"></strong>
+                <button type="button" class="button secondary compact" id="stopReminderButton">停止提醒播放</button>
+                <button type="button" class="text-button" id="dismissReminderButton">收起</button>
+            </aside>
             <section class="view-section home-view is-active" id="home" data-view="home">
                 <header class="masthead">
                     <div>
@@ -124,6 +141,7 @@
                     <ol class="message-list" id="messageList" aria-live="polite"></ol>
 
                     <form class="composer" id="chatForm">
+                        <p id="deviceControlStatus" class="device-control-status" role="status" hidden></p>
                         <label class="sr-only" for="messageInput">输入聊天内容</label>
                         <textarea
                             id="messageInput"
@@ -290,6 +308,42 @@
             <p class="memory-feedback" id="memoryFeedback" role="status"></p>
         </section>
 
+        <section class="view-section" id="tools" data-view="tools" aria-labelledby="toolsTitle" hidden>
+            <header class="reminder-heading">
+                <div><h2 id="toolsTitle">工具</h2><p>日常的小事，交给提醒。</p></div>
+                <div class="inline-actions">
+                    <button type="button" class="button secondary compact" id="enableReminderAudio">启用提示音</button>
+                    <button type="button" class="button secondary compact" id="refreshRemindersButton">刷新提醒</button>
+                </div>
+            </header>
+            <p class="reminder-note">当前家庭空间共享 · 时间按北京时间 · 仅连接中的网页播报，关闭麦克风仍可接收。当前回复结束后优先播提醒，播报期间的新问题会在提醒播完后回复。</p>
+            <p id="reminderConnection" class="reminder-note">未连接 · 到点会记为错过</p>
+            <div class="reminder-layout">
+                <form id="reminderForm" class="reminder-form">
+                    <h3>一次性提醒</h3>
+                    <label for="reminderContent">提醒什么</label>
+                    <input id="reminderContent" maxlength="160" placeholder="例如：取快递" required>
+                    <label for="reminderDue">什么时候（北京时间）</label>
+                    <input id="reminderDue" type="datetime-local" required>
+                    <div class="inline-actions">
+                        <button type="submit" class="button" id="saveReminderButton">添加提醒</button>
+                        <button type="button" class="button secondary" id="cancelReminderEdit" hidden>取消编辑</button>
+                    </div>
+                </form>
+                <ol id="reminderList" class="reminder-list" aria-label="提醒列表"></ol>
+            </div>
+            <p id="reminderFeedback" role="status"></p>
+            <section class="music-demo" aria-labelledby="musicDemoTitle">
+                <h3 id="musicDemoTitle">音乐演示</h3>
+                <p>可以直接说“播放洛天依的歌曲”或指定歌手和歌名。聊天、提醒时会暂停音乐，之后可明确继续。</p>
+                <form id="musicForm" class="music-search">
+                    <label for="musicQuery" class="sr-only">歌手或歌名</label>
+                    <input id="musicQuery" maxlength="80" placeholder="输入歌手或歌名，例如：洛天依">
+                    <button type="submit" class="button" id="musicPlayButton" disabled>播放音乐</button>
+                </form>
+                <p id="musicFeedback" role="status">连接后读取音乐服务状态。</p>
+            </section>
+        </section>
         <section class="view-section context-view" id="context" data-view="context" aria-labelledby="contextTitle" hidden>
             <header class="context-header">
                 <div>
@@ -319,6 +373,6 @@
         </main>
     </div>
 
-    <script type="module" src="/app.js?v=20261025.1"></script>
+    <script type="module" src="/app.js?v=20261026.4"></script>
 </body>
 </html>

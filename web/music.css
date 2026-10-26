@@ -1,0 +1,14 @@
+.music-demo { margin-top:32px; padding:24px; background:white; border:1px solid #dcdedb; border-radius:18px; }
+.music-demo h3 { margin:0 0 8px; }
+.music-demo p { color:#747875; font-size:14px; line-height:1.7; }
+.music-search { display:flex; gap:12px; margin-top:20px; }
+.music-search input { flex:1; min-width:0; border:1px solid #dcdedb; border-radius:9px; padding:12px; font:inherit; }
+.media-panel { position:sticky; top:12px; z-index:19; margin-bottom:16px; padding:16px 20px; display:flex; gap:18px; align-items:center; flex-wrap:wrap; background:#eaf0ed; border:1px solid #cbd6cf; border-radius:12px; }
+.media-panel[hidden] { display:none; }
+.media-info { flex:1; min-width:180px; }
+.media-info strong,.media-info span { display:block; overflow-wrap:anywhere; }
+.media-info span { font-size:13px; margin-top:5px; color:#606b64; }
+.media-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.media-actions label { display:flex; gap:8px; align-items:center; font-size:13px; }
+.media-actions input { width:85px; }
+@media(max-width:650px) { .music-search { flex-direction:column; } }

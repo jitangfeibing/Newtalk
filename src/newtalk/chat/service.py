@@ -11,6 +11,8 @@ from uuid import uuid4
 from newtalk.chat.fake_llm import FakeLLM
 from newtalk.chat.model import ChatModel
 from newtalk.chat.prompts import MEMORY_CONTEXT_PREFIX
+from newtalk.tools.models import CLIENT_ACTION_TYPES, DeviceControl, ToolContext, tool_error
+from newtalk.media.models import MediaCommands, MediaControl
 from newtalk.chat.models import (
     AudioCompleted,
     AudioFailed,
@@ -25,37 +27,18 @@ from newtalk.chat.models import (
     format_user_message,
 )
 from newtalk.memory import DisabledMemoryProvider, MemoryProvider
-from newtalk.profile import ProfileScope
 from newtalk.context_debug import ContextDebugger, record_context
 from newtalk.tts import AudioFormat, FakeTTS, StreamingTextSegmenter, TextToSpeech
+from newtalk.reminders.service import ReminderService
+from newtalk.tools.builtin import create_tool_registry
+from newtalk.tools.memory import MemorySearchTool
+from newtalk.tools.registry import ToolRegistry
 
 
 logger = logging.getLogger(__name__)
 
 
 _TEXT_END = object()
-_MEMORY_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "memory_search",
-        "strict": True,
-        "description": (
-            "仅当当前对话和用户画像不足以回答、且问题依赖这位成员更早的个人经历时，"
-            "检索当前成员的长期记忆。普通知识问题不要调用。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "需要回忆的过去信息的简洁描述。",
-                }
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-    },
-}
 
 
 class ChatService:
@@ -72,6 +55,8 @@ class ChatService:
         context_debug: ContextDebugger | None = None,
         memory_retrieval_mode: str = "tool",
         memory_preload_timeout_seconds: float = 0.8,
+        reminder_service: ReminderService | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         if memory_retrieval_mode not in {"tool", "preload"}:
             raise ValueError("Memory retrieval mode must be tool or preload")
@@ -79,14 +64,17 @@ class ChatService:
             raise ValueError("Memory preload timeout must be positive")
         self._model = model or FakeLLM()
         self._synthesizer = synthesizer or FakeTTS()
-        self._memory_provider = memory_provider or DisabledMemoryProvider()
-        self._memory_search_limit = memory_search_limit
-        self._memory_search_relativity = memory_search_relativity
-        self._memory_result_max_chars = memory_result_max_chars
-        self._memory_query_max_chars = memory_query_max_chars
+        self._memory_tool = MemorySearchTool(
+            memory_provider or DisabledMemoryProvider(),
+            search_limit=memory_search_limit,
+            search_relativity=memory_search_relativity,
+            result_max_chars=memory_result_max_chars,
+            query_max_chars=memory_query_max_chars,
+        )
         self._memory_retrieval_mode = memory_retrieval_mode
         self._memory_preload_timeout_seconds = memory_preload_timeout_seconds
         self.context_debug = context_debug or ContextDebugger()
+        self.tool_registry = tool_registry or create_tool_registry(self._memory_tool, reminder_service)
 
     @property
     def audio_format(self) -> AudioFormat:
@@ -128,25 +116,25 @@ class ChatService:
             profile_field_count=profile_field_count,
         )
 
-    async def stream_reply(self, turn: Turn) -> AsyncIterator[str]:
+    async def stream_reply(
+        self, turn: Turn, *, device_control_enabled: bool = False,
+        media_commands: MediaCommands | None = None,
+    ) -> AsyncIterator[str | DeviceControl | MediaControl]:
         started_at = perf_counter()
         chunk_count = 0
         model_name = type(self._model).__name__
         messages = turn.messages
-        tools: tuple[dict, ...] = (
-            (_MEMORY_SEARCH_TOOL,)
-            if (self._memory_retrieval_mode == "tool" and self._memory_provider.enabled
-                and turn.speaker_identity_id is not None)
-            else ()
-        )
-        tool_used = False
-        memory_tool_offered = bool(tools)
+        context = ToolContext(turn, device_control_enabled, self._memory_retrieval_mode, media_commands)
+        selection = self.tool_registry.select(context)
+        tools = selection.definitions
+        tool_calls = 0
+        memory_tool_offered = self._memory_tool.name in selection.names
+        memory_used = False
         trace_token = self.context_debug.activate(turn)
         round_index = 0
         try:
-            if (self._memory_retrieval_mode == "preload" and self._memory_provider.enabled
-                    and turn.speaker_identity_id is not None):
-                tool_used = True
+            if (self._memory_retrieval_mode == "preload" and self._memory_tool.enabled_for(turn)):
+                memory_used = True
                 memory_message = await self._preload_memory_message(turn)
                 messages = (*messages[:-1], memory_message, messages[-1])
             while True:
@@ -199,14 +187,14 @@ class ChatService:
                     if round_chunks == 0:
                         raise ValueError("Chat model returned no text")
                     break
-                if tool_used or not tools:
-                    raise ValueError("Model exceeded the memory tool call limit")
-                tool_used = True
-                result = await self._execute_memory_search(turn, tool_call)
-                record_context(
-                    "memory_search_result", call_id=tool_call.call_id,
-                    tool=tool_call.name, arguments=tool_call.arguments, result=result,
-                )
+                if tool_calls >= 2 or not tools:
+                    raise ValueError("Model exceeded the tool call limit")
+                tool_calls += 1
+                memory_used = memory_used or tool_call.name == self._memory_tool.name
+                result = await selection.execute(tool_call)
+                if isinstance(result, CLIENT_ACTION_TYPES):
+                    yield result
+                    return
                 messages = (
                     *messages,
                     ChatMessage(
@@ -220,7 +208,9 @@ class ChatService:
                         tool_call_id=tool_call.call_id,
                     ),
                 )
-                tools = ()
+                # 仅注册表明确声明的后续动作可再执行一次，不能回到任意工具循环。
+                selection = selection.following(tool_call.name, result) if tool_calls == 1 else selection.following('')
+                tools = selection.definitions
         except Exception:
             logger.exception(
                 "llm_stream_failed turn_id=%s model=%s elapsed_ms=%.1f",
@@ -231,10 +221,10 @@ class ChatService:
             raise
         finally:
             record_context(
-                "memory_search_usage", offered=memory_tool_offered, used=tool_used,
+                "memory_search_usage", offered=memory_tool_offered, used=memory_used,
                 mode=self._memory_retrieval_mode,
                 skip_reason=("guest" if turn.speaker_identity_id is None else "disabled")
-                if not tool_used and not memory_tool_offered else None,
+                if not memory_used and not memory_tool_offered else None,
             )
             self.context_debug.reset(trace_token)
         logger.info(
@@ -247,7 +237,7 @@ class ChatService:
 
     async def _preload_memory_message(self, turn: Turn) -> ChatMessage:
         """运行于 Turn 的生成 Task；只等待检索，不新增模型决策或后台孤儿任务。"""
-        query = turn.user_text.strip()[:self._memory_query_max_chars]
+        query = turn.user_text.strip()[:self._memory_tool.query_max_chars]
         call = ModelToolCall(
             call_id=f"server-memory-{turn.turn_id}", name="memory_search",
             arguments=json.dumps({"query": query}, ensure_ascii=False),
@@ -256,10 +246,12 @@ class ChatService:
         timed_out = False
         try:
             async with asyncio.timeout(self._memory_preload_timeout_seconds):
-                result = await self._execute_memory_search(turn, call)
+                result = await self._memory_tool.search(
+                    ToolContext(turn, memory_retrieval_mode=self._memory_retrieval_mode), call,
+                )
         except TimeoutError:
             # 只处理本地截止时间；外部取消继续传播，不能取消后又开始 LLM。
-            result = _tool_error("timeout", "长期记忆检索超时，请基于当前对话回答。")
+            result = tool_error("timeout", "长期记忆检索超时，请基于当前对话回答。")
             timed_out = True
         elapsed_ms = (perf_counter() - started_at) * 1000
         record_context(
@@ -277,67 +269,10 @@ class ChatService:
             "user", MEMORY_CONTEXT_PREFIX + result, context_kind="memory",
         )
 
-    async def _execute_memory_search(
-        self,
-        turn: Turn,
-        tool_call: ModelToolCall,
-    ) -> str:
-        started_at = perf_counter()
-        if tool_call.name != "memory_search":
-            return _tool_error("unsupported_tool", "不支持这个工具。")
-        try:
-            arguments = json.loads(tool_call.arguments)
-        except json.JSONDecodeError:
-            return _tool_error("invalid_arguments", "记忆查询参数不是有效 JSON。")
-        query = arguments.get("query") if isinstance(arguments, dict) else None
-        if not isinstance(query, str) or not query.strip():
-            return _tool_error("invalid_arguments", "记忆查询缺少 query。")
-        query = query.strip()
-        if len(query) > self._memory_query_max_chars:
-            return _tool_error("invalid_arguments", "记忆查询超过长度限制。")
-        if turn.speaker_identity_id is None:
-            return _tool_error("guest_forbidden", "Guest 不能读取长期记忆。")
-        record_context(
-            "memory_search_started", call_id=tool_call.call_id, query=query,
-            mode=self._memory_retrieval_mode,
-        )
-        try:
-            result = await self._memory_provider.search(
-                ProfileScope(
-                    device_id=turn.device_id,
-                    identity_id=turn.speaker_identity_id,
-                ),
-                query=query,
-                conversation_id=turn.session_id,
-                limit=self._memory_search_limit,
-                relativity=self._memory_search_relativity,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "memory_search_failed turn_id=%s identity_id=%s error_type=%s elapsed_ms=%.1f",
-                turn.turn_id,
-                turn.speaker_identity_id,
-                type(exc).__name__,
-                (perf_counter() - started_at) * 1000,
-            )
-            return _tool_error("unavailable", "长期记忆暂时不可用。")
-        logger.info(
-            "memory_search_completed turn_id=%s identity_id=%s results=%s elapsed_ms=%.1f",
-            turn.turn_id,
-            turn.speaker_identity_id,
-            len(result.items),
-            (perf_counter() - started_at) * 1000,
-        )
-        record_context(
-            "memory_search_completed", call_id=tool_call.call_id,
-            mode=self._memory_retrieval_mode, results=len(result.items),
-            elapsed_ms=(perf_counter() - started_at) * 1000,
-        )
-        return result.to_tool_content(max_chars=self._memory_result_max_chars)
-
-    async def stream_turn(self, turn: Turn) -> AsyncIterator[TurnOutput]:
+    async def stream_turn(
+        self, turn: Turn, *, device_control_enabled: bool = False,
+        media_commands: MediaCommands | None = None,
+    ) -> AsyncIterator[TurnOutput]:
         started_at = perf_counter()
         stream_id = str(uuid4())
         output_queue: asyncio.Queue[TurnOutput | tuple[str, Exception | None]] = (
@@ -362,8 +297,14 @@ class ChatService:
             sequence = 0
             failure: Exception | None = None
             try:
-                async with aclosing(self.stream_reply(turn)) as reply_stream:
+                async with aclosing(self.stream_reply(
+                    turn, device_control_enabled=device_control_enabled,
+                    media_commands=media_commands,
+                )) as reply_stream:
                     async for delta in reply_stream:
+                        if isinstance(delta, CLIENT_ACTION_TYPES):
+                            await output_queue.put(delta)
+                            break
                         sequence += 1
                         response_parts.append(delta)
                         await output_queue.put(TextDelta(sequence, delta))
@@ -451,6 +392,8 @@ class ChatService:
                         text_failure = failure
                     continue
                 yield output
+                if isinstance(output, CLIENT_ACTION_TYPES):
+                    return
             if text_failure is not None:
                 raise text_failure
             yield TurnCompleted("".join(response_parts))
@@ -467,11 +410,3 @@ class ChatService:
             )
         finally:
             self.context_debug.close()
-
-
-def _tool_error(code: str, message: str) -> str:
-    return json.dumps(
-        {"status": "error", "code": code, "message": message},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )

@@ -82,10 +82,11 @@ test('chat explains budget rejection instead of asking the user to blindly resen
     let playbackFailed = false;
     let status;
     const context = vm.createContext({
-        appendProtocolEvent() {}, pendingEvents,
+        appendProtocolEvent() {}, pendingEvents, reminders: null, music: null,
         messagesByTurn: new Map([['turn', message]]),
         setMessageState(element, state, label) { status = {element, state, label}; },
         audioPlayer: {fail() { playbackFailed = true; }},
+        stopAudioButton: {disabled: false},
     });
     vm.runInContext(source.slice(start, end), context);
     context.handleIncoming({type: 'turn_failed', code: 'context_budget_exceeded',
@@ -95,6 +96,7 @@ test('chat explains budget rejection instead of asking the user to blindly resen
     assert.equal(status.label, '预算超限');
     assert.equal(pendingEvents.has('event'), false);
     assert.equal(playbackFailed, true);
+    assert.equal(context.stopAudioButton.disabled, true);
 });
 
 test('preload is displayed as server retrieval, not a model tool decision', () => {

@@ -126,6 +126,8 @@ class AppConfig:
     memory_result_max_chars: int = DEFAULT_MEMORY_RESULT_MAX_CHARS
     memory_job_poll_seconds: float = DEFAULT_MEMORY_JOB_POLL_SECONDS
     memory_job_max_attempts: int = DEFAULT_MEMORY_JOB_MAX_ATTEMPTS
+    music_api_key: str | None = field(default=None, repr=False)
+    podcast_api_key: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -315,6 +317,8 @@ class AppConfig:
             memory_result_max_chars=memory_result_max_chars,
             memory_job_poll_seconds=memory_job_poll_seconds,
             memory_job_max_attempts=memory_job_max_attempts,
+            music_api_key=_optional_value(values.get("NEWTALK_MUSIC_API_KEY")),
+            podcast_api_key=_optional_value(values.get("NEWTALK_PODCAST_API_KEY")),
         )
 
 

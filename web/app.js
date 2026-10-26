@@ -4,11 +4,15 @@ import {initializeCustomSelects} from './custom-select.js?v=20261019.2';
 import {initializeContextDashboard} from './context-dashboard.js?v=20261025.1';
 import {initializeAudioDiagnostics} from './audio-diagnostics.js?v=20261023.2';
 import {captureOriginMs, outputPerformanceTime} from './voice-latency.js?v=20261024.1';
+import {createDeviceControls} from './device-control.js?v=20261025.1';
+import {initializeReminders} from './reminders.js?v=20261026.1';
+import {initializeMusic} from './music.js?v=20261026.3';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
 const endpointElement = document.querySelector('#endpoint');
 const connectionButton = document.querySelector('#connectionButton');
+const deviceControlStatus = document.querySelector('#deviceControlStatus');
 const pingButton = document.querySelector('#pingButton');
 const clearDialogueButton = document.querySelector('#clearDialogueButton');
 const eventLog = document.querySelector('#eventLog');
@@ -83,7 +87,7 @@ function initializeHomeShell() {
         });
     }
 
-    const initialView = location.hash === '#context'
+    const initialView = location.hash === '#tools' ? 'tools' : location.hash === '#context'
         ? 'context'
         : location.hash === '#conversation'
         ? 'conversation'
@@ -96,6 +100,9 @@ function initializeHomeShell() {
 }
 
 let socket = null;
+let deviceControls = null;
+let reminders = null;
+let music = null;
 let eventSequence = 0;
 let advertisedAudioFormat = null;
 let advertisedInputFormat = null;
@@ -385,6 +392,8 @@ class PcmPlayer {
     setStatus(state, label) {
         audioStatus.dataset.state = state;
         audioStatus.textContent = label;
+        reminders?.setBusy('chat-audio', state === 'buffering' || state === 'playing');
+        music?.setBusy('chat-audio', state === 'buffering' || state === 'playing');
     }
 }
 
@@ -463,12 +472,12 @@ class MicrophoneRecorder {
     async stop(sendEvent = true) {
         if (!this.active && !this.stream) return;
         const captureId = this.captureId;
+        const context = this.context;
         this.active = false;
         audioDiagnostics.finish();
         this.node?.disconnect();
         this.source?.disconnect();
         this.stream?.getTracks().forEach((track) => track.stop());
-        await this.context?.close();
         this.context = null;
         this.stream = null;
         this.source = null;
@@ -489,6 +498,8 @@ class MicrophoneRecorder {
         updateVoiceProcessing();
         resetVoiceActivityDiagnostics();
         micButton.textContent = '开启麦克风';
+        // 先摘除本轮资源，旧 AudioContext 迟到关闭不能清掉新一轮采集。
+        await context?.close();
     }
 
     setStatus(state, label) {
@@ -606,8 +617,53 @@ function markStreamingMessagesInterrupted() {
 
 function handleIncoming(payload) {
     appendProtocolEvent('incoming', payload);
+    if (payload.type.startsWith('reminder')) {
+        reminders?.handle(payload);
+        return;
+    }
+
+    if (payload.type === 'media_control' || payload.type === 'media_error' || payload.type === 'media_status') {
+        if (payload.type === 'media_control' && payload.turn_id) {
+            reminders?.setBusy('generation', false);
+            reminders?.setBusy('user', false);
+            music?.setBusy('generation', false);
+            music?.setBusy('user', false);
+            const bubble = messagesByTurn.get(payload.turn_id);
+            if (bubble && !bubble.querySelector('.message-content')?.textContent.trim()) {
+                bubble.remove(); messagesByTurn.delete(payload.turn_id);
+            }
+        }
+        music?.handle(payload);
+        return;
+    }
+
+    if (payload.type === 'device_control') {
+        reminders?.setBusy('generation', false);
+        music?.setBusy('generation', false);
+        reminders?.setBusy('user', false);
+        music?.setBusy('user', false);
+        pendingEvents.delete(payload.event_id);
+        const message = messagesByTurn.get(payload.turn_id);
+        if (message && !message.querySelector('.message-content')?.textContent.trim()) {
+            message.remove();
+            messagesByTurn.delete(payload.turn_id);
+        }
+        if (payload.event_id?.startsWith('voice-')) {
+            voiceMessagesByUtterance.delete(payload.event_id.slice(6));
+            voiceRecognitionStatus.textContent = '控制指令已识别';
+        }
+        void Promise.resolve(deviceControls?.handle(payload)).catch(error => {
+            console.warn('Device control failed', error);
+        });
+        return;
+    }
+    if (payload.type === 'device_control_status') {
+        deviceControls?.status(payload);
+        return;
+    }
 
     if (payload.type === 'hello') {
+        music?.capabilities(payload.music?.enabled, payload.podcasts?.enabled);
         advertisedInputFormat = payload.audio.input;
         advertisedAudioFormat = payload.audio.output;
         audioStatus.textContent = `${advertisedAudioFormat.sample_rate / 1000}k PCM 待命`;
@@ -623,13 +679,15 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'vad_speech_start') {
+        reminders?.setBusy('user', true);
+        if (!payload.media_only) music?.setBusy('user', true);
         const timing = ensureVoiceTiming(payload.utterance_id);
         timing.speechStartedAt = performance.now();
         timing.audioStartedMs = payload.audio_ms;
-        audioPlayer.stop('检测到说话，已停止播放');
+        if (!payload.media_only) audioPlayer.stop('检测到说话，已停止播放');
         microphone.setStatus('speech', '检测到说话');
         voiceVadStatus.textContent = '正在说话';
-        voiceRecognitionStatus.textContent = '录音中';
+        voiceRecognitionStatus.textContent = payload.media_only ? '播放中，仅监听暂停／停止指令' : '录音中';
         return;
     }
 
@@ -655,6 +713,21 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'asr_final') {
+        if (payload.disposition === 'ignored_media' || payload.disposition === 'media_control') {
+            reminders?.setBusy('user', false);
+            music?.setBusy('user', false);
+            voiceTimings.delete(payload.utterance_id);
+            if (payload.disposition === 'media_control' && payload.text) {
+                const message = appendMessage('user', payload.text, payload.utterance_id.slice(0, 8), 'guest');
+                message.querySelector('.message-role').textContent = '语音控制';
+            }
+            microphone.setStatus('listening', payload.disposition === 'media_control' ? '媒体控制已识别' : '播放中');
+            voiceRecognitionStatus.textContent = payload.disposition === 'media_control'
+                ? '播放控制已识别，正在执行' : '未触发播放控制';
+            return;
+        }
+        if (!payload.text) reminders?.setBusy('user', false);
+        if (!payload.text) music?.setBusy('user', false);
         const timing = ensureVoiceTiming(payload.utterance_id);
         if (timing.speechEndedAt) timing.asrMs = performance.now() - timing.speechEndedAt;
         if (payload.text) {
@@ -689,12 +762,17 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'asr_failed') {
+        reminders?.setBusy('user', false);
+        music?.setBusy('user', false);
         microphone.setStatus('error', '语音识别失败，请查看服务日志');
         voiceRecognitionStatus.textContent = '识别失败';
         return;
     }
 
     if (payload.type === 'turn_cancelled') {
+        reminders?.setBusy('generation', false);
+        music?.setBusy('generation', false);
+        stopAudioButton.disabled = true;
         const message = messagesByTurn.get(payload.turn_id);
         setMessageState(message, 'interrupted', '已中断');
         const content = message?.querySelector('.message-content');
@@ -707,7 +785,21 @@ function handleIncoming(payload) {
         return;
     }
 
+    if (payload.type === 'turn_waiting') {
+        reminders?.setBusy('generation', false);
+        music?.setBusy('generation', false);
+        reminders?.setBusy('user', false);
+        music?.setBusy('user', false);
+        setMessageState(messagesByTurn.get(payload.turn_id), 'waiting', '提醒播报后回复');
+        return;
+    }
+
     if (payload.type === 'turn_started') {
+        reminders?.setBusy('generation', true);
+        music?.setBusy('generation', true);
+        reminders?.setBusy('user', false);
+        music?.setBusy('user', false);
+        stopAudioButton.disabled = false;
         pendingEvents.delete(payload.event_id);
         const startedAt = performance.now();
         turnStartedAt.set(payload.turn_id, startedAt);
@@ -762,6 +854,9 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'turn_completed') {
+        reminders?.setBusy('generation', false);
+        music?.setBusy('generation', false);
+        if (!audioPlayer.active || audioPlayer.active.stopped) stopAudioButton.disabled = true;
         const message = messagesByTurn.get(payload.turn_id);
         if (message) {
             message.querySelector('.message-content').textContent = payload.text;
@@ -771,6 +866,9 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'turn_failed') {
+        reminders?.setBusy('generation', false);
+        music?.setBusy('generation', false);
+        stopAudioButton.disabled = true;
         pendingEvents.delete(payload.event_id);
         const message = messagesByTurn.get(payload.turn_id);
         if (message) {
@@ -829,11 +927,19 @@ function renderDialogueSnapshot(items) {
 }
 
 function disconnect() {
+    return deviceControls?.execute('disconnect');
+}
+
+function closeConnection(connection) {
+    if (socket !== connection) return;
+    reminders?.connect(null);
+    music?.connect(null);
     if (socket?.readyState === WebSocket.OPEN) {
         const event = {type: 'close', event_id: nextEventId('close')};
         socket.send(JSON.stringify(event));
         appendProtocolEvent('outgoing', event);
         setStatus('closing', '断开中');
+        connection.close(1000, 'client requested close');
     }
 }
 
@@ -852,14 +958,53 @@ function connect() {
     setStatus('connecting', '连接中');
     socket = new WebSocket(websocketUrl());
     socket.binaryType = 'arraybuffer';
+    const connection = socket;
+    const controls = createDeviceControls({
+        isCurrent: () => socket === connection && connection.readyState === WebSocket.OPEN,
+        stopReply: notify => {
+            audioPlayer.stop();
+            if (notify && connection.readyState === WebSocket.OPEN) {
+                const event = {type: 'device_control', action: 'stop_reply', event_id: nextEventId('control')};
+                connection.send(JSON.stringify(event));
+                appendProtocolEvent('outgoing', event);
+            }
+        },
+        stopMicrophone: notify => {
+            reminders?.setBusy('user', false);
+            music?.setBusy('user', false);
+            return microphone.stop(notify);
+        },
+        // 摄像头预览尚未接入，不能假称关闭了其他应用的摄像头。
+        stopCamera: () => false,
+        closeConnection: () => closeConnection(connection),
+        sendResult: event => {
+            connection.send(JSON.stringify(event));
+            appendProtocolEvent('outgoing', event);
+        },
+        showStatus: message => {
+            deviceControlStatus.hidden = false;
+            deviceControlStatus.textContent = message;
+        },
+    });
+    deviceControls = controls;
 
     socket.addEventListener('open', () => {
+        if (socket !== connection) return;
+        reminders?.connect(event => {
+            if (socket === connection && connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify(event));
+        });
+        music?.connect(event => {
+            if (socket === connection && connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify(event));
+        });
+        deviceControlStatus.hidden = true;
+        deviceControlStatus.textContent = '';
         setStatus('online', '已连接');
         appendProtocolEvent('system', 'WebSocket connected');
         messageInput.focus();
     });
 
     socket.addEventListener('message', (event) => {
+        if (socket !== connection) return;
         if (event.data instanceof ArrayBuffer) {
             appendProtocolEvent('incoming', {type: 'audio_frame', bytes: event.data.byteLength});
             audioPlayer.push(event.data);
@@ -883,14 +1028,28 @@ function connect() {
     });
 
     socket.addEventListener('close', async (event) => {
+        controls.dispose();
+        if (socket !== connection) return;
+        reminders?.connect(null);
+        music?.connect(null);
         appendProtocolEvent('system', `WebSocket closed (${event.code})`);
         markStreamingMessagesInterrupted();
         pendingEvents.clear();
         pendingDialogueClear = null;
         audioPlayer.reset();
-        await microphone.stop(false);
-        socket = null;
-        setStatus('offline', '离线');
+        try {
+            await microphone.stop(false);
+        } catch (error) {
+            console.warn('Microphone cleanup failed', error);
+        } finally {
+            if (socket === connection) {
+                socket = null;
+                deviceControls = null;
+                setStatus('offline', '离线');
+                deviceControlStatus.hidden = false;
+                deviceControlStatus.textContent = '连接已断开';
+            }
+        }
     });
 
     socket.addEventListener('error', () => {
@@ -903,6 +1062,7 @@ chatForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const text = messageInput.value.trim();
     if (!text || socket?.readyState !== WebSocket.OPEN) return;
+    music?.setBusy('user', true);
 
     try {
         await audioPlayer.prepare(advertisedAudioFormat);
@@ -958,14 +1118,16 @@ clearDialogueButton.addEventListener('click', () => {
     socket.send(JSON.stringify(event));
     appendProtocolEvent('outgoing', event);
 });
-stopAudioButton.addEventListener('click', () => audioPlayer.stop());
+stopAudioButton.addEventListener('click', () => deviceControls?.execute('stop_reply'));
 window.addEventListener('newtalk:voiceprint-recording', async () => {
+    music?.pause('声纹录入期间暂停音乐');
+    reminders?.stop();
     audioPlayer.stop();
     await microphone.stop();
 });
 micButton.addEventListener('click', async () => {
     if (microphone.active) {
-        await microphone.stop();
+        await deviceControls?.execute('microphone_off');
         return;
     }
     try {
@@ -979,6 +1141,8 @@ micButton.addEventListener('click', async () => {
 });
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
+music = initializeMusic();
+reminders = initializeReminders({onPlaybackActive: active => music?.setBusy('reminder', active)});
 initializeContextDashboard(showView);
 initializeHomeShell();
 initializeCustomSelects();

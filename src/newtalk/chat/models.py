@@ -2,7 +2,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
+from newtalk.chat.device_control import DeviceControl
 from newtalk.tts import AudioFormat
+from newtalk.media.models import MediaControl
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +95,9 @@ class TurnCompleted:
 
 
 TurnOutput = (
-    TextDelta
+    DeviceControl
+    | MediaControl
+    | TextDelta
     | AudioStarted
     | AudioFrame
     | AudioCompleted

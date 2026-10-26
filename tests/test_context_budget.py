@@ -74,8 +74,10 @@ def test_second_request_budget_keeps_tool_pair_and_reports_truncated_result():
 
 def test_budget_rejection_sends_no_request_and_next_turn_can_recover(tmp_path):
     async def scenario():
+        # 正常请求现在包含设备工具定义，预算仍必须覆盖每次完整请求。
+        input_budget = 2048
         client = StubClient(StubStream([SimpleNamespace(type='content.delta', delta='继续聊天')]))
-        model = OpenAICompatibleChatModel(api_key='unused', model='test', client=client, input_token_budget=512)
+        model = OpenAICompatibleChatModel(api_key='unused', model='test', client=client, input_token_budget=input_budget)
         websocket = RecordingWebSocket()
         runtime = make_runtime(websocket)
         path = tmp_path / 'context.jsonl'
@@ -106,7 +108,9 @@ def test_budget_rejection_sends_no_request_and_next_turn_can_recover(tmp_path):
         assert len([event for event in events if event['event'] == 'context_budget_rejected']) == 1
         sent = next(event for event in events if event['event'] == 'llm_request')
         assert sent['budget']['omitted_history_turn_ids'] == [first_id]
-        assert sent['budget']['after_tokens_estimate'] <= 512
+        assert sent['budget']['input_token_limit'] == input_budget
+        assert sent['budget']['after_tokens_estimate'] <= input_budget
+        assert sent['request']['tools'][0]['function']['name'] == 'device_control'
     asyncio.run(scenario())
 
 

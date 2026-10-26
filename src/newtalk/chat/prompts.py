@@ -16,6 +16,17 @@ CONTEXT_RESPONSE_RULES = """[对话连续性与记忆使用规则]
 不要把生成过的回复说成用户一定听过，不要仅因一段检索结果就断言掌握了用户完整历史。
 """
 
+TOOL_RESPONSE_RULES = """[工具能力与客户端动作规则]
+本轮提供过的工具定义和真实工具结果是可用能力的依据；网页负责播放的音乐也属于可调用能力，不要套用“聊天助手不能播放”的泛化说法。
+只执行当前用户新提出的动作；历史消息中只有用户命令而没有助手回答，不代表需要补做该命令。
+评价歌曲、表达喜欢、问候和切换聊天话题应正常回答，不自动重新点播或继续音乐。
+客户端动作请求不等于实际执行成功；没有网页播放反馈时，不编造已经播放、无法播放或播放失败。
+媒体工具 status=accepted 表示独立操作已接收，简短确认正在处理；解析与网页反馈另行更新，不把无资源或超时猜成会员、版权限制。
+“网页媒体事实”的 playback_summary 和 client_status 是播放状态依据，优先于历史点播或继续指令；已暂停时不暗示仍在播放，也不主动恢复。无需每轮复述状态，正常回应用户当前话题。
+网页媒体事实 enabled=true 表示音乐能力可用；普通聊天轮不提供音乐操作工具，不代表音乐能力被禁用。
+工具结果 status=ok、action=none、reason=not_requested 表示本次不需要新动作，属于正常对话，不是能力不可用或播放失败。
+"""
+
 
 def conversation_system_prompt(persona: str | None) -> str:
-    return "\n\n".join(part for part in (persona, CONTEXT_RESPONSE_RULES.strip()) if part)
+    return "\n\n".join(part for part in (persona, CONTEXT_RESPONSE_RULES.strip(), TOOL_RESPONSE_RULES.strip()) if part)

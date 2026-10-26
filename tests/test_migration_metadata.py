@@ -43,4 +43,5 @@ print(json.dumps(sorted(namespace["Base"].metadata.tables)))
         "memory_jobs",
         "identity_deletion_jobs",
         "recovery_rate_limits",
+        "reminders",
     }
