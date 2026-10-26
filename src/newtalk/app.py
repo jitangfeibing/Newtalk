@@ -57,6 +57,19 @@ from newtalk.transport import websocket_router
 from newtalk.tts import DoubaoTTS, FakeTTS, TextToSpeech
 from newtalk.voiceprint import DisabledVoicePrintClient, HttpVoicePrintClient, VoicePrintClient
 from newtalk.voiceprint.api import router as voiceprint_router
+from newtalk.reminders.api import router as reminder_router
+from newtalk.reminders.audio import ReminderAudio
+from newtalk.reminders.service import ReminderService
+from newtalk.reminders.store import InMemoryReminderStore, SqlAlchemyReminderStore
+from newtalk.tools.reminder import ReminderTool
+from newtalk.tools.music import MusicTool
+from newtalk.music.api import router as music_router
+from newtalk.music.provider import YaohuMusicProvider
+from newtalk.music.service import MusicService
+from newtalk.podcasts.api import router as podcast_router
+from newtalk.podcasts.provider import YaohuPodcastProvider
+from newtalk.podcasts.service import PodcastService
+from newtalk.tools.podcasts import PodcastControlTool, PodcastSearchTool
 
 
 logger = logging.getLogger(__name__)
@@ -247,6 +260,8 @@ def create_app(
     dialogue_store: DialogueStore | None = None,
     recovery_rate_limiter: RecoveryRateLimiter | None = None,
     persistence_backend: Literal["postgresql", "memory"] = "postgresql",
+    music_service: MusicService | None = None,
+    podcast_service: PodcastService | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if persistence_backend not in {"postgresql", "memory"}:
@@ -258,6 +273,19 @@ def create_app(
     resolved_memory_provider = memory_provider or create_memory_provider(config)
     resolved_chat_service = chat_service or create_chat_service(
         config, resolved_memory_provider
+    )
+    resolved_reminder_service = ReminderService(
+        InMemoryReminderStore() if persistence_backend == "memory"
+        else SqlAlchemyReminderStore(config.database_url)
+    )
+    resolved_reminder_audio = ReminderAudio(create_synthesizer(config))
+    resolved_music_service = music_service or MusicService(YaohuMusicProvider(config.music_api_key))
+    resolved_podcast_service = podcast_service or PodcastService(YaohuPodcastProvider(config.podcast_api_key or config.music_api_key))
+    resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(MusicTool(resolved_music_service))
+    resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(PodcastSearchTool(resolved_podcast_service))
+    resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(PodcastControlTool(resolved_podcast_service))
+    resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(
+        ReminderTool(resolved_reminder_service)
     )
     resolved_vad = vad or create_vad(config)
     resolved_recognizer = recognizer or create_recognizer(config)
@@ -317,6 +345,7 @@ def create_app(
             await resolved_recovery_rate_limiter.start()
             await resolved_memory_writer.start()
             await resolved_identity_deletion_service.start()
+            await resolved_reminder_service.start()
             logger.info(
                 "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s llm_thinking=%s tts_backend=%s asr_backend=%s memory_backend=%s memory_retrieval_mode=%s identity_service=%s",
                 config.host,
@@ -335,6 +364,10 @@ def create_app(
         finally:
             try:
                 await _close_lifecycle_components(
+                    ("reminders", resolved_reminder_service.close),
+                    ("reminder_audio", resolved_reminder_audio.close),
+                    ("music", resolved_music_service.close),
+                    ("podcasts", resolved_podcast_service.close),
                     ("identity_deletion", resolved_identity_deletion_service.close),
                     ("memory_writer", resolved_memory_writer.close),
                     ("recovery_rate_limiter", resolved_recovery_rate_limiter.close),
@@ -362,6 +395,10 @@ def create_app(
     app.state.dialogue_cache_coordinator = dialogue_cache_coordinator
     app.state.identity_deletion_service = resolved_identity_deletion_service
     app.state.recovery_rate_limiter = resolved_recovery_rate_limiter
+    app.state.reminder_service = resolved_reminder_service
+    app.state.reminder_audio = resolved_reminder_audio
+    app.state.music_service = resolved_music_service
+    app.state.podcast_service = resolved_podcast_service
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
@@ -384,6 +421,9 @@ def create_app(
     app.include_router(voiceprint_router)
     app.include_router(memory_router)
     app.include_router(context_debug_router)
+    app.include_router(reminder_router)
+    app.include_router(music_router)
+    app.include_router(podcast_router)
     app.include_router(websocket_router)
 
     app.mount(

@@ -88,6 +88,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         dialogue_store=websocket.app.state.dialogue_store,
         dialogue_snapshot=dialogue_snapshot,
         dialogue_coordinator=websocket.app.state.dialogue_cache_coordinator,
+        reminder_service=websocket.app.state.reminder_service,
+        music_service=websocket.app.state.music_service,
+        podcast_service=websocket.app.state.podcast_service,
     )
     await runtime.start()
     await runtime.send_json(
@@ -147,6 +150,8 @@ def _hello_payload(
             ],
         },
         "profile": {"enabled": profile_cache.enabled},
+        "music": {"enabled": websocket.app.state.music_service.enabled},
+        "podcasts": {"enabled": websocket.app.state.podcast_service.enabled},
         "audio": {
             "input": {
                 "codec": INPUT_AUDIO_FORMAT.codec,
@@ -251,6 +256,41 @@ async def _dispatch_event(
 
     if event_type == "text_input":
         await handle_text_input(runtime, event=event, event_id=event_id)
+        return False
+
+    if event_type == "device_control":
+        if not event_id or len(event_id) > 128:
+            await runtime.send_error(code="invalid_event_id",
+                                     message="device_control requires an event_id")
+            return False
+        if not runtime.remember_event(event_id):
+            await runtime.send_error(code="duplicate_event", message="Duplicate device control",
+                                     event_id=event_id)
+            return False
+        await runtime.submit_device_control(event.get("action"), event_id=event_id)
+        return False
+
+    if event_type == "device_control_result":
+        if not runtime.device_control_result(event):
+            await runtime.send_error(code="invalid_device_control_result",
+                                     message="Unknown, expired or mismatched device control result")
+        return False
+
+    if event_type == "music_control":
+        await runtime.submit_music_control(event)
+        return False
+
+    if event_type == "media_result":
+        runtime.media_result(event)
+        return False
+
+    if event_type == "media_state":
+        runtime.media_state(event)
+        return False
+
+    if event_type == "reminder_playback":
+        if not runtime.reminder_playback(event):
+            await runtime.send_error(code="invalid_reminder_playback", message="Invalid or busy reminder receipt")
         return False
 
     if event_type == "dialogue_clear":

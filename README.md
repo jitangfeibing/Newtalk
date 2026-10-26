@@ -9,7 +9,7 @@
 - 文字和实时语音共用对话链路，支持语音打断、刷新恢复和新对话清理。
 - 设备级家庭空间、成员管理、三段声纹录入与自动匹配。
 - 成员 Profile、MemOS 按需检索、后台记忆写入和 Memory Center 人工管理。
-- 首页、对话、家庭成员和记忆中心独立切换；另有上下文调试看板、逐轮时延和音频诊断。
+- 首页、对话、家庭成员和记忆中心独立切换；工具页提供一次性提醒和音乐演示，另有上下文调试看板、逐轮时延和音频诊断。
 
 后端使用 Python 3.11、FastAPI、WebSocket、asyncio；持久化使用 PostgreSQL、SQLAlchemy async 和 Alembic。前端为原生 HTML/CSS/JavaScript + AudioWorklet。外部能力包括豆包 ASR/TTS、OpenAI-compatible LLM、CAM++ 声纹和 MemOS。
 

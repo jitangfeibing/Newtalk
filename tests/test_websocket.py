@@ -100,7 +100,7 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with isolated_client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.11"
+        assert hello["protocol_version"] == "0.18"
         assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]
@@ -265,7 +265,7 @@ class RecordingModel:
         self.delay_seconds = delay_seconds
         self.requests: list[tuple[ChatMessage, ...]] = []
 
-    async def stream(self, messages):
+    async def stream(self, messages, *, tools=()):
         self.requests.append(tuple(messages))
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
@@ -934,7 +934,7 @@ def test_identity_lookup_failure_keeps_accepted_input_but_skips_reply_persistenc
 @pytest.mark.parametrize("member_input", [False, True])
 def test_reconnect_restores_cancelled_user_input_without_partial_assistant_reply(member_input) -> None:
     class InterruptedModel:
-        async def stream(self, messages):
+        async def stream(self, messages, *, tools=()):
             yield "未完整交付的半句"
             await asyncio.Future()
 
@@ -1015,7 +1015,7 @@ def test_invalid_text_does_not_start_a_turn() -> None:
 
 
 class FailingLLM(FakeLLM):
-    async def stream(self, user_text: str):
+    async def stream(self, user_text: str, *, tools=()):
         if False:
             yield user_text
         raise RuntimeError("deterministic test failure")

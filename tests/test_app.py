@@ -1,4 +1,5 @@
 import asyncio
+from html.parser import HTMLParser
 
 from fastapi.testclient import TestClient
 import pytest
@@ -48,6 +49,35 @@ def test_web_page_is_served() -> None:
     assert 'id="memoryCenter"' in response.text
     assert 'id="profileList"' in response.text
     assert 'id="memoryList"' in response.text
+
+
+def test_control_status_does_not_add_an_extra_chat_grid_row() -> None:
+    class ChatLayout(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.panel_children = []
+            self.status_parent = None
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if self.stack and self.stack[-1][1].get("class") == "chat-panel":
+                self.panel_children.append(tag)
+            if attributes.get("id") == "deviceControlStatus":
+                self.status_parent = self.stack[-1][1].get("id")
+            if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                           "link", "meta", "param", "source", "track", "wbr"}:
+                self.stack.append((tag, attributes))
+
+        def handle_endtag(self, tag):
+            if self.stack and self.stack[-1][0] == tag:
+                self.stack.pop()
+
+    layout = ChatLayout()
+    layout.feed(client.get("/").text)
+    # 聊天 Grid 固定为标题、消息、输入三行，操作提示不能占掉消息行。
+    assert layout.panel_children == ["header", "ol", "form"]
+    assert layout.status_parent == "chatForm"
 
 
 def test_app_fails_fast_when_web_root_is_missing(tmp_path) -> None:

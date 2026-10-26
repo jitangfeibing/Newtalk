@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import logging
 from time import perf_counter
 from typing import Any, Callable
+from uuid import uuid4
 
 from fastapi import WebSocket
 
@@ -42,6 +43,13 @@ from newtalk.voiceprint import (
     VoicePrintUnavailableError,
 )
 from newtalk.chat.context_budget import ContextBudgetExceeded
+from newtalk.chat.device_control import DEVICE_ACTIONS, DeviceControl, control_from_text
+from newtalk.reminders.service import ReminderService
+from newtalk.media.models import MediaControl, MediaIntent, MediaUnavailable
+from newtalk.media.session import MediaSession
+from newtalk.media.interaction import playback_stop_from_text
+from newtalk.music.service import MusicService
+from newtalk.podcasts.service import PodcastService
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +57,15 @@ _SEND_END = object()
 _RECENT_EVENT_LIMIT = 4096
 # 输入落库独立于回复取消；数据库变慢时必须有界，满载明确拒绝新输入。
 _MAX_PENDING_INPUT_WRITES = 128
+_DEVICE_CONTROL_TIMEOUT_SECONDS = 5.0
+_MAX_PENDING_DEVICE_CONTROLS = 16
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingDeviceControl:
+    action: str
+    result: asyncio.Future[str]
+    task: asyncio.Task[None]
 
 
 def _format_optional_ms(value: float | None) -> str:
@@ -258,6 +275,8 @@ class _VoiceJoinState:
     speech_ended_at: float | None = None
     asr_final_at: float | None = None
     vad_silence_ms: float | None = None
+    media_only: bool = False
+    media_request: tuple[str, str | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +341,9 @@ class ConnectionRuntime:
         dialogue_store: DialogueStore,
         dialogue_snapshot: DialogueSnapshot,
         dialogue_coordinator: DialogueCacheCoordinator,
+        reminder_service: ReminderService | None = None,
+        music_service: MusicService | None = None,
+        podcast_service: PodcastService | None = None,
     ) -> None:
         # 运行于：websocket_endpoint Task；持锁：否；可能阻塞：同步恢复内存上下文，无异步等待。
         self.session_id = session_id
@@ -371,6 +393,23 @@ class ConnectionRuntime:
         self._capture_id: str | None = None
         self._audio_started_at: float | None = None
         self._closing = False
+        self._pending_device_controls: dict[str, _PendingDeviceControl] = {}
+        self._device_control_tasks: set[asyncio.Task[None]] = set()
+        self._reminder_service = reminder_service
+        self._reminder_connection_id = str(uuid4())
+        self._reminder_receipts: asyncio.Queue[dict] = asyncio.Queue(maxsize=32)
+        self._reminder_task: asyncio.Task[None] | None = None
+        self._reminder_deliveries: dict[str, str] = {}
+        self._reminder_ready = asyncio.Event()
+        self._reminder_ready.set()
+        self._reminder_current_turn: str | None = None
+        media_resolvers = {"music": music_service} if music_service is not None else {}
+        if podcast_service is not None:
+            media_resolvers['podcast'] = podcast_service.session(self.device_id)
+        self._media_session = MediaSession(
+            device_id=self.device_id, resolvers=media_resolvers,
+            emit=self.send_json,
+        )
         self._sender = _OutboundSender(
             websocket,
             session_id=session_id,
@@ -386,6 +425,86 @@ class ConnectionRuntime:
         # 运行于：websocket_endpoint Task；持锁：否；可能阻塞：无异步等待，仅启动发送和画像预取任务。
         self._sender.start()
         self._profile_cache.start()
+        if self._reminder_service is not None:
+            self._reminder_service.connect(self.device_id, self._reminder_connection_id, self._send_reminder_event)
+            self._reminder_task = asyncio.create_task(self._record_reminder_receipts())
+
+    def reminder_playback(self, event: dict) -> bool:
+        # 接收循环只写有界队列；单一任务按顺序提交 playing/completed，避免回执乱序。
+        if self._closing or self._reminder_service is None or self._reminder_receipts.full():
+            return False
+        if (any(not isinstance(event.get(key), str) or not 0 < len(event[key]) <= 36
+                for key in ("reminder_id", "delivery_id"))
+                or event.get("status") not in {"waiting", "playing", "completed", "interrupted", "failed", "expired"}):
+            return False
+        self._reminder_receipts.put_nowait(dict(event))
+        return True
+
+    def _release_reminder(self, delivery_id: str) -> None:
+        self._reminder_deliveries.pop(delivery_id, None)
+        if not self._reminder_deliveries:
+            self._reminder_current_turn = None
+            self._reminder_ready.set()
+
+    async def _send_reminder_event(self, event: dict) -> None:
+        if event["type"] == "reminder_due":
+            item = event["reminder"]
+            if not self._reminder_deliveries:
+                # 到点时已开始的回复可完成；后续 Turn 在独立生成任务中等待播报。
+                self._reminder_current_turn = self.active_turn_id
+            self._reminder_deliveries[item["delivery_id"]] = item["reminder_id"]
+            self._reminder_ready.clear()
+        elif event["type"] == "reminder_delivery_ended":
+            self._release_reminder(event["delivery_id"])
+        elif event["type"] == "reminder_cancelled":
+            for delivery_id, reminder_id in tuple(self._reminder_deliveries.items()):
+                if reminder_id == event["reminder_id"]:
+                    self._release_reminder(delivery_id)
+        try:
+            await self.send_json(event)
+        except BaseException:
+            if event["type"] == "reminder_due":
+                self._release_reminder(event["reminder"]["delivery_id"])
+            raise
+
+    async def _record_reminder_receipts(self) -> None:
+        assert self._reminder_service is not None
+        while True:
+            event = await self._reminder_receipts.get()
+            try:
+                async with asyncio.timeout(5):
+                    await self._reminder_service.ack(
+                        self.device_id, self._reminder_connection_id, event["reminder_id"],
+                        event["delivery_id"], event["status"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("reminder_receipt_failed connection_id=%s", self._reminder_connection_id)
+            finally:
+                self._reminder_receipts.task_done()
+
+    async def submit_music_control(self, event: dict) -> None:
+        # 两个入口只登记连接拥有的任务，接收循环不等待音源服务。
+        call_id = event.get("event_id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = str(uuid4())
+        try:
+            self._media_session.submit(MediaIntent(event.get("action"), call_id, event.get("query"), event.get("index")))
+        except (MediaUnavailable, ValueError) as exc:
+            await self.send_json({"type": "media_error", "code": getattr(exc, "code", "invalid_request"),
+                                  "message": str(exc)})
+
+    async def request_media_control(self, command: MediaControl, *, turn_id: str | None = None) -> None:
+        if self._closing or (turn_id is not None and turn_id != self.active_turn_id):
+            return
+        await self._media_session.publish_control(command)
+
+    def media_result(self, event: dict) -> bool:
+        return self._media_session.report(event)
+
+    def media_state(self, event: dict) -> bool:
+        return self._media_session.report_state(event)
 
     async def send_json(
         self,
@@ -435,6 +554,10 @@ class ConnectionRuntime:
         identity_id: str | None,
     ) -> None:
         # 运行于：接收循环 Task；持锁：否（start_turn 内获取）；可能阻塞：成员查询及 Turn 替换，未设总超时。
+        action = control_from_text(text)
+        if action is not None:
+            await self.submit_device_control(action, event_id=event_id)
+            return
         identity = None
         if identity_id is not None:
             try:
@@ -450,6 +573,99 @@ class ConnectionRuntime:
                 )
                 return
         await self.start_turn(text=text, event_id=event_id, identity=identity)
+
+    async def submit_device_control(self, action: str, *, event_id: str) -> None:
+        # 接收循环只登记任务，不内联等待 LLM/TTS 取消退出。
+        if self._closing:
+            return
+        if action not in DEVICE_ACTIONS:
+            await self.send_error(code="invalid_device_action", message="Unsupported device action",
+                                  event_id=event_id)
+            return
+        if len(self._device_control_tasks) + len(self._pending_device_controls) >= _MAX_PENDING_DEVICE_CONTROLS:
+            await self.send_error(code="device_control_busy", message="Device controls are busy",
+                                  event_id=event_id)
+            return
+        task = asyncio.create_task(self.request_device_control(action, event_id=event_id))
+        self._device_control_tasks.add(task)
+        task.add_done_callback(self._device_control_finished)
+
+    def _device_control_finished(self, task: asyncio.Task[None]) -> None:
+        self._device_control_tasks.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.error("device_control_failed session_id=%s", self.session_id,
+                         exc_info=(type(error), error, error.__traceback__))
+
+    async def request_device_control(
+        self, action: str, *, event_id: str, turn_id: str | None = None,
+    ) -> None:
+        # 不在识别/Turn 回调中关闭自身；页面执行后通过正常协议收尾。
+        if self._closing or (turn_id is not None and turn_id != self.active_turn_id):
+            return
+        if action not in DEVICE_ACTIONS:
+            await self.send_error(code="invalid_device_action", message="Unsupported device action",
+                                  event_id=event_id)
+            return
+        if len(self._pending_device_controls) >= _MAX_PENDING_DEVICE_CONTROLS:
+            await self.send_error(code="device_control_busy", message="Device controls are busy",
+                                  event_id=event_id)
+            return
+        if turn_id is None and action in {"stop_reply", "disconnect"}:
+            await self.cancel_turn(reason="device_control")
+        request_id = str(uuid4())
+        result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(self._wait_device_control(
+            request_id, action, event_id, turn_id, result,
+        ))
+        self._pending_device_controls[request_id] = _PendingDeviceControl(action, result, task)
+        try:
+            await self.send_json({
+                "type": "device_control", "request_id": request_id, "action": action,
+                "event_id": event_id, "turn_id": turn_id,
+            }, turn_id=turn_id)
+        except BaseException:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._pending_device_controls.pop(request_id, None)
+            raise
+
+    def device_control_result(self, event: dict[str, Any]) -> bool:
+        request_id = event.get("request_id")
+        pending = self._pending_device_controls.get(request_id) if isinstance(request_id, str) else None
+        status = event.get("status")
+        allowed = ("accepted", "failed") if pending and pending.action == "disconnect" else (
+            "completed", "not_active", "failed",
+        )
+        if (pending is None or pending.result.done() or event.get("action") != pending.action
+                or status not in allowed):
+            return False
+        pending.result.set_result(status)
+        return True
+
+    async def _wait_device_control(
+        self, request_id: str, action: str, event_id: str, turn_id: str | None,
+        result: asyncio.Future[str],
+    ) -> None:
+        # 独立的有界回执任务；未回包只能认定未知，连接关闭时统一取消。
+        try:
+            try:
+                async with asyncio.timeout(_DEVICE_CONTROL_TIMEOUT_SECONDS):
+                    status = await result
+            except TimeoutError:
+                status = "unknown"
+            logger.info("device_control_result session_id=%s request_id=%s action=%s status=%s",
+                        self.session_id, request_id, action, status)
+            await self.send_json({
+                "type": "device_control_status", "request_id": request_id, "action": action,
+                "event_id": event_id, "turn_id": turn_id, "status": status,
+            })
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("device_control_delivery_failed session_id=%s request_id=%s",
+                             self.session_id, request_id)
+        finally:
+            self._pending_device_controls.pop(request_id, None)
 
     async def clear_dialogue(
         self,
@@ -538,6 +754,9 @@ class ConnectionRuntime:
                 if profile_prompt
                 else ()
             )
+            if self._media_session.enabled or self._media_session.observation.action != 'none':
+                context_messages = (*context_messages, ChatMessage(
+                    role="user", content=self._media_session.prompt()))
             messages = dialogue.messages_for(
                 text,
                 speaker_identity_id=speaker_identity_id,
@@ -808,6 +1027,28 @@ class ConnectionRuntime:
         if self._closing:
             return
         self._closing = True
+        await self._media_session.close()
+        if self._reminder_task is not None:
+            self._reminder_task.cancel()
+            await asyncio.gather(self._reminder_task, return_exceptions=True)
+        if self._reminder_service is not None:
+            try:
+                async with asyncio.timeout(5):
+                    await self._reminder_service.disconnect(self.device_id, self._reminder_connection_id)
+            except Exception:
+                logger.exception("reminder_disconnect_failed connection_id=%s", self._reminder_connection_id)
+        commands = tuple(self._device_control_tasks)
+        for task in commands:
+            task.cancel()
+        if commands:
+            await asyncio.gather(*commands, return_exceptions=True)
+        self._device_control_tasks.clear()
+        control_tasks = [pending.task for pending in self._pending_device_controls.values()]
+        for task in control_tasks:
+            task.cancel()
+        if control_tasks:
+            await asyncio.gather(*control_tasks, return_exceptions=True)
+        self._pending_device_controls.clear()
         await self._profile_cache.close()
         if self._audio_session is not None:
             session = self._audio_session
@@ -959,8 +1200,39 @@ class ConnectionRuntime:
             )
 
         try:
-            async with aclosing(self._chat_service.stream_turn(turn)) as outputs:
+            if self._reminder_deliveries and turn.turn_id != self._reminder_current_turn:
+                await self.send_json({
+                    "type": "turn_waiting", "turn_id": turn.turn_id, "reason": "reminder_playback",
+                }, turn_id=turn.turn_id)
+                # 最后一条结束的同一调度间隙可能又有提醒到点；醒来后重新检查。
+                while self._reminder_deliveries:
+                    await self._reminder_ready.wait()
+                if self._closing or self.active_turn_id != turn.turn_id:
+                    return
+            stream = (
+                self._chat_service.stream_turn(turn, device_control_enabled=True, media_commands=self._media_session.for_turn(
+                    lambda: not self._closing and self.active_turn_id == turn.turn_id))
+                if self._media_session.enabled else self._chat_service.stream_turn(turn, device_control_enabled=True)
+            )
+            async with aclosing(stream) as outputs:
                 async for output in outputs:
+                    if isinstance(output, MediaControl):
+                        await self.request_media_control(output, turn_id=turn.turn_id)
+                        await self.send_json({"type": "turn_cancelled", "turn_id": turn.turn_id,
+                                              "reason": "media_control"}, turn_id=turn.turn_id)
+                        outcome = "controlled"
+                        log_summary("controlled")
+                        return
+                    if isinstance(output, DeviceControl):
+                        await self.request_device_control(output.action, event_id=event_id,
+                                                          turn_id=turn.turn_id)
+                        await self.send_json({
+                            "type": "turn_cancelled", "turn_id": turn.turn_id,
+                            "reason": "device_control",
+                        }, turn_id=turn.turn_id)
+                        outcome = "controlled"
+                        log_summary("controlled")
+                        return
                     if isinstance(output, TextDelta):
                         text_chunks += 1
                         if first_text_ms is None:
@@ -1209,6 +1481,16 @@ class ConnectionRuntime:
         # 运行于：接收循环 Task（push/stop 回调）；持锁：否（cancel_turn 内获取）；可能阻塞：边界发送和旧 Turn 取消清理，未设总超时。
         if self._closing:
             return
+        # 以开口时的模式固定该语音段；播放结束后的迟到识别不能变成新聊天。
+        media = self._media_session.observation
+        media_only = media.voice_media_only
+        if event.kind == 'speech_start':
+            self._voice_joins[event.utterance_id] = _VoiceJoinState(
+                media_only=media_only, media_request=(media.request_id, media.operation_id) if media_only else None)
+        else:
+            state = self._voice_joins.get(event.utterance_id)
+            if state is not None:
+                media_only = state.media_only
         if event.kind == "speech_end":
             state = self._voice_joins.get(event.utterance_id)
             if state is not None:
@@ -1229,6 +1511,7 @@ class ConnectionRuntime:
                 "probability": round(event.probability, 4),
                 "audio_ms": round(event.audio_ms, 1),
                 "last_voice_audio_ms": event.last_voice_audio_ms,
+                "media_only": media_only,
             }
         )
         logger.info(
@@ -1239,8 +1522,7 @@ class ConnectionRuntime:
             event.audio_ms,
             elapsed_ms,
         )
-        if event.kind == "speech_start":
-            self._voice_joins[event.utterance_id] = _VoiceJoinState()
+        if event.kind == "speech_start" and not media_only:
             await self.cancel_turn(reason="barge_in")
 
     async def _on_utterance_audio(self, utterance_id: str, pcm: bytes) -> None:
@@ -1248,6 +1530,9 @@ class ConnectionRuntime:
         if self._closing:
             return
         state = self._voice_joins.setdefault(utterance_id, _VoiceJoinState())
+        if state.media_only:
+            state.ready.set()
+            return
         try:
             wav = pcm_s16le_to_wav(pcm)
         except ValueError:
@@ -1264,6 +1549,9 @@ class ConnectionRuntime:
         if self._closing:
             return
         if isinstance(event, AsrPartial):
+            state = self._voice_joins.get(utterance_id)
+            if (state.media_only if state is not None else self._media_session.observation.voice_media_only):
+                return
             await self.send_json(
                 {
                     "type": "asr_partial",
@@ -1277,11 +1565,19 @@ class ConnectionRuntime:
             if state is not None:
                 state.asr_final_at = perf_counter()
             text = event.text.strip()
+            media_only = state.media_only if state is not None else self._media_session.observation.voice_media_only
+            media_action = playback_stop_from_text(text) if media_only else None
+            media = self._media_session.observation
+            media_request = state.media_request if state is not None else (media.request_id, media.operation_id)
+            if not media.voice_media_only or media_request != (media.request_id, media.operation_id):
+                media_action = None
+            disposition = ('media_control' if media_action else 'ignored_media') if media_only else 'chat'
             await self.send_json(
                 {
                     "type": "asr_final",
                     "utterance_id": utterance_id,
-                    "text": text,
+                    "text": '' if disposition == 'ignored_media' else text,
+                    "disposition": disposition,
                 }
             )
             logger.info(
@@ -1291,9 +1587,36 @@ class ConnectionRuntime:
                 type(self._recognizer).__name__,
                 len(text),
             )
+            if media_only:
+                await self._discard_voice_join(utterance_id)
+                if media_action is not None:
+                    event_id = f'voice-{utterance_id}'
+                    if not self.remember_event(event_id):
+                        return
+                    media = self._media_session.observation
+                    if not media.voice_media_only or media_request != (media.request_id, media.operation_id):
+                        return
+                    try:
+                        self._media_session.submit(MediaIntent(media_action, event_id, source=self._media_session.active_source))
+                    except (MediaUnavailable, ValueError) as exc:
+                        await self.send_json({'type': 'media_error', 'code': getattr(exc, 'code', 'invalid_request'), 'message': str(exc)})
+                        return
+                    logger.info('media_voice_control session_id=%s utterance_id=%s action=%s',
+                                self.session_id, utterance_id, media_action)
+                    await self.cancel_turn(reason='media_voice_control')
+                else:
+                    logger.info('voice_input_ignored session_id=%s utterance_id=%s reason=media_only text_length=%s',
+                                self.session_id, utterance_id, len(text))
+                return
             if text:
                 event_id = f"voice-{utterance_id}"
-                self.remember_event(event_id)
+                if not self.remember_event(event_id):
+                    return
+                action = control_from_text(text)
+                if action is not None:
+                    await self._discard_voice_join(utterance_id)
+                    await self.submit_device_control(action, event_id=event_id)
+                    return
                 resolution = await self._resolve_voice_speaker(utterance_id)
                 await self.send_json(
                     {
