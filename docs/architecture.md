@@ -26,7 +26,7 @@
 | Profile Snapshot | 每连接、每成员缓存；后台预取，Turn 只读创建时快照。 |
 | 记忆写入与成员删除 | PostgreSQL 持久化任务，后台 Worker 用租约恢复处理。 |
 
-主库的 ORM 元数据包含 `devices`、`identities`、`dialogue_sessions`、`dialogue_exchanges`、`memory_jobs`、`identity_deletion_jobs`、`recovery_rate_limits`、`reminders` 八张表；独立声纹服务另维护模板表。Alembic 是建表和升级 schema 的入口，应用启动不自动建表。生产 Store 使用 PostgreSQL，内存 Store 主要用于测试。
+主库的 ORM 元数据包含 `devices`、`identities`、`dialogue_sessions`、`dialogue_exchanges`、`memory_jobs`、`identity_deletion_jobs`、`recovery_rate_limits`、`reminders`、`memory_sources`、`memory_batches` 十张表；声纹模板保存在 `identities` 表的 `voiceprint_*` 列，由独立声纹服务直接读写同一数据库，不另建模板表。Alembic 是建表和升级 schema 的入口，应用启动不自动建表。生产 Store 使用 PostgreSQL，内存 Store 主要用于测试。
 
 ## 一次语音交互与 Task 归属
 
