@@ -334,3 +334,10 @@ def test_logging_configures_newtalk_namespace() -> None:
     assert logger.handlers
 
     configure_logging("INFO")
+
+
+def test_memory_write_mode_is_explicit_and_validated():
+    assert load_config({}).memory_write_mode == "turn"
+    assert load_config({"NEWTALK_MEMORY_WRITE_MODE": "batch"}).memory_write_mode == "batch"
+    with pytest.raises(ConfigError, match="NEWTALK_MEMORY_WRITE_MODE"):
+        load_config({"NEWTALK_MEMORY_WRITE_MODE": "unknown"})

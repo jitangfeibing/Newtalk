@@ -114,6 +114,7 @@ class AppConfig:
     voiceprint_timeout_seconds: float = DEFAULT_VOICEPRINT_TIMEOUT_SECONDS
     voiceprint_join_timeout_seconds: float = DEFAULT_VOICEPRINT_JOIN_TIMEOUT_SECONDS
     memory_backend: str = DEFAULT_MEMORY_BACKEND
+    memory_write_mode: str = "turn"
     memory_retrieval_mode: str = "tool"
     memory_preload_timeout_seconds: float = 0.8
     memos_base_url: str = DEFAULT_MEMOS_BASE_URL
@@ -128,6 +129,10 @@ class AppConfig:
     memory_job_max_attempts: int = DEFAULT_MEMORY_JOB_MAX_ATTEMPTS
     music_api_key: str | None = field(default=None, repr=False)
     podcast_api_key: str | None = field(default=None, repr=False)
+    vision_api_key: str | None = field(default=None, repr=False)
+    vision_model: str = "qwen3-vl-plus"
+    vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    vision_timeout_seconds: float = 12
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "AppConfig":
@@ -249,6 +254,9 @@ class AppConfig:
         memory_retrieval_mode = values.get("NEWTALK_MEMORY_RETRIEVAL_MODE", "tool").strip().lower()
         if memory_retrieval_mode not in {"tool", "preload"}:
             raise ConfigError("NEWTALK_MEMORY_RETRIEVAL_MODE must be tool or preload")
+        memory_write_mode = values.get("NEWTALK_MEMORY_WRITE_MODE", "turn").strip().lower()
+        if memory_write_mode not in {"turn", "batch"}:
+            raise ConfigError("NEWTALK_MEMORY_WRITE_MODE must be turn or batch")
         memory_preload_timeout_seconds = _bounded_float_value(
             values, "NEWTALK_MEMORY_PRELOAD_TIMEOUT_SECONDS", 0.8, minimum=0.05, maximum=5.0,
         )
@@ -305,6 +313,7 @@ class AppConfig:
             voiceprint_timeout_seconds=voiceprint_timeout_seconds,
             voiceprint_join_timeout_seconds=voiceprint_join_timeout_seconds,
             memory_backend=memory_backend,
+            memory_write_mode=memory_write_mode,
             memory_retrieval_mode=memory_retrieval_mode,
             memory_preload_timeout_seconds=memory_preload_timeout_seconds,
             memos_base_url=memos_base_url,
@@ -319,6 +328,10 @@ class AppConfig:
             memory_job_max_attempts=memory_job_max_attempts,
             music_api_key=_optional_value(values.get("NEWTALK_MUSIC_API_KEY")),
             podcast_api_key=_optional_value(values.get("NEWTALK_PODCAST_API_KEY")),
+            vision_api_key=_optional_value(values.get("VERSION_API_KEY")),
+            vision_model=values.get("NEWTALK_VISION_MODEL", "qwen3-vl-plus").strip(),
+            vision_base_url=values.get("NEWTALK_VISION_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
+            vision_timeout_seconds=_bounded_float_value(values, "NEWTALK_VISION_TIMEOUT_SECONDS", 12, minimum=1, maximum=60),
         )
 
 

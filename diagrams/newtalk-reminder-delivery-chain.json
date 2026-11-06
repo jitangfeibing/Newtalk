@@ -1,0 +1,189 @@
+{
+  "type": "sequence",
+  "title": "提醒到点后的播放链路",
+  "subtitle": "提醒已经保存后，由后台调度；到点播报无需再次调用大模型。",
+  "eyebrow": "已实现 · 独立调度与播放回执",
+  "lang": "zh-CN",
+  "fonts": "system",
+  "motion": "trace",
+  "size": "wide",
+  "numbered": true,
+  "caption": "当前回复结束后先播提醒；新问题在生成任务中等待，普通说话不抢占。网页等待期间每 15 秒续期；播放结束回执由独立任务顺序落库，再释放后续回复。离线到点记 missed，不自动补播。",
+  "participants": [
+    {
+      "id": "service",
+      "label": "提醒调度",
+      "sub": "ReminderService",
+      "focal": true
+    },
+    {
+      "id": "db",
+      "label": "数据库",
+      "sub": "reminders",
+      "kind": "store"
+    },
+    {
+      "id": "runtime",
+      "label": "连接编排",
+      "sub": "ConnectionRuntime"
+    },
+    {
+      "id": "web",
+      "label": "网页播放",
+      "sub": "队列 + Audio"
+    },
+    {
+      "id": "audio",
+      "label": "语音接口",
+      "sub": "/api/reminders/.../audio"
+    },
+    {
+      "id": "tts",
+      "label": "语音合成",
+      "sub": "独立 TTS 实例",
+      "kind": "external"
+    }
+  ],
+  "messages": [
+    [
+      "service",
+      "db",
+      "每秒检查并认领到期提醒",
+      "primary"
+    ],
+    [
+      "service",
+      "runtime",
+      "reminder_due",
+      "async"
+    ],
+    [
+      "runtime",
+      "web",
+      "WebSocket 提醒事件",
+      "primary"
+    ],
+    [
+      "web",
+      "audio",
+      "当前聊天播完后 GET WAV",
+      "primary"
+    ],
+    [
+      "audio",
+      "tts",
+      "固定正文：提醒你 + 内容",
+      "primary"
+    ],
+    [
+      "tts",
+      "audio",
+      "返回 PCM 音频",
+      "reply"
+    ],
+    [
+      "audio",
+      "web",
+      "提示音 + 正文 WAV",
+      "reply"
+    ],
+    [
+      "web",
+      "runtime",
+      "实际开始：playing",
+      "async"
+    ],
+    [
+      "web",
+      "runtime",
+      "实际结束：completed",
+      "async"
+    ],
+    [
+      "runtime",
+      "service",
+      "独立任务校验并提交回执",
+      "async"
+    ],
+    [
+      "service",
+      "db",
+      "更新本次播放结果",
+      "primary"
+    ],
+    [
+      "service",
+      "runtime",
+      "结束事件；允许下一轮回复",
+      "async"
+    ]
+  ],
+  "notes": [
+    {
+      "at": 3,
+      "over": [
+        "runtime",
+        "web"
+      ],
+      "text": "后续问题发 turn_waiting；已接受输入保留，尚不调用 LLM"
+    },
+    {
+      "at": 7,
+      "over": [
+        "runtime",
+        "web"
+      ],
+      "text": "普通新问题与 VAD 不停止提醒；手动停止、取消、断开仍有效"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "service",
+      "file": "src/newtalk/reminders/service.py",
+      "line": 158,
+      "note": "认领到期提醒和发送到选定连接"
+    },
+    {
+      "id": "db",
+      "file": "src/newtalk/reminders/store.py",
+      "line": 161,
+      "note": "行锁与 SKIP LOCKED 防止重复认领"
+    },
+    {
+      "id": "runtime",
+      "file": "src/newtalk/transport/runtime.py",
+      "line": 433,
+      "note": "登记投递并释放匹配回执的门控"
+    },
+    {
+      "id": "runtime",
+      "file": "src/newtalk/transport/runtime.py",
+      "line": 1161,
+      "note": "新一轮生成任务等待提醒完成"
+    },
+    {
+      "id": "web",
+      "file": "web/reminder-queue.js",
+      "line": 2,
+      "note": "聊天边界、去重、续期和不可自动抢占的队列"
+    },
+    {
+      "id": "web",
+      "file": "web/reminder-player.js",
+      "line": 1,
+      "note": "独立音频元素；以 playing / ended 判断播放结果"
+    },
+    {
+      "id": "audio",
+      "file": "src/newtalk/reminders/api.py",
+      "line": 79,
+      "note": "设备鉴权、投递校验、返回 WAV"
+    },
+    {
+      "id": "tts",
+      "file": "src/newtalk/reminders/audio.py",
+      "line": 20,
+      "note": "固定正文 TTS + 提示音，无 LLM 调用"
+    }
+  ]
+}

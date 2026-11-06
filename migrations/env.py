@@ -12,6 +12,7 @@ from newtalk.chat import persistence
 from newtalk.identity import deletion, recovery_limit
 from newtalk.identity.sqlalchemy_store import Base
 from newtalk.memory import jobs
+from newtalk.memory import batch_store  # noqa: F401
 from newtalk.reminders import store
 
 

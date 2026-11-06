@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 class MusicTool:
     service: MusicService
     name = "music_control"
+    error_reply = "这次音乐操作没有完成，请稍后再试。"
 
     def definition(self, context: ToolContext) -> dict | None:
         if not context.client_tools_enabled or not self.service.enabled or not _music_requested(context.turn.user_text):

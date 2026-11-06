@@ -41,6 +41,8 @@ print(json.dumps(sorted(namespace["Base"].metadata.tables)))
         "dialogue_sessions",
         "dialogue_exchanges",
         "memory_jobs",
+        "memory_sources",
+        "memory_batches",
         "identity_deletion_jobs",
         "recovery_rate_limits",
         "reminders",

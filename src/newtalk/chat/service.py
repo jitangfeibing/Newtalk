@@ -11,7 +11,9 @@ from uuid import uuid4
 from newtalk.chat.fake_llm import FakeLLM
 from newtalk.chat.model import ChatModel
 from newtalk.chat.prompts import MEMORY_CONTEXT_PREFIX
+from newtalk.chat.reply_safety import guard_model_output, protocol_failure_reply
 from newtalk.tools.models import CLIENT_ACTION_TYPES, DeviceControl, ToolContext, tool_error
+from newtalk.vision.provider import VisionCommands
 from newtalk.media.models import MediaCommands, MediaControl
 from newtalk.chat.models import (
     AudioCompleted,
@@ -119,12 +121,13 @@ class ChatService:
     async def stream_reply(
         self, turn: Turn, *, device_control_enabled: bool = False,
         media_commands: MediaCommands | None = None,
+        vision_commands: VisionCommands | None = None,
     ) -> AsyncIterator[str | DeviceControl | MediaControl]:
         started_at = perf_counter()
         chunk_count = 0
         model_name = type(self._model).__name__
         messages = turn.messages
-        context = ToolContext(turn, device_control_enabled, self._memory_retrieval_mode, media_commands)
+        context = ToolContext(turn, device_control_enabled, self._memory_retrieval_mode, media_commands, vision_commands)
         selection = self.tool_registry.select(context)
         tools = selection.definitions
         tool_calls = 0
@@ -132,6 +135,7 @@ class ChatService:
         memory_used = False
         trace_token = self.context_debug.activate(turn)
         round_index = 0
+        last_tool_result: str | None = None
         try:
             if (self._memory_retrieval_mode == "preload" and self._memory_tool.enabled_for(turn)):
                 memory_used = True
@@ -147,7 +151,10 @@ class ChatService:
                     if tools
                     else self._model.stream(messages)
                 )
-                async with aclosing(model_stream) as response_stream:
+                async with aclosing(guard_model_output(
+                    model_stream, turn_id=turn.turn_id, round_index=round_index,
+                    fallback=protocol_failure_reply(last_tool_result),
+                )) as response_stream:
                     async for event in response_stream:
                         if isinstance(event, ModelToolCall):
                             if tool_call is not None or round_chunks:
@@ -191,9 +198,15 @@ class ChatService:
                     raise ValueError("Model exceeded the tool call limit")
                 tool_calls += 1
                 memory_used = memory_used or tool_call.name == self._memory_tool.name
-                result = await selection.execute(tool_call)
+                result = await selection.execute(tool_call, round_index=round_index)
                 if isinstance(result, CLIENT_ACTION_TYPES):
                     yield result
+                    return
+                last_tool_result = result
+                error_reply = selection.error_reply(tool_call.name, result)
+                if error_reply is not None:
+                    logger.info("tool_failure_reply turn_id=%s call_id=%s round=%s", turn.turn_id, tool_call.call_id, round_index)
+                    yield error_reply
                     return
                 messages = (
                     *messages,
@@ -272,6 +285,7 @@ class ChatService:
     async def stream_turn(
         self, turn: Turn, *, device_control_enabled: bool = False,
         media_commands: MediaCommands | None = None,
+        vision_commands: VisionCommands | None = None,
     ) -> AsyncIterator[TurnOutput]:
         started_at = perf_counter()
         stream_id = str(uuid4())
@@ -300,6 +314,7 @@ class ChatService:
                 async with aclosing(self.stream_reply(
                     turn, device_control_enabled=device_control_enabled,
                     media_commands=media_commands,
+                    vision_commands=vision_commands,
                 )) as reply_stream:
                     async for delta in reply_stream:
                         if isinstance(delta, CLIENT_ACTION_TYPES):

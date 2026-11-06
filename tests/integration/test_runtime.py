@@ -56,6 +56,9 @@ def running_newtalk(port: int) -> Iterator[None]:
             "NEWTALK_WEB_ROOT": str(PROJECT_ROOT / "web"),
             "NEWTALK_LLM_BACKEND": "fake",
             "NEWTALK_TTS_BACKEND": "fake",
+            # 启动测试不继承开发者 .env 中的付费记忆服务/后台整理模式。
+            "NEWTALK_MEMORY_BACKEND": "disabled",
+            "NEWTALK_MEMORY_WRITE_MODE": "turn",
         }
     )
     process = subprocess.Popen(
@@ -97,7 +100,7 @@ async def assert_websocket_lifecycle(port: int, cookie: str) -> None:
     ) as websocket:
         hello = json.loads(await websocket.recv())
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.18"
+        assert hello["protocol_version"] == "0.19"
         assert hello["session_id"]
         assert hello["device_id"]
         assert hello["audio"]["input"]["codec"] == "pcm_s16le"

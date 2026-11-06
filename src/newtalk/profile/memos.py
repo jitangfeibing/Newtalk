@@ -1,4 +1,7 @@
 from typing import Any
+from datetime import datetime, timedelta, timezone
+import math
+import json
 
 import httpx
 
@@ -10,6 +13,7 @@ from newtalk.memory.models import (
     MemoryWriteReceipt,
 )
 from newtalk.memory.models import MemoryNotFoundError
+from newtalk.memory.policy import EXTRACTION_POLICY_VERSION, MEMORY_EXTRACTION_PROMPTS
 from newtalk.profile.models import ProfileScope, ProfileSnapshot, parse_profile_fields
 from newtalk.profile.provider import (
     ProfileProviderError,
@@ -136,7 +140,9 @@ class MemosMemoryProvider:
             raise ProfileProviderError("MemOS search/memory returned invalid data")
         items = _parse_search_items(data)
         items.sort(key=lambda item: item.relativity, reverse=True)
-        return MemorySearchResult(tuple(items[:limit]))
+        # 重复项不能先占满名额；去重只处理已返回候选，不改动远端记忆。
+        unique = MemorySearchResult(tuple(items)).deduplicated()
+        return MemorySearchResult(unique.items[:limit])
 
     async def add_completed_turn(
         self,
@@ -147,19 +153,27 @@ class MemosMemoryProvider:
         speaker_name: str,
         user_text: str,
         assistant_text: str,
+        chat_time: datetime | None = None,
     ) -> MemoryWriteReceipt:
+        user_message: dict[str, Any] = {
+            "role": "user", "role_id": scope.identity_id,
+            "role_name": speaker_name, "content": user_text,
+        }
+        if chat_time is not None:
+            if chat_time.utcoffset() is None:
+                raise ValueError("Memory chat_time must include a timezone")
+            # MemOS 的无偏移示例按北京时间解释；不能使用 Worker 重试时的时钟。
+            user_message["chat_time"] = chat_time.astimezone(
+                timezone(timedelta(hours=8))
+            ).strftime("%Y-%m-%d %H:%M:%S")
         payload = await self._post(
             "/add/message",
             {
                 "user_id": scope.memos_user_id,
                 "conversation_id": conversation_id,
                 "messages": [
-                    {
-                        "role": "user",
-                        "role_id": scope.identity_id,
-                        "role_name": speaker_name,
-                        "content": user_text,
-                    },
+                    user_message,
+                    # 未单独保存助手完成时刻，不能把用户时间冒充助手发言时间。
                     {"role": "assistant", "content": assistant_text},
                 ],
                 "allow_memory_view": [
@@ -172,7 +186,10 @@ class MemosMemoryProvider:
                     "device_id": scope.device_id,
                     "identity_id": scope.identity_id,
                     "turn_id": turn_id,
+                    "source_type": "newtalk_completed_member_turn",
+                    "extraction_policy_version": EXTRACTION_POLICY_VERSION,
                 },
+                "custom_extract_prompt": dict(MEMORY_EXTRACTION_PROMPTS),
                 "async_mode": True,
             },
         )
@@ -205,6 +222,37 @@ class MemosMemoryProvider:
         if status not in {"running", "completed", "failed"}:
             raise ProfileProviderError("MemOS Get Task Status returned an invalid status")
         return MemoryWriteReceipt(provider_task_id, status)
+
+    async def add_prepared_batch(
+        self, scope: ProfileScope, *, conversation_id: str, prepared_payload: dict,
+    ) -> MemoryWriteReceipt:
+        allowed = {"messages", "info", "allow_memory_view", "custom_extract_prompt"}
+        if set(prepared_payload) - allowed or not prepared_payload.get("messages"):
+            raise ValueError("Invalid prepared memory batch")
+        if (prepared_payload["messages"][0].get("role") != "system"
+                or any(message.get("role") not in {"system", "user"}
+                       for message in prepared_payload["messages"])):
+            raise ValueError("Curated memory must not impersonate user messages")
+        # 实际云接口的非 user 消息也需要 role_id 才能解析归属，只有根 user_id 会报 40002。
+        # 保留 system 角色与机器来源；归属由服务端填写，不伪装成用户原话。
+        messages = [{**message, "role_id": scope.identity_id,
+                     "role_name": "后台记忆整理" if message["role"] == "system" else message["role_name"]}
+                    for message in prepared_payload["messages"]]
+        # 云端 info 实际只接受标量；完整数组仍保留在本地快照及正文证据中。
+        info = {key: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, (list, dict)) else value
+                for key, value in prepared_payload.get("info", {}).items()}
+        payload = await self._post("/add/message", {
+            **prepared_payload, "messages": messages, "info": info, "user_id": scope.memos_user_id,
+            "conversation_id": conversation_id, "async_mode": True,
+        })
+        data = payload.get("data")
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise ProfileProviderError("MemOS did not accept memory batch")
+        task_id, status = data.get("task_id"), data.get("status")
+        if not isinstance(task_id, str) or not task_id or status not in {"running", "completed", "failed"}:
+            raise ProfileProviderError("MemOS returned an invalid batch receipt")
+        return MemoryWriteReceipt(task_id, status)
 
     async def list_memories(
         self,
@@ -412,9 +460,23 @@ def _parse_search_items(data: dict[str, Any]) -> list[MemoryItem]:
                     title=title.strip() if isinstance(title, str) else "",
                     content=content,
                     relativity=relativity,
+                    created_at=_memory_timestamp(raw.get("create_time")),
+                    updated_at=_memory_timestamp(raw.get("update_time")),
+                    conversation_id=_optional_string(raw.get("conversation_id")),
+                    confidence=_optional_confidence(raw.get("confidence")),
+                    event_time=tuple(
+                        value for value in raw.get("event_time", []) if isinstance(value, str) and value
+                    ) if isinstance(raw.get("event_time"), list) else (),
                 )
             )
     return items
+
+
+def _optional_confidence(value: Any) -> float | None:
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value <= 1 and math.isfinite(value)):
+        return float(value)
+    return None
 
 
 _MEMORY_VIEWS = {
@@ -457,8 +519,8 @@ def _parse_memory_records(
                     kind=kind,
                     title=title.strip() if isinstance(title, str) else "",
                     content=content.strip(),
-                    created_at=_optional_string(raw.get("create_time")),
-                    updated_at=_optional_string(raw.get("update_time")),
+                    created_at=_memory_timestamp(raw.get("create_time")),
+                    updated_at=_memory_timestamp(raw.get("update_time")),
                 )
             )
     return records
@@ -485,6 +547,19 @@ def _profile_metadata(
 
 def _optional_string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _memory_timestamp(value: Any) -> str | None:
+    if isinstance(value, str):
+        return _optional_string(value)
+    # 云端实际返回 Unix 毫秒；只接受有效数值，不能把创建时间当事件发生时间。
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value <= 253402300799999 and math.isfinite(value)):
+        try:
+            return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
 
 
 def _positive_int(value: Any, default: int) -> int:

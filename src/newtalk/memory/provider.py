@@ -1,4 +1,5 @@
 from typing import Protocol
+from datetime import datetime
 
 from newtalk.memory.models import MemoryPage, MemorySearchResult, MemoryWriteReceipt
 from newtalk.profile.models import ProfileScope, ProfileSnapshot
@@ -25,9 +26,14 @@ class MemoryProvider(ProfileProvider, Protocol):
         speaker_name: str,
         user_text: str,
         assistant_text: str,
+        chat_time: datetime | None = None,
     ) -> MemoryWriteReceipt: ...
 
     async def get_write_status(self, provider_task_id: str) -> MemoryWriteReceipt: ...
+
+    async def add_prepared_batch(
+        self, scope: ProfileScope, *, conversation_id: str, prepared_payload: dict,
+    ) -> MemoryWriteReceipt: ...
 
     async def list_memories(
         self,
@@ -91,10 +97,16 @@ class DisabledMemoryProvider:
         speaker_name: str,
         user_text: str,
         assistant_text: str,
+        chat_time: datetime | None = None,
     ) -> MemoryWriteReceipt:
         raise ProfileProviderUnavailableError("Memory provider is disabled")
 
     async def get_write_status(self, provider_task_id: str) -> MemoryWriteReceipt:
+        raise ProfileProviderUnavailableError("Memory provider is disabled")
+
+    async def add_prepared_batch(
+        self, scope: ProfileScope, *, conversation_id: str, prepared_payload: dict,
+    ) -> MemoryWriteReceipt:
         raise ProfileProviderUnavailableError("Memory provider is disabled")
 
     async def list_memories(

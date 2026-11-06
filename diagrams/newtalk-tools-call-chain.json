@@ -1,0 +1,187 @@
+{
+  "type": "architecture",
+  "title": "Newtalk 工具调用链",
+  "subtitle": "按当前代码整理：模型选择工具，业务模块或网页执行；每轮最多一次模型工具调用。",
+  "eyebrow": "已实现 · 工具入口与执行边界",
+  "lang": "zh-CN",
+  "fonts": "system",
+  "motion": "trace",
+  "size": "wide",
+  "caption": "完整固定控制口令由 Runtime 直接分流，不必经过 LLM。memory_search 仅在 tool 模式且成员记忆可用时提供；preload 由服务端前置检索。音乐、播客及摄像头看图尚未接入。",
+  "nodes": [
+    {
+      "id": "web",
+      "label": "聊天页面",
+      "sub": "文字 / 语音输入",
+      "kind": "input",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "runtime",
+      "label": "连接编排",
+      "sub": "ConnectionRuntime",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "chat",
+      "label": "工具分发",
+      "sub": "ChatService.stream_reply",
+      "focal": true,
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "llm",
+      "label": "对话模型",
+      "sub": "文本 / ModelToolCall",
+      "kind": "external",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "id": "control",
+      "label": "页面控制",
+      "sub": "device_control / 网页执行",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "reminder",
+      "label": "提醒服务",
+      "sub": "ReminderService",
+      "focal": true,
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "db",
+      "label": "提醒数据库",
+      "sub": "PostgreSQL · reminders",
+      "kind": "store",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "memory",
+      "label": "记忆检索",
+      "sub": "MemoryProvider",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "memos",
+      "label": "长期记忆",
+      "sub": "MemOS",
+      "kind": "external",
+      "row": 2,
+      "col": 3
+    }
+  ],
+  "edges": [
+    [
+      "web",
+      "runtime",
+      "WebSocket",
+      "primary"
+    ],
+    {
+      "from": "runtime",
+      "to": "chat",
+      "label": "Turn / 控制事件",
+      "kind": "primary",
+      "both": true
+    },
+    {
+      "from": "chat",
+      "to": "llm",
+      "label": "tools / 调用",
+      "kind": "primary",
+      "both": true
+    },
+    {
+      "from": "runtime",
+      "to": "control",
+      "label": "指令 / 回执",
+      "kind": "async",
+      "both": true
+    },
+    [
+      "chat",
+      "reminder",
+      "reminder_manage"
+    ],
+    [
+      "reminder",
+      "db",
+      "持久化"
+    ],
+    [
+      "chat",
+      "memory",
+      "memory_search"
+    ],
+    [
+      "memory",
+      "memos",
+      "检索"
+    ]
+  ],
+  "evidence": [
+    {
+      "id": "web",
+      "file": "web/app.js",
+      "line": 615,
+      "note": "接收事件；提交文字和音频输入"
+    },
+    {
+      "id": "runtime",
+      "file": "src/newtalk/transport/runtime.py",
+      "line": 511,
+      "note": "固定口令可在创建 Turn 前直接分流"
+    },
+    {
+      "id": "chat",
+      "file": "src/newtalk/chat/service.py",
+      "line": 136,
+      "note": "提供工具定义、分发调用、最多一次工具轮"
+    },
+    {
+      "id": "llm",
+      "file": "src/newtalk/chat/openai_compatible.py",
+      "line": 130,
+      "note": "合并流式 tool_calls 并生成 ModelToolCall"
+    },
+    {
+      "id": "control",
+      "file": "web/device-control.js",
+      "line": 7,
+      "note": "执行控制并上报实际结果"
+    },
+    {
+      "id": "reminder",
+      "file": "src/newtalk/reminders/tools.py",
+      "line": 31,
+      "note": "严格解析参数后调用 ReminderService"
+    },
+    {
+      "id": "db",
+      "file": "src/newtalk/reminders/store.py",
+      "line": 24,
+      "note": "设备归属、幂等键、触发状态和播放状态"
+    },
+    {
+      "id": "memory",
+      "file": "src/newtalk/chat/service.py",
+      "line": 308,
+      "note": "检索范围来自 Turn 身份；Guest 不读成员长期记忆"
+    },
+    {
+      "id": "memos",
+      "file": "src/newtalk/profile/memos.py",
+      "line": 110,
+      "note": "MemOS 检索适配，结果由 ChatService 返回给模型"
+    }
+  ]
+}

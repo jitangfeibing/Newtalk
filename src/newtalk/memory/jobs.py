@@ -24,6 +24,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Mapped, mapped_column
@@ -32,6 +33,7 @@ from newtalk.identity.models import IdentityStatus
 from newtalk.identity.service import IdentityNotFoundError, IdentityService
 from newtalk.identity.sqlalchemy_store import Base, IdentityRow
 from newtalk.memory.provider import MemoryProvider
+from newtalk.memory.policy import memory_skip_reason
 from newtalk.profile.models import ProfileScope
 
 
@@ -59,6 +61,8 @@ class MemoryWriteJob:
     attempts: int = 0
     provider_task_id: str | None = None
     poll_count: int = 0
+    chat_time: datetime | None = None
+    prepared_payload: dict | None = None
 
 
 class MemoryJobStore(Protocol):
@@ -127,6 +131,8 @@ class MemoryJobRow(Base):
     speaker_name: Mapped[str] = mapped_column(String(80), nullable=False)
     user_text: Mapped[str] = mapped_column(Text, nullable=False)
     assistant_text: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    prepared_payload: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     poll_count: Mapped[int] = mapped_column(
@@ -158,6 +164,8 @@ def _job(row: MemoryJobRow) -> MemoryWriteJob:
         attempts=row.attempts,
         provider_task_id=row.provider_task_id,
         poll_count=row.poll_count,
+        chat_time=row.chat_time,
+        prepared_payload=row.prepared_payload,
     )
 
 
@@ -199,6 +207,8 @@ class SqlAlchemyMemoryJobStore:
                     speaker_name=job.speaker_name,
                     user_text=job.user_text,
                     assistant_text=job.assistant_text,
+                    chat_time=job.chat_time,
+                    prepared_payload=job.prepared_payload,
                 )
             )
             try:
@@ -514,6 +524,13 @@ class MemoryWriteService:
     async def enqueue_completed_turn(self, turn: Turn, assistant_text: str) -> bool:
         if not self._provider.enabled or turn.speaker_identity_id is None:
             return False
+        skip_reason = memory_skip_reason(turn.user_text)
+        if skip_reason is not None:
+            logger.info(
+                "memory_job_skipped turn_id=%s identity_id=%s reason=%s",
+                turn.turn_id, turn.speaker_identity_id, skip_reason,
+            )
+            return False
         job = MemoryWriteJob(
             job_id=str(uuid4()),
             turn_id=turn.turn_id,
@@ -523,13 +540,15 @@ class MemoryWriteService:
             speaker_name=turn.speaker_display_name,
             user_text=turn.user_text,
             assistant_text=assistant_text,
+            chat_time=turn.created_at,
         )
         inserted = await self._store.enqueue(job)
         logger.info(
-            "memory_job_enqueued turn_id=%s identity_id=%s inserted=%s",
+            "memory_job_enqueued turn_id=%s identity_id=%s inserted=%s chat_time=%s",
             turn.turn_id,
             turn.speaker_identity_id,
             inserted,
+            turn.created_at.isoformat(),
         )
         return inserted
 
@@ -539,6 +558,17 @@ class MemoryWriteService:
             await asyncio.gather(self._worker, return_exceptions=True)
             self._worker = None
         await self._store.close()
+
+    async def enqueue_prepared_batch(
+        self, *, batch_id: str, device_id: str, identity_id: str,
+        session_id: str, speaker_name: str, prepared_payload: dict,
+    ) -> bool:
+        # 同一批次重试复用确定 ID；模型结果已保存，不靠重新总结获得去重。
+        return await self._store.enqueue(MemoryWriteJob(
+            job_id=batch_id, turn_id=batch_id, device_id=device_id,
+            identity_id=identity_id, session_id=session_id, speaker_name=speaker_name,
+            user_text="", assistant_text="", prepared_payload=prepared_payload,
+        ))
 
     async def _run(self) -> None:
         while True:
@@ -572,14 +602,21 @@ class MemoryWriteService:
 
     async def _submit_to_provider(self, job: MemoryWriteJob) -> None:
         try:
-            receipt = await self._provider.add_completed_turn(
-                ProfileScope(job.device_id, job.identity_id),
-                conversation_id=job.session_id,
-                turn_id=job.turn_id,
-                speaker_name=job.speaker_name,
-                user_text=job.user_text,
-                assistant_text=job.assistant_text,
-            )
+            if job.prepared_payload is not None:
+                receipt = await self._provider.add_prepared_batch(
+                    ProfileScope(job.device_id, job.identity_id),
+                    conversation_id=job.session_id, prepared_payload=job.prepared_payload,
+                )
+            else:
+                receipt = await self._provider.add_completed_turn(
+                    ProfileScope(job.device_id, job.identity_id),
+                    conversation_id=job.session_id,
+                    turn_id=job.turn_id,
+                    speaker_name=job.speaker_name,
+                    user_text=job.user_text,
+                    assistant_text=job.assistant_text,
+                    chat_time=job.chat_time,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

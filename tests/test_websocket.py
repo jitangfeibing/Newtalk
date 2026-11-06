@@ -100,7 +100,7 @@ def test_websocket_sends_hello_and_answers_ping() -> None:
     with isolated_client.websocket_connect("/ws") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
-        assert hello["protocol_version"] == "0.18"
+        assert hello["protocol_version"] == "0.19"
         assert hello["profile"] == {"enabled": False}
         assert hello["session_id"]
         assert hello["device_id"]

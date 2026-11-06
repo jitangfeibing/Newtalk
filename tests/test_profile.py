@@ -301,7 +301,10 @@ def test_memos_provider_adds_only_completed_turn_content() -> None:
         "device_id": "02:00:00:00:00:01",
         "identity_id": "member-1",
         "turn_id": "turn-1",
+        "source_type": "newtalk_completed_member_turn",
+        "extraction_policy_version": 1,
     }
+    assert set(body["custom_extract_prompt"]) == set(body["allow_memory_view"])
     assert requests[1].url.path == "/v1/get/status"
     assert json.loads(requests[1].content) == {"task_id": "task-1"}
 

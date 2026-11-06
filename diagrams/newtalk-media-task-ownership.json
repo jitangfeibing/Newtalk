@@ -1,0 +1,47 @@
+{
+  "type": "architecture",
+  "title": "聊天可以被打断，已接受的点播由会话管理",
+  "subtitle": "上方是当前语音路径的问题；下方是最小调整方案。方案尚未实现。",
+  "eyebrow": "NEWTALK · 任务归属设计",
+  "caption": "音乐与喜马拉雅复用同一个媒体会话。普通说话只取消聊天轮、暂停出声；新点播或明确停止才取消旧点播。断开连接回收两个分支。",
+  "lang": "zh-CN",
+  "fonts": "system",
+  "skin": "light",
+  "size": "wide",
+  "motion": "trace",
+  "dir": "LR",
+  "out": "newtalk-media-task-ownership.html",
+  "groups": [
+    {"id": "current", "label": "当前语音路径：一次插话取消整轮", "style": "dashed"},
+    {"id": "planned", "label": "建议：同一连接内，两条独立生命周期", "style": "dashed"}
+  ],
+  "nodes": [
+    {"id": "old-chat", "label": "当前聊天轮", "sub": "LLM / TTS / 工具共用取消范围", "row": 0, "col": 0, "kind": "muted", "group": "current"},
+    {"id": "old-resolve", "label": "歌曲解析", "sub": "用户一开口，连带取消", "row": 0, "col": 1, "kind": "muted", "group": "current", "tag": "问题"},
+    {"id": "old-player", "label": "网页播放器", "sub": "解析完成后才能收到资源", "row": 0, "col": 3, "kind": "muted", "group": "current"},
+    {"id": "connection", "label": "连接会话", "sub": "ConnectionRuntime：拥有与清理任务", "row": 3, "col": 0, "kind": "backend", "group": "planned"},
+    {"id": "chat", "label": "聊天轮", "sub": "LLM / TTS，可被插话取消", "row": 4, "col": 1, "kind": "backend", "group": "planned"},
+    {"id": "media", "label": "媒体会话", "sub": "独立解析任务＋当前播放状态", "row": 3, "col": 1, "kind": "backend", "focal": true, "group": "planned", "tag": "规划"},
+    {"id": "sources", "label": "内容源适配器", "sub": "音乐接口 / 喜马拉雅接口", "row": 2, "col": 1, "kind": "external"},
+    {"id": "player", "label": "网页播放器", "sub": "聊天或提醒时，先暂停出声", "row": 3, "col": 3, "kind": "external"},
+    {"id": "facts", "label": "会话事实", "sub": "请求已接收 / 加载中 / 网页回执", "row": 4, "col": 2, "kind": "store", "group": "planned"}
+  ],
+  "edges": [
+    ["old-chat", "old-resolve", "等待解析", "muted"],
+    ["old-resolve", "old-player", "资源就绪", "muted"],
+    ["connection", "chat", "拥有", "default"],
+    ["connection", "media", "拥有", "primary"],
+    ["chat", "media", "提交命令", "async"],
+    {"from": "media", "to": "sources", "label": "查询 / 结果", "kind": "link", "both": true},
+    {"from": "media", "to": "player", "label": "控制 / 回执", "kind": "primary", "both": true},
+    ["media", "facts", "更新事实", "default"],
+    ["facts", "chat", "下一轮读", "async"]
+  ],
+  "order": ["connection", "chat", "media", "sources", "player", "facts"],
+  "evidence": [
+    {"id": "old-chat", "file": "src/newtalk/transport/runtime.py", "line": 1559, "note": "当前 speech_start 取消 Turn；图下半为规划。"},
+    {"id": "old-resolve", "file": "src/newtalk/tools/music.py", "line": 93, "note": "当前模型工具在 Turn 内等待歌曲解析。"},
+    {"id": "connection", "file": "src/newtalk/transport/runtime.py", "line": 497, "note": "按钮路径已有连接拥有的独立媒体任务，可复用其生命周期机制。"},
+    {"id": "facts", "file": "src/newtalk/media/models.py", "line": 26, "note": "已有 MediaObservation 是事实快照的基础，并非完整实时状态同步。"}
+  ]
+}

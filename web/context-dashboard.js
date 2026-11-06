@@ -14,6 +14,7 @@ const COMMIT_STATES = {
     not_attempted: '未执行', unknown: '结果未知（操作中取消）', failed: '失败',
     pending: '仍在落库', user_only: '仅保留用户输入', not_retained: '已清理或淘汰',
     skipped: '未写入（已清理/成员失效）',
+    batch_pending: '已转入批次流程，待后台整理（不是云端已完成）',
 };
 
 function node(tag, className = '', text = '') {

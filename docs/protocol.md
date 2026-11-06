@@ -1,6 +1,6 @@
 # Newtalk HTTP、VoicePrint、Memory 与 WebSocket 协议
 
-WebSocket Endpoint 为 `GET /ws`，协议版本 `0.18`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
+WebSocket Endpoint 为 `GET /ws`，协议版本 `0.19`。建连前必须通过 HTTP Device API 获得同源 HttpOnly Cookie；缺少或使用失效凭据时以 code `4401` 拒绝连接。
 
 WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_id` 标识当前 `device_id` 的持久化 Dialogue Session；页面刷新或短暂重连后复用该 ID。服务端读取 Family/Guest 兼容 lane 后按时间合并为设备级短期 Dialogue。
 
@@ -50,7 +50,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
 ```json
 {
   "type": "hello",
-  "protocol_version": "0.18",
+  "protocol_version": "0.19",
   "session_id": "stable dialogue session UUID",
   "device_id": "02:11:22:33:44:55",
   "dialogue": {
@@ -75,6 +75,7 @@ WebSocket 仍以 JSON 帧传控制事件、二进制帧传 PCM。`hello.session_
   },
   "profile": {"enabled": true},
   "music": {"enabled": true},
+  "vision": {"enabled": true},
   "audio": {
     "input": {"codec":"pcm_s16le","sample_rate":16000,"channels":1,"frame_duration_ms":20},
     "output": {"codec":"pcm_s16le","sample_rate":24000,"channels":1}
@@ -312,6 +313,8 @@ Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息�
 
 ## 错误和生命周期
 
+工具业务校验返回 `status=error` 且处理器声明固定失败回复时，本轮直接使用既有文字/TTS/`turn_completed` 事件说明操作未完成，不额外调用模型重试。模型正文出现 DSML 标记时，同样转为受控的本地回复，标记及其参数不进入客户端正文、TTS 或新保存的助手回复；已提交的媒体任务仍以独立媒体事件反馈实际状态。既有历史记录不自动清除。这不增加 WebSocket 事件或改变协议版本。
+
 - 二进制音频未先开始采集：`audio_input_not_started`。
 - 输入格式不匹配：`unsupported_audio_format`。
 - PCM 字节数不是 2 的倍数：`invalid_audio_frame`。
@@ -387,3 +390,26 @@ Member 和 Guest Turn 使用同一设备级短期 Dialogue，历史用户消息�
 ```
 
 取消提醒继续使用 reminder_cancelled，并释放该提醒全部投递的等待。明确点击“停止提醒播放”、取消提醒、断开连接可终止播报；普通 VAD、新问题和聊天的停止指令不打断提醒。
+
+
+## 摄像头单帧与视觉状态（0.19）
+
+`hello.vision.enabled` 表示后端视觉模型已配置。摄像头仍只能由用户手动开启；前端上报 `{"type":"camera_state","opened":true,"revision":1}`，关闭/释放后报 `false`。`revision` 是本页摄像头每次开关递增的版本，服务端在取图请求中回传 `camera_revision`，前端拒绝开关前的旧请求。它只代表预览轨道状态，不保证视频帧已就绪。连接鉴权沿用 Device Cookie，不接受自报家庭 ID。
+
+主模型调用 `camera_snapshot(question)` 后，服务端发送：
+
+```json
+{"type":"camera_capture","request_id":"uuid","turn_id":"current-turn","camera_revision":1,"max_edge":1280,"max_bytes":512000,"expires_at":1793000000000}
+```
+
+前端仅为这次请求截取一张当前 JPEG，经同一 WebSocket 返回：
+
+```json
+{"type":"camera_frame","request_id":"uuid","turn_id":"current-turn","mime_type":"image/jpeg","image_base64":"<纯Base64，无data前缀>","width":1280,"height":720,"captured_at":1792999998000}
+```
+
+无轨道、无就绪帧或本地截图失败则返回相同请求/Turn ID 和 `status:"error"`，不附图片。`captured_at` 是浏览器时钟记录的截帧时间，只作客户端元数据；服务端使用自己的请求截止时间判断有效性，不信任客户端上报的宽高，解码实际 JPEG 检查。只处理当前连接中仍有效的单次请求，重复、超时、跨 Turn 或关闭后的回传被忽略，不触发下一次分析。
+
+`vision_status` 含 `request_id`、`turn_id`、`status`：`capturing` / `analyzing` / `completed` / `unavailable`；不可用时附 `code`（如 `camera_off`、`capture_failed`、`invalid_frame`、`timeout`、`auth_failed`、`provider_error`）。浏览器按请求标识更新状态，`turn_cancelled` 结束该轮识别状态但保持预览开关。`completed` 代表单帧分析完成，主 LLM 的答复仍走原来的 text/TTS 事件。
+
+取帧最多 3 秒，总操作预算默认 12 秒，使用 `NEWTALK_VISION_TIMEOUT_SECONDS`（1～60 秒）配置；无自动重试。取帧与 VLM 失败以工具 `status=unavailable, observed=false` 返回当前聊天，不能把不可用当作成功观察。插话或断线取消当前 Turn 内操作，不返回给下一轮。图片不记录进协议面板/正文调试，不写磁盘或历史；主模型只收到工具文字观察。

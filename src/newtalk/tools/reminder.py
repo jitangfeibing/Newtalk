@@ -91,6 +91,7 @@ async def execute_reminder_tool(service: ReminderService, turn: Turn, call: Mode
 class ReminderTool:
     service: ReminderService
     name = "reminder_manage"
+    error_reply = "这次提醒操作没有完成，请稍后再试。"
 
     def definition(self, context: ToolContext) -> dict | None:
         return reminder_tool(self.service.clock()) if context.client_tools_enabled else None

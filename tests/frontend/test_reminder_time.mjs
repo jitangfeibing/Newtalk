@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import vm from 'node:vm';
 
 test('reminder list shows the explicitly promised Beijing time even if browser locale overrides timezone options', () => {
-    const source = readFileSync(new URL('../../web/reminders.js', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../../web/reminders.js', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
     const start = source.indexOf('const formatTime =');
     const end = source.indexOf('\n\nexport function', start);
     const NativeFormatter = Intl.DateTimeFormat;

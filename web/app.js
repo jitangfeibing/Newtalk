@@ -7,6 +7,7 @@ import {captureOriginMs, outputPerformanceTime} from './voice-latency.js?v=20261
 import {createDeviceControls} from './device-control.js?v=20261025.1';
 import {initializeReminders} from './reminders.js?v=20261026.1';
 import {initializeMusic} from './music.js?v=20261026.3';
+import {initializeCamera} from './camera.js?v=20261026.1';
 
 const statusElement = document.querySelector('#connectionStatus');
 const statusLabel = document.querySelector('#statusLabel');
@@ -103,6 +104,7 @@ let socket = null;
 let deviceControls = null;
 let reminders = null;
 let music = null;
+let camera = null;
 let eventSequence = 0;
 let advertisedAudioFormat = null;
 let advertisedInputFormat = null;
@@ -617,6 +619,10 @@ function markStreamingMessagesInterrupted() {
 
 function handleIncoming(payload) {
     appendProtocolEvent('incoming', payload);
+    if (payload.type === 'camera_capture' || payload.type === 'vision_status') {
+        camera?.handle(payload);
+        return;
+    }
     if (payload.type.startsWith('reminder')) {
         reminders?.handle(payload);
         return;
@@ -663,6 +669,7 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'hello') {
+        if (!payload.vision?.enabled) document.querySelector('#cameraStatus').textContent = '可本地预览；服务端尚未配置视觉模型';
         music?.capabilities(payload.music?.enabled, payload.podcasts?.enabled);
         advertisedInputFormat = payload.audio.input;
         advertisedAudioFormat = payload.audio.output;
@@ -770,6 +777,7 @@ function handleIncoming(payload) {
     }
 
     if (payload.type === 'turn_cancelled') {
+        camera?.handle(payload);
         reminders?.setBusy('generation', false);
         music?.setBusy('generation', false);
         stopAudioButton.disabled = true;
@@ -932,6 +940,7 @@ function disconnect() {
 
 function closeConnection(connection) {
     if (socket !== connection) return;
+    camera?.connect(null);
     reminders?.connect(null);
     music?.connect(null);
     if (socket?.readyState === WebSocket.OPEN) {
@@ -974,8 +983,7 @@ function connect() {
             music?.setBusy('user', false);
             return microphone.stop(notify);
         },
-        // 摄像头预览尚未接入，不能假称关闭了其他应用的摄像头。
-        stopCamera: () => false,
+        stopCamera: () => camera?.stop() || false,
         closeConnection: () => closeConnection(connection),
         sendResult: event => {
             connection.send(JSON.stringify(event));
@@ -990,6 +998,9 @@ function connect() {
 
     socket.addEventListener('open', () => {
         if (socket !== connection) return;
+        camera?.connect(event => {
+            if (socket === connection && connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify(event));
+        });
         reminders?.connect(event => {
             if (socket === connection && connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify(event));
         });
@@ -1030,6 +1041,7 @@ function connect() {
     socket.addEventListener('close', async (event) => {
         controls.dispose();
         if (socket !== connection) return;
+        camera?.connect(null);
         reminders?.connect(null);
         music?.connect(null);
         appendProtocolEvent('system', `WebSocket closed (${event.code})`);
@@ -1142,6 +1154,7 @@ micButton.addEventListener('click', async () => {
 
 endpointElement.textContent = window.location.protocol === 'file:' ? 'HTTP runtime required' : websocketUrl();
 music = initializeMusic();
+camera = initializeCamera();
 reminders = initializeReminders({onPlaybackActive: active => music?.setBusy('reminder', active)});
 initializeContextDashboard(showView);
 initializeHomeShell();

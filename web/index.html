@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/context-dashboard.css?v=20261023.1">
     <link rel="stylesheet" href="/reminders.css?v=20261025.1">
     <link rel="stylesheet" href="/music.css?v=20261026.1">
+    <link rel="stylesheet" href="/camera.css?v=20261026.1">
 </head>
 <body>
     <div class="app-frame">
@@ -125,6 +126,7 @@
                     </div>
                 </div>
 
+                <div class="conversation-workspace">
                 <section class="chat-panel" aria-labelledby="chatTitle">
                     <header class="chat-header">
                         <div class="assistant-identity">
@@ -164,6 +166,16 @@
                         </div>
                     </form>
                 </section>
+
+                <aside class="camera-panel" aria-labelledby="cameraTitle">
+                    <header><h3 id="cameraTitle">摄像头</h3><button type="button" class="button secondary compact" id="cameraButton" aria-pressed="false">开启摄像头</button></header>
+                    <div class="camera-preview">
+                        <video id="cameraPreview" autoplay muted playsinline hidden></video>
+                        <p id="cameraPlaceholder">摄像头未开启</p>
+                    </div>
+                    <p id="cameraStatus" role="status">摄像头已关闭</p>
+                </aside>
+                </div>
 
                 <details class="developer-console">
                     <summary>连接与协议详情 <code id="endpoint">等待页面初始化</code></summary>
@@ -373,6 +385,6 @@
         </main>
     </div>
 
-    <script type="module" src="/app.js?v=20261026.4"></script>
+    <script type="module" src="/app.js?v=20261026.5"></script>
 </body>
 </html>

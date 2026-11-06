@@ -359,6 +359,7 @@ class IdentityDeletionService:
         *,
         dialogue_store: DialogueStore | None = None,
         dialogue_coordinator: DialogueCacheCoordinator | None = None,
+        memory_batches=None,
         poll_seconds: float = 1.0,
         backoff: Callable[[int], float] = _retry_backoff,
     ) -> None:
@@ -368,6 +369,7 @@ class IdentityDeletionService:
         self._coordinator = coordinator
         self._dialogue_store = dialogue_store
         self._dialogue_coordinator = dialogue_coordinator
+        self._memory_batches = memory_batches
         self._poll_seconds = poll_seconds
         self._backoff = backoff
         self._worker: asyncio.Task[None] | None = None
@@ -411,6 +413,10 @@ class IdentityDeletionService:
     async def _process(self, job: IdentityDeletionJob) -> None:
         scope = ProfileScope(job.device_id, job.identity_id)
         try:
+            if self._memory_batches is not None:
+                await self._memory_batches.delete_identity(
+                    device_id=job.device_id, identity_id=job.identity_id,
+                )
             if getattr(self._voiceprint, "enabled", True):
                 await self._voiceprint.delete(
                     device_id=job.device_id,

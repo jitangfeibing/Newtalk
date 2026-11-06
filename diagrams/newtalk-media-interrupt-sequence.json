@@ -1,0 +1,44 @@
+{
+  "type": "sequence",
+  "title": "说书还在加载时，用户仍然可以聊天",
+  "subtitle": "建议交互：工具提交操作后立即返回已接收；耗时解析由媒体会话继续。尚未实现。",
+  "eyebrow": "NEWTALK · 最小交互时序",
+  "caption": "喜马拉雅和音乐只替换内容源适配器。媒体事件更新事实，不自动启动一轮大模型；下一次用户输入读取最新状态。",
+  "lang": "zh-CN",
+  "fonts": "system",
+  "skin": "light",
+  "size": "wide",
+  "motion": "trace",
+  "out": "newtalk-media-interrupt-sequence.html",
+  "numbered": true,
+  "participants": [
+    {"id": "user", "label": "用户", "sub": "语音或文字", "kind": "external"},
+    {"id": "chat", "label": "聊天轮", "sub": "模型理解 / 回复"},
+    {"id": "media", "label": "媒体会话", "sub": "操作任务＋事实快照", "focal": true},
+    {"id": "source", "label": "内容源", "sub": "音乐 / 喜马拉雅", "kind": "external"},
+    {"id": "player", "label": "网页播放器", "sub": "实际播放 / 回执", "kind": "external"}
+  ],
+  "messages": [
+    ["user", "chat", "播放某期说书", "primary"],
+    ["chat", "media", "提交点播命令", "primary"],
+    ["media", "chat", "已接收＋操作编号", "reply"],
+    ["media", "source", "查询并解析音频", "async"],
+    ["user", "chat", "怎么还没声音？", "primary"],
+    ["chat", "media", "读取当前状态", "sync"],
+    ["media", "chat", "加载中：目标节目 / 单集", "reply"],
+    ["chat", "user", "正在加载，查询继续", "reply"],
+    ["source", "media", "音频资源就绪", "reply"],
+    ["media", "player", "播放；聊天未结束则等待", "async"],
+    ["player", "media", "playing：实际开始", "reply"],
+    ["user", "chat", "现在播的是哪一期？", "primary"],
+    ["chat", "media", "读取最新事实", "sync"],
+    ["media", "chat", "节目＋单集＋最近回执", "reply"],
+    ["chat", "user", "根据事实回答", "reply"]
+  ],
+  "notes": [
+    {"at": 1, "over": ["chat", "media"], "text": "交接前仍随聊天轮取消；操作被接受后，由连接内媒体会话负责。"},
+    {"at": 4, "over": ["chat", "media"], "text": "插话只取消旧聊天生成 / 播报；不取消已接受的点播解析。"},
+    {"at": 9, "over": ["media", "player"], "text": "资源就绪不等于已播放；聊天 / 提醒占用音频时先排队。"},
+    {"at": 11, "over": ["chat", "media"], "text": "回执只更新状态；只有新的用户输入才开始下一轮对话。"}
+  ]
+}

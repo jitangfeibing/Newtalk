@@ -70,6 +70,11 @@ from newtalk.podcasts.api import router as podcast_router
 from newtalk.podcasts.provider import YaohuPodcastProvider
 from newtalk.podcasts.service import PodcastService
 from newtalk.tools.podcasts import PodcastControlTool, PodcastSearchTool
+from newtalk.tools.vision import VisionTool
+from newtalk.vision.provider import QwenVisionProvider
+from newtalk.memory.batch_store import InMemoryMemoryBatchStore, SqlAlchemyMemoryBatchStore
+from newtalk.memory.batching import MemoryBatchService
+from newtalk.memory.curation import LlmMemoryCurator
 
 
 logger = logging.getLogger(__name__)
@@ -245,6 +250,23 @@ def create_memory_writer(
     )
 
 
+def create_memory_batches(config, writer, identity_service, *, persistence_backend="postgresql"):
+    if config.memory_write_mode != "batch" or config.memory_backend == "disabled":
+        return None
+    if not isinstance(writer, MemoryWriteService):
+        raise RuntimeError("Batch memory requires the persistent memory writer")
+    if config.llm_backend != "openai" or not config.llm_api_key or not config.llm_model:
+        raise RuntimeError("Batch memory requires a configured LLM; it cannot silently fall back to raw writes")
+    store = (InMemoryMemoryBatchStore(identity_service=identity_service)
+             if persistence_backend == "memory" else SqlAlchemyMemoryBatchStore(config.database_url))
+    model = OpenAICompatibleChatModel(
+        api_key=config.llm_api_key, base_url=config.llm_base_url, model=config.llm_model,
+        timeout_seconds=config.llm_timeout_seconds,
+        input_token_budget=config.context_input_tokens, thinking=config.llm_thinking,
+    )
+    return MemoryBatchService(store, LlmMemoryCurator(model), writer)
+
+
 def create_app(
     config: AppConfig | None = None,
     *,
@@ -262,6 +284,8 @@ def create_app(
     persistence_backend: Literal["postgresql", "memory"] = "postgresql",
     music_service: MusicService | None = None,
     podcast_service: PodcastService | None = None,
+    vision_provider: QwenVisionProvider | None = None,
+    memory_batches: MemoryBatchService | None = None,
 ) -> FastAPI:
     config = config or load_config()
     if persistence_backend not in {"postgresql", "memory"}:
@@ -281,6 +305,11 @@ def create_app(
     resolved_reminder_audio = ReminderAudio(create_synthesizer(config))
     resolved_music_service = music_service or MusicService(YaohuMusicProvider(config.music_api_key))
     resolved_podcast_service = podcast_service or PodcastService(YaohuPodcastProvider(config.podcast_api_key or config.music_api_key))
+    resolved_vision_provider = vision_provider or QwenVisionProvider(
+        config.vision_api_key, model=config.vision_model, base_url=config.vision_base_url,
+        timeout_seconds=config.vision_timeout_seconds,
+    )
+    resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(VisionTool())
     resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(MusicTool(resolved_music_service))
     resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(PodcastSearchTool(resolved_podcast_service))
     resolved_chat_service.tool_registry = resolved_chat_service.tool_registry.with_tool(PodcastControlTool(resolved_podcast_service))
@@ -313,6 +342,10 @@ def create_app(
     resolved_memory_writer = memory_writer or create_memory_writer(
         config, resolved_memory_provider
     )
+    resolved_memory_batches = memory_batches or create_memory_batches(
+        config, resolved_memory_writer, resolved_identity_service,
+        persistence_backend=persistence_backend,
+    )
     resolved_identity_deletion_service = identity_deletion_service
     if resolved_identity_deletion_service is None:
         memory_job_store = (
@@ -335,6 +368,7 @@ def create_app(
             dialogue_store=resolved_dialogue_store,
             dialogue_coordinator=dialogue_cache_coordinator,
             poll_seconds=config.memory_job_poll_seconds,
+            memory_batches=resolved_memory_batches,
         )
 
     @asynccontextmanager
@@ -344,10 +378,12 @@ def create_app(
             await resolved_dialogue_store.start()
             await resolved_recovery_rate_limiter.start()
             await resolved_memory_writer.start()
+            if resolved_memory_batches is not None:
+                await resolved_memory_batches.start()
             await resolved_identity_deletion_service.start()
             await resolved_reminder_service.start()
             logger.info(
-                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s llm_thinking=%s tts_backend=%s asr_backend=%s memory_backend=%s memory_retrieval_mode=%s identity_service=%s",
+                "service_started host=%s port=%s web_root=%s llm_backend=%s llm_model=%s llm_thinking=%s tts_backend=%s asr_backend=%s memory_backend=%s memory_retrieval_mode=%s memory_write_mode=%s identity_service=%s",
                 config.host,
                 config.port,
                 config.web_root,
@@ -358,6 +394,7 @@ def create_app(
                 config.asr_backend,
                 config.memory_backend,
                 config.memory_retrieval_mode,
+                config.memory_write_mode,
                 type(resolved_identity_service).__name__,
             )
             yield
@@ -368,7 +405,9 @@ def create_app(
                     ("reminder_audio", resolved_reminder_audio.close),
                     ("music", resolved_music_service.close),
                     ("podcasts", resolved_podcast_service.close),
+                    ("vision", resolved_vision_provider.close),
                     ("identity_deletion", resolved_identity_deletion_service.close),
+                    *((("memory_batches", resolved_memory_batches.close),) if resolved_memory_batches else ()),
                     ("memory_writer", resolved_memory_writer.close),
                     ("recovery_rate_limiter", resolved_recovery_rate_limiter.close),
                     ("dialogue_store", resolved_dialogue_store.close),
@@ -391,6 +430,7 @@ def create_app(
     app.state.voiceprint_client = resolved_voiceprint_client
     app.state.memory_provider = resolved_memory_provider
     app.state.memory_writer = resolved_memory_writer
+    app.state.memory_batches = resolved_memory_batches
     app.state.profile_cache_coordinator = profile_cache_coordinator
     app.state.dialogue_cache_coordinator = dialogue_cache_coordinator
     app.state.identity_deletion_service = resolved_identity_deletion_service
@@ -399,6 +439,7 @@ def create_app(
     app.state.reminder_audio = resolved_reminder_audio
     app.state.music_service = resolved_music_service
     app.state.podcast_service = resolved_podcast_service
+    app.state.vision_provider = resolved_vision_provider
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

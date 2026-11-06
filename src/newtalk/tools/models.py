@@ -8,6 +8,7 @@ from newtalk.media.models import MediaCommands, MediaControl
 
 if TYPE_CHECKING:
     from newtalk.chat.models import ModelToolCall, Turn
+    from newtalk.vision.provider import VisionCommands
 
 
 DeviceAction = Literal["stop_reply", "microphone_off", "camera_off", "disconnect"]
@@ -30,6 +31,7 @@ class ToolContext:
     client_tools_enabled: bool = False
     memory_retrieval_mode: Literal["tool", "preload"] = "tool"
     media_commands: MediaCommands | None = None
+    vision_commands: VisionCommands | None = None
 
 
 class Tool(Protocol):

@@ -85,12 +85,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         profile_cache=profile_cache,
         profile_max_chars=websocket.app.state.config.profile_max_chars,
         memory_writer=websocket.app.state.memory_writer,
+        memory_batches=websocket.app.state.memory_batches,
         dialogue_store=websocket.app.state.dialogue_store,
         dialogue_snapshot=dialogue_snapshot,
         dialogue_coordinator=websocket.app.state.dialogue_cache_coordinator,
         reminder_service=websocket.app.state.reminder_service,
         music_service=websocket.app.state.music_service,
         podcast_service=websocket.app.state.podcast_service,
+        vision_provider=websocket.app.state.vision_provider,
     )
     await runtime.start()
     await runtime.send_json(
@@ -152,6 +154,7 @@ def _hello_payload(
         "profile": {"enabled": profile_cache.enabled},
         "music": {"enabled": websocket.app.state.music_service.enabled},
         "podcasts": {"enabled": websocket.app.state.podcast_service.enabled},
+        "vision": {"enabled": websocket.app.state.vision_provider.enabled},
         "audio": {
             "input": {
                 "codec": INPUT_AUDIO_FORMAT.codec,
@@ -286,6 +289,14 @@ async def _dispatch_event(
 
     if event_type == "media_state":
         runtime.media_state(event)
+        return False
+
+    if event_type == "camera_state":
+        runtime.camera_state(event)
+        return False
+
+    if event_type == "camera_frame":
+        runtime.camera_frame(event)
         return False
 
     if event_type == "reminder_playback":

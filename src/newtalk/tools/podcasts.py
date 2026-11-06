@@ -46,6 +46,7 @@ def _definition(name: str, description: str, properties: dict) -> dict:
 class PodcastSearchTool:
     service: PodcastService
     name = 'podcast_search'
+    error_reply = '这次没能找到可用的节目，请稍后再试。'
     followup_tools = ('podcast_control',)
 
     def definition(self, context: ToolContext) -> dict | None:
@@ -79,6 +80,7 @@ class PodcastSearchTool:
 class PodcastControlTool:
     service: PodcastService
     name = 'podcast_control'
+    error_reply = '这次听书操作没有完成，请再试一次。'
 
     def definition(self, context: ToolContext) -> dict | None:
         if not self.service.enabled or not context.client_tools_enabled or not context.media_commands or not _requested(context):
@@ -94,6 +96,7 @@ class PodcastControlTool:
              'index': {'type': ['integer', 'null']}, 'selection_id': {'type': ['string', 'null']}})
 
     async def execute(self, context: ToolContext, call) -> str:
+        code = 'invalid_arguments'
         try:
             if not _requested(context) or context.media_commands is None:
                 return json.dumps({'status': 'ok', 'action': 'none', 'reason': 'not_requested'})
@@ -102,6 +105,7 @@ class PodcastControlTool:
                 raise ValueError('听书操作参数无效。')
             action, index, selection_id = args['action'], args['index'], args['selection_id']
             if action not in ('play', 'next', 'change', 'pause', 'resume', 'stop'):
+                code = 'invalid_action'
                 raise ValueError('不支持这个听书操作。')
             text = context.turn.user_text
             control_request = {'pause': r'暂停|停一下', 'resume': r'继续(?!聊|讲|说)|恢复|接着听',
@@ -117,6 +121,7 @@ class PodcastControlTool:
                 facts = _catalogue(context)
                 if (selection_id != facts.get('selection_id') or type(index) is not int
                         or not 1 <= index <= len(facts.get('albums', []))):
+                    code = 'invalid_selection'
                     raise ValueError('请使用当前候选的真实序号和选择编号。')
                 target = facts['albums'][index - 1]['title']
             elif index is not None or selection_id is not None:
@@ -127,4 +132,4 @@ class PodcastControlTool:
                         context.turn.turn_id, call.call_id, action, result['operation_id'])
             return json.dumps(result, ensure_ascii=False)
         except (MediaUnavailable, ValueError) as exc:
-            return tool_error(getattr(exc, 'code', 'invalid_request'), str(exc))
+            return tool_error(getattr(exc, 'code', code), str(exc))

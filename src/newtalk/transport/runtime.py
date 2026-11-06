@@ -43,6 +43,8 @@ from newtalk.voiceprint import (
     VoicePrintUnavailableError,
 )
 from newtalk.chat.context_budget import ContextBudgetExceeded
+from newtalk.memory.batching import MemoryBatchService
+from newtalk.memory.policy import memory_skip_reason
 from newtalk.chat.device_control import DEVICE_ACTIONS, DeviceControl, control_from_text
 from newtalk.reminders.service import ReminderService
 from newtalk.media.models import MediaControl, MediaIntent, MediaUnavailable
@@ -50,6 +52,8 @@ from newtalk.media.session import MediaSession
 from newtalk.media.interaction import playback_stop_from_text
 from newtalk.music.service import MusicService
 from newtalk.podcasts.service import PodcastService
+from newtalk.vision.provider import QwenVisionProvider
+from newtalk.vision.session import CameraSession
 
 
 logger = logging.getLogger(__name__)
@@ -293,6 +297,7 @@ class _SpeakerResolution:
 class _AcceptedUserInput:
     revision: int
     persistence: asyncio.Task[str]
+    turn: Turn
 
 
 class ConnectionRuntime:
@@ -344,6 +349,8 @@ class ConnectionRuntime:
         reminder_service: ReminderService | None = None,
         music_service: MusicService | None = None,
         podcast_service: PodcastService | None = None,
+        vision_provider: QwenVisionProvider | None = None,
+        memory_batches: MemoryBatchService | None = None,
     ) -> None:
         # 运行于：websocket_endpoint Task；持锁：否；可能阻塞：同步恢复内存上下文，无异步等待。
         self.session_id = session_id
@@ -384,6 +391,9 @@ class ConnectionRuntime:
         self._profile_cache = profile_cache
         self._profile_max_chars = profile_max_chars
         self._memory_writer = memory_writer
+        self._memory_batches = memory_batches
+        self._memory_segment_id = str(uuid4())
+        self._pending_memory_updates: set[asyncio.Task[None]] = set()
         self._voice_joins: dict[str, _VoiceJoinState] = {}
         self._seen_event_ids: set[str] = set()
         self._event_id_order: deque[str] = deque()
@@ -415,11 +425,19 @@ class ConnectionRuntime:
             session_id=session_id,
             active_turn_id=lambda: self._turn_state.turn_id,
         )
+        self._camera = CameraSession(vision_provider, self.send_json) if vision_provider and vision_provider.enabled else None
 
     @property
     def active_turn_id(self) -> str | None:
         # 运行于：属性调用方 Task；持锁：是/否（继承调用方）；可能阻塞：无异步等待。
         return self._turn_state.turn_id
+
+    def camera_state(self, event: dict) -> None:
+        if self._camera is not None:
+            self._camera.state(event)
+
+    def camera_frame(self, event: dict) -> bool:
+        return self._camera.frame(event) if self._camera is not None else False
 
     async def start(self) -> None:
         # 运行于：websocket_endpoint Task；持锁：否；可能阻塞：无异步等待，仅启动发送和画像预取任务。
@@ -675,6 +693,7 @@ class ConnectionRuntime:
         # 运行于：接收循环 Task；持锁：否（cancel_turn 内获取）；可能阻塞：旧任务清理、数据库清空及发送，未设总超时。
         await self.cancel_turn(reason="dialogue_cleared")
         try:
+            await self._seal_memory_segment(reason="new_dialogue")
             async with self._dialogue_write_scope.lock:
                 deleted = await self._dialogue_store.clear(session_id=self.session_id)
                 self._dialogue_coordinator.clear(self.device_id)
@@ -757,6 +776,11 @@ class ConnectionRuntime:
             if self._media_session.enabled or self._media_session.observation.action != 'none':
                 context_messages = (*context_messages, ChatMessage(
                     role="user", content=self._media_session.prompt()))
+            if self._camera is not None:
+                context_messages = (*context_messages, ChatMessage(role="system", content=(
+                    "当前摄像头" + ("已开启" if self._camera.opened else "未开启")
+                    + "。你可以调用 camera_snapshot 查看当前单帧，再结合观察回答。普通聊天不用看图；"
+                    "历史视觉描述不代表当前画面，未经本次工具观察不要声称看到了。")))
             messages = dialogue.messages_for(
                 text,
                 speaker_identity_id=speaker_identity_id,
@@ -816,10 +840,10 @@ class ConnectionRuntime:
             if evicted_turn_id is not None:
                 self._exclude_from_context(evicted_turn_id, "window_limit")
             revision = self._dialogue_write_scope.revision
-            persistence = asyncio.create_task(self._persist_user_input(turn, revision))
+            persistence = asyncio.create_task(self._persist_user_input(turn, revision, self._memory_segment_id))
             self._pending_input_writes.add(persistence)
             persistence.add_done_callback(self._pending_input_writes.discard)
-            self._accepted_inputs[turn.turn_id] = _AcceptedUserInput(revision, persistence)
+            self._accepted_inputs[turn.turn_id] = _AcceptedUserInput(revision, persistence, turn)
             self._record_context(turn.turn_id, "user_input_accepted", dialogue_memory="user_only")
             self._turn_state.activate(turn.turn_id)
             logger.info(
@@ -859,7 +883,9 @@ class ConnectionRuntime:
                 )
             except BaseException:
                 self._turn_state.clear_active(turn.turn_id)
-                self._accepted_inputs.pop(turn.turn_id, None)
+                accepted = self._accepted_inputs.pop(turn.turn_id, None)
+                if accepted is not None:
+                    self._schedule_memory_finish(accepted)
                 raise
             task = asyncio.create_task(
                 self._stream_turn(turn, event_id=event_id, dialogue=dialogue)
@@ -881,7 +907,10 @@ class ConnectionRuntime:
             cancellation.task.cancel()
             await asyncio.gather(cancellation.task, return_exceptions=True)
         if cancellation.turn_id is not None:
-            self._accepted_inputs.pop(cancellation.turn_id, None)
+            accepted = self._accepted_inputs.pop(cancellation.turn_id, None)
+            # Task 可能在进入 _stream_turn 的 finally 前就被取消，仍需结算用户素材。
+            if accepted is not None:
+                self._schedule_memory_finish(accepted)
             self._record_context(cancellation.turn_id, "turn_cancelled", reason=reason)
             logger.info(
                 "turn_cancelled session_id=%s turn_id=%s reason=%s",
@@ -1027,6 +1056,8 @@ class ConnectionRuntime:
         if self._closing:
             return
         self._closing = True
+        if self._camera is not None:
+            await self._camera.close()
         await self._media_session.close()
         if self._reminder_task is not None:
             self._reminder_task.cancel()
@@ -1069,10 +1100,11 @@ class ConnectionRuntime:
         # 正常断开不能取消已接受输入的落库；只取消生成，独立输入任务需收尾。
         if self._pending_input_writes:
             await asyncio.gather(*tuple(self._pending_input_writes), return_exceptions=True)
+        await self._seal_memory_segment(reason="disconnect")
         self._dialogue_coordinator.unregister(self._dialogue)
         await self._sender.close()
 
-    async def _persist_user_input(self, turn: Turn, revision: int) -> str:
+    async def _persist_user_input(self, turn: Turn, revision: int, segment_id: str) -> str:
         """独立输入 Task；不在接收循环等待 DB，不随 LLM/TTS 取消。"""
         status = "failed"
         try:
@@ -1082,6 +1114,9 @@ class ConnectionRuntime:
                 elif not await self._can_commit_turn(turn):
                     status = "skipped"
                 else:
+                    # 先保存独立素材，再写可清空的短期历史；清空不能抹掉待整理原话。
+                    if self._memory_batches is not None:
+                        await self._memory_batches.record_input(turn, segment_id=segment_id)
                     exchange = DialogueExchange(
                         turn_id=turn.turn_id,
                         user_text=turn.user_text,
@@ -1108,6 +1143,46 @@ class ConnectionRuntime:
             )
         self._record_context(turn.turn_id, "user_input_persistence", status=status)
         return status
+
+    def _schedule_memory_finish(
+        self, accepted: _AcceptedUserInput, *, assistant_text: str | None = None,
+        discard: bool = False,
+    ) -> None:
+        # 运行于 Turn/取消 Task；不随回复取消，不在接收循环等待整理 LLM。
+        if self._memory_batches is None or accepted.turn.speaker_identity_id is None:
+            return
+
+        async def finish() -> None:
+            try:
+                await asyncio.shield(accepted.persistence)
+                await self._memory_batches.finish_input(
+                    accepted.turn, assistant_text=assistant_text, discard=discard,
+                )
+                self._record_context(accepted.turn.turn_id, "memory_source_finished",
+                                     discarded=discard, assistant_included=assistant_text is not None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("memory_source_finish_failed turn_id=%s error_type=%s",
+                             accepted.turn.turn_id, type(exc).__name__)
+
+        task = asyncio.create_task(finish())
+        self._pending_memory_updates.add(task)
+        task.add_done_callback(self._pending_memory_updates.discard)
+
+    async def _seal_memory_segment(self, *, reason: str) -> None:
+        # 运行于清空/endpoint 关闭；只等待本地素材收尾和封存，不调用外部模型。
+        if self._memory_batches is None:
+            return
+        segment_id = self._memory_segment_id
+        self._memory_segment_id = str(uuid4())
+        if self._pending_input_writes:
+            await asyncio.gather(*tuple(self._pending_input_writes), return_exceptions=True)
+        if self._pending_memory_updates:
+            await asyncio.gather(*tuple(self._pending_memory_updates), return_exceptions=True)
+        await self._memory_batches.flush_segment(
+            device_id=self.device_id, segment_id=segment_id, reason=reason,
+        )
 
     def _record_context(self, turn_id: str, event: str, **fields: Any) -> None:
         # 运行于：调用方 Task；持锁：继承调用方；可能阻塞：仅显式开启时写本机调试文件。
@@ -1209,11 +1284,16 @@ class ConnectionRuntime:
                     await self._reminder_ready.wait()
                 if self._closing or self.active_turn_id != turn.turn_id:
                     return
-            stream = (
-                self._chat_service.stream_turn(turn, device_control_enabled=True, media_commands=self._media_session.for_turn(
-                    lambda: not self._closing and self.active_turn_id == turn.turn_id))
-                if self._media_session.enabled else self._chat_service.stream_turn(turn, device_control_enabled=True)
-            )
+            tool_options: dict[str, Any] = {"device_control_enabled": True}
+
+            def is_current() -> bool:
+                return not self._closing and self.active_turn_id == turn.turn_id
+
+            if self._media_session.enabled:
+                tool_options["media_commands"] = self._media_session.for_turn(is_current)
+            if self._camera is not None:
+                tool_options["vision_commands"] = self._camera.for_turn(turn.turn_id, is_current)
+            stream = self._chat_service.stream_turn(turn, **tool_options)
             async with aclosing(stream) as outputs:
                 async for output in outputs:
                     if isinstance(output, MediaControl):
@@ -1358,6 +1438,8 @@ class ConnectionRuntime:
                             committed
                             and persisted
                             and turn.speaker_identity_id is not None
+                            and not (self._camera is not None and self._camera.visual_turn_id == turn.turn_id)
+                            and self._memory_batches is None
                         ):
                             try:
                                 memory_queue = "unknown"
@@ -1420,6 +1502,18 @@ class ConnectionRuntime:
                 turn_id=turn.turn_id,
             )
         finally:
+            if self._memory_batches is not None:
+                visual = self._camera is not None and self._camera.visual_turn_id == turn.turn_id
+                self._schedule_memory_finish(
+                    accepted,
+                    assistant_text=response_text if outcome == "completed" and dialogue_database == "completed" else None,
+                    discard=visual,
+                )
+                if turn.speaker_identity_id is not None:
+                    memory_queue = (
+                        "batch_pending" if not visual and memory_skip_reason(turn.user_text) is None
+                        else "not_inserted"
+                    )
             user_input_database = (
                 "unknown" if accepted.persistence.cancelled() else
                 accepted.persistence.result() if accepted.persistence.done() else "pending"

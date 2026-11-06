@@ -129,12 +129,12 @@ test('disconnect closes the local socket without waiting for a server reply', ()
         close: code => events.push(code),
     };
     const context = vm.createContext({
-        socket, reminders: null, music: null, WebSocket: {OPEN: 1}, nextEventId: () => 'close-1',
+        socket, reminders: null, music: null, camera: {connect: sender => events.push(['camera', sender])}, WebSocket: {OPEN: 1}, nextEventId: () => 'close-1',
         appendProtocolEvent() {}, setStatus() {},
     });
     vm.runInContext(source.slice(start, end), context);
     context.closeConnection(socket);
-    assert.deepEqual(events, ['close', 1000]);
+    assert.deepEqual(events, [['camera', null], 'close', 1000]);
     context.closeConnection({readyState: 1});
-    assert.deepEqual(events, ['close', 1000]);
+    assert.deepEqual(events, [['camera', null], 'close', 1000]);
 });
